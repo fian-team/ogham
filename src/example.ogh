@@ -1,0 +1,74 @@
+// Single-line comment
+
+/*
+ * Multi-line comment 
+ */
+
+// Hello world!
+var hello = () { // Type inference is allowed.
+  Text { // Capitalization indicates a widget. Widgets are all of the type `widget`, but they must be loosely typed to allow for custom widget implementations.
+    text: "Hello, world!",
+  }
+}
+
+// Interactve counter component.
+var counter = () widget { // Explicit return type annotation.
+  state count = 0; // Inferring type int here.
+  Button { // Widgets accept a map of arbitrary attributes.
+    text: "Increment",
+    on_click: () {
+      count++; // Assignment to state variable triggers rerender.
+    },
+  }
+  Text {
+    text: count -> string, // Explicit type coercion only, indicated by arrow operator.
+  }
+}
+
+// UI entry point defined by `main` variable.
+var main = () {
+  counter() // Parenthesis indicate function call; lack of semicolon indicates implicit return.
+}
+
+// Passing values into a component.
+var counter_with_value = (initial_value: int) widget {
+  state count = initial_value; // State variables are initialized with the initial value; this does not interfere with subsequent updates.
+  Button {
+    text: "Increment",
+    on_click: () {
+      count++;
+    },
+  }
+}
+
+var main = () {
+  counter_with_value(initial_value: 10) // Functions only accept named arguments.
+}
+
+// Basic arithmetic.
+var a = 1;
+var b = 2;
+var sum = a + b;
+var difference = a - b;
+var product = a * b;
+var quotient = a / b;
+var remainder = a % b;
+var power = a ^ b;
+
+// Conditional rendering.
+var is_even = (value: int) bool {
+  return value % 2 == 0;
+}
+
+var main = () {
+  var value = 10;
+  if is_even(value) {
+    Text {
+      text: "Value is even",
+    }
+  } else {
+    Text {
+      text: "Value is odd",
+    }
+  }
+}

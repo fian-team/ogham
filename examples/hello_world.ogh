@@ -1,0 +1,19 @@
+
+// Hello world!
+let main = fn () { // Type inference is allowed.
+  Flex { // Capitalization indicates a widget. Widgets are all of the type `widget`, but they must be loosely typed to allow for custom widget implementations.
+    children: [
+      Text {
+        text: "Hello, world!",
+      }
+    ],
+    width: "grow",
+    height: "grow",
+    background_color: {
+      r: 200,
+      g: 200,
+      b: 255,
+      a: 255,
+    },
+  }
+};

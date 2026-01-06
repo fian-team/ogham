@@ -1,0 +1,17 @@
+[package]
+name = "ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+downcast-rs = "2.0.1"
+skia-safe = { version = "0.91.0", features = ["gl", "textlayout", "svg"] }
+lodepng = "3.12.1"
+winit = "0.30.2"
+glutin = { version = "0.32.0", features = ["egl", "glx", "wgl"] }
+glutin-winit = "0.5.0"
+glow = "0.16.0"
+input = { path = "../input" }
+nalgebra-glm = "0.19.0"
+gl-rs = { version = "0.14.0", package = "gl" }
+raw-window-handle = "0.6.0"

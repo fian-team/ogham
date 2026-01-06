@@ -1,0 +1,152 @@
+use super::point::Point;
+use std::sync::{Arc, Mutex};
+
+/// EventContext is used to communicate UI-level state changes from widgets
+/// back to the root UI during event handling. This allows widgets to request
+/// actions that require coordination at the UI level (like focus management,
+/// cursor style changes, etc.) without needing direct access to the UI struct.
+pub struct EventContext {
+    /// Widget that should receive focus (if any)
+    focus_request: Option<Arc<Mutex<dyn crate::Widget>>>,
+    /// Currently focused widget (if any)
+    pub focused_widget: Option<Arc<Mutex<dyn crate::Widget>>>,
+}
+
+impl EventContext {
+    pub fn new() -> Self {
+        Self {
+            focus_request: None,
+            focused_widget: None,
+        }
+    }
+
+    /// Create a new EventContext with a focused widget reference
+    pub fn with_focused(focused_widget: Option<Arc<Mutex<dyn crate::Widget>>>) -> Self {
+        Self {
+            focus_request: None,
+            focused_widget,
+        }
+    }
+
+    /// Request that a widget receives focus
+    pub fn request_focus(&mut self, widget: Arc<Mutex<dyn crate::Widget>>) {
+        self.focus_request = Some(widget);
+    }
+
+    /// Take the focus request, consuming it
+    pub fn take_focus_request(&mut self) -> Option<Arc<Mutex<dyn crate::Widget>>> {
+        self.focus_request.take()
+    }
+
+    /// Check if there's a focus request without consuming it
+    pub fn has_focus_request(&self) -> bool {
+        self.focus_request.is_some()
+    }
+
+    /// Check if the given widget reference is the currently focused widget
+    /// This compares the inner pointers of the Arc, not the Arc instances themselves,
+    /// since cloned Arcs are different instances but point to the same data.
+    pub fn is_focused(&self, widget_ref: &Arc<Mutex<dyn crate::Widget>>) -> bool {
+        if let Some(ref focused) = self.focused_widget {
+            let focused_ptr = Arc::as_ptr(focused);
+            let widget_ptr = Arc::as_ptr(widget_ref);
+            let is_eq = std::ptr::eq(focused_ptr, widget_ptr);
+            is_eq
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct KeyboardData {
+    pub key_code: Option<u32>,
+    pub character: Option<char>,
+    pub modifiers: KeyModifiers,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct KeyModifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub meta: bool,
+}
+
+impl KeyModifiers {
+    pub fn new() -> Self {
+        Self {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            meta: false,
+        }
+    }
+}
+
+pub struct Event {
+    pub name: String,
+    pub point: Option<Point>,
+    pub keyboard_data: Option<KeyboardData>,
+    pub callback: Option<Box<dyn Fn(&Event)>>,
+    pub value: Option<String>,
+}
+
+impl Event {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            point: None,
+            keyboard_data: None,
+            callback: None,
+            value: None,
+        }
+    }
+
+    pub fn with_point(name: String, point: Point) -> Self {
+        Self {
+            name,
+            point: Some(point),
+            keyboard_data: None,
+            callback: None,
+            value: None,
+        }
+    }
+
+    pub fn with_keyboard(
+        name: String,
+        key_code: u32,
+        character: Option<char>,
+        modifiers: KeyModifiers,
+    ) -> Self {
+        Self {
+            name,
+            point: None,
+            keyboard_data: Some(KeyboardData {
+                key_code: Some(key_code),
+                character,
+                modifiers,
+            }),
+            callback: None,
+            value: None,
+        }
+    }
+
+    pub fn with_value(name: String, value: String) -> Self {
+        Self {
+            name,
+            point: None,
+            keyboard_data: None,
+            callback: None,
+            value: Some(value),
+        }
+    }
+
+    pub fn keydown(key_code: u32, character: Option<char>, modifiers: KeyModifiers) -> Self {
+        Self::with_keyboard("keydown".to_string(), key_code, character, modifiers)
+    }
+
+    pub fn keypress(key_code: u32, character: Option<char>, modifiers: KeyModifiers) -> Self {
+        Self::with_keyboard("keypress".to_string(), key_code, character, modifiers)
+    }
+}
