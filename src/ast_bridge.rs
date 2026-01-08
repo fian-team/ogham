@@ -113,11 +113,23 @@ fn create_flex_widget(
                     match dir_str.to_lowercase().as_str() {
                         "row" => style_builder = style_builder.row(),
                         "column" => style_builder = style_builder.column(),
-                        "rowreverse" | "row_reverse" => style_builder = style_builder.row_reverse(),
-                        "columnreverse" | "column_reverse" => {
-                            style_builder = style_builder.column_reverse()
-                        }
+                        "row_reverse" => style_builder = style_builder.row_reverse(),
+                        "column_reverse" => style_builder = style_builder.column_reverse(),
                         _ => {}
+                    }
+                }
+            }
+            "main_alignment" => {
+                if let Value::String(s) = value {
+                    if let Some(alignment) = parse_flex_alignment(&s) {
+                        style_builder = style_builder.main_alignment(alignment);
+                    }
+                }
+            }
+            "cross_alignment" => {
+                if let Value::String(s) = value {
+                    if let Some(alignment) = parse_flex_alignment(&s) {
+                        style_builder = style_builder.cross_alignment(alignment);
                     }
                 }
             }
@@ -180,7 +192,7 @@ fn create_flex_widget(
                     style_builder = style_builder.margin(Margin::new(top, right, bottom, left));
                 }
             }
-            "background_color" | "backgroundcolor" => {
+            "background_color" => {
                 if let Value::Map(color_map) = value {
                     let r = get_integer_from_map(&color_map, "r", 0) as u8;
                     let g = get_integer_from_map(&color_map, "g", 0) as u8;
@@ -189,19 +201,32 @@ fn create_flex_widget(
                     style_builder = style_builder.background(r, g, b, a);
                 }
             }
+            "border" => {
+                if let Some(border) = parse_border_value(&value) {
+                    style_builder = style_builder.border(border);
+                }
+            }
+            "corner_radius" => {
+                if let Some(corner_radii) = parse_corner_radii_value(&value) {
+                    style_builder = style_builder.corner_radii(corner_radii);
+                }
+            }
             _ => {
                 // Check if this property value is a widget (could be a child passed as a property)
                 // Only do this if the key doesn't match a known style property
                 if !matches!(
                     key.as_str(),
                     "direction"
+                        | "main_alignment"
+                        | "cross_alignment"
                         | "width"
                         | "height"
                         | "gap"
                         | "padding"
                         | "margin"
+                        | "border"
+                        | "corner_radius"
                         | "background_color"
-                        | "backgroundcolor"
                         | "style"
                 ) {
                     if let Value::Widget(child_widget) = value {
@@ -261,14 +286,14 @@ fn create_text_widget(
         let value = vm.evaluate_expression(expr)?;
 
         match key.as_str() {
-            "size" | "font_size" | "fontsize" => {
+            "size" => {
                 if let Value::Float(f) = value {
                     style_builder = style_builder.size(f as f32);
                 } else if let Value::Integer(i) = value {
                     style_builder = style_builder.size(i as f32);
                 }
             }
-            "color" | "text_color" | "textcolor" => {
+            "color" => {
                 if let Value::Map(color_map) = value {
                     let r = get_integer_from_map(&color_map, "r", 0) as u8;
                     let g = get_integer_from_map(&color_map, "g", 0) as u8;
@@ -277,11 +302,21 @@ fn create_text_widget(
                     style_builder = style_builder.color_rgba(r, g, b, a);
                 }
             }
+            "align" => {
+                if let Value::String(s) = value {
+                    if let Some(align) = parse_text_align(&s) {
+                        style_builder = style_builder.align(align);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    let text_widget = TextWidget::with_color(text, style_builder.build().color);
+    // Build full style; preserve all fields (including alignment), while keeping existing
+    // behavior of defaulting via TextStyle.
+    let mut text_widget = TextWidget::new(text);
+    text_widget.style = style_builder.build();
     Ok(Arc::new(Mutex::new(text_widget)))
 }
 
@@ -417,5 +452,160 @@ fn get_integer_from_map(map: &HashMap<String, Value>, key: &str, default: i32) -
         }
     } else {
         default
+    }
+}
+
+fn value_to_f32(value: &Value) -> Option<f32> {
+    match value {
+        Value::Float(f) => Some(*f as f32),
+        Value::Integer(i) => Some(*i as f32),
+        _ => None,
+    }
+}
+
+fn parse_color_value(value: &Value) -> Option<Color> {
+    match value {
+        Value::Map(map) => {
+            let r = get_integer_from_map(map, "r", 0).clamp(0, 255) as u8;
+            let g = get_integer_from_map(map, "g", 0).clamp(0, 255) as u8;
+            let b = get_integer_from_map(map, "b", 0).clamp(0, 255) as u8;
+            let a = get_integer_from_map(map, "a", 255).clamp(0, 255) as u8;
+            Some(Color::new(r, g, b, a))
+        }
+        _ => None,
+    }
+}
+
+fn parse_border_style_value(value: &Value) -> Option<BorderStyle> {
+    match value {
+        Value::String(s) => match s.to_lowercase().as_str() {
+            "solid" => Some(BorderStyle::Solid),
+            "dashed" => Some(BorderStyle::Dashed),
+            "dotted" => Some(BorderStyle::Dotted),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_border_side_value(value: &Value) -> Option<BorderSide> {
+    // Supported shapes:
+    // - number => width, default black, solid
+    // - { width, color, style }
+    match value {
+        Value::Float(_) | Value::Integer(_) => {
+            let width = value_to_f32(value)?;
+            Some(BorderSide::new(
+                width,
+                Color::new(0, 0, 0, 255),
+                BorderStyle::Solid,
+            ))
+        }
+        Value::Map(map) => {
+            let width = map.get("width").and_then(value_to_f32).unwrap_or(0.0);
+
+            let color = map
+                .get("color")
+                .and_then(parse_color_value)
+                .unwrap_or(Color::new(0, 0, 0, 255));
+
+            let style = map
+                .get("style")
+                .and_then(parse_border_style_value)
+                .unwrap_or(BorderStyle::Solid);
+
+            Some(BorderSide::new(width, color, style))
+        }
+        _ => None,
+    }
+}
+
+fn parse_border_value(value: &Value) -> Option<Border> {
+    // Supported shapes:
+    // - number => uniform border width on all sides (black, solid)
+    // - { width, color, style } => uniform side definition
+    // - { top, right, bottom, left } => per-side definitions (each can be number or {width,color,style})
+    match value {
+        Value::Float(_) | Value::Integer(_) => {
+            let side = parse_border_side_value(value)?;
+            Some(Border::new(side.clone(), side.clone(), side.clone(), side))
+        }
+        Value::Map(map) => {
+            // If it looks like a side definition (has width/color/style), treat as uniform
+            let looks_like_uniform =
+                map.contains_key("width") || map.contains_key("color") || map.contains_key("style");
+
+            if looks_like_uniform {
+                let side = parse_border_side_value(value)?;
+                return Some(Border::new(side.clone(), side.clone(), side.clone(), side));
+            }
+
+            let mut top = None;
+            let mut right = None;
+            let mut bottom = None;
+            let mut left = None;
+
+            if let Some(v) = map.get("top") {
+                top = parse_border_side_value(v);
+            }
+            if let Some(v) = map.get("right") {
+                right = parse_border_side_value(v);
+            }
+            if let Some(v) = map.get("bottom") {
+                bottom = parse_border_side_value(v);
+            }
+            if let Some(v) = map.get("left") {
+                left = parse_border_side_value(v);
+            }
+
+            let top_side = top.unwrap_or(BorderSide::identity());
+            let bottom_side = bottom.unwrap_or(BorderSide::identity());
+            let left_side = left.unwrap_or(BorderSide::identity());
+            let right_side = right.unwrap_or(BorderSide::identity());
+
+            Some(Border::new(top_side, right_side, bottom_side, left_side))
+        }
+        _ => None,
+    }
+}
+
+fn parse_corner_radii_value(value: &Value) -> Option<CornerRadii> {
+    // Supported shapes:
+    // - number => all corners
+    // - { all } => all corners
+    // - { top_left, top_right, bottom_left, bottom_right }
+    match value {
+        Value::Float(_) | Value::Integer(_) => Some(CornerRadii::all(value_to_f32(value)?)),
+        Value::Map(map) => {
+            if let Some(all) = map.get("all").and_then(value_to_f32) {
+                return Some(CornerRadii::all(all));
+            }
+            let tl = map.get("top_left").and_then(value_to_f32)?;
+            let tr = map.get("top_right").and_then(value_to_f32)?;
+            let bl = map.get("bottom_left").and_then(value_to_f32)?;
+            let br = map.get("bottom_right").and_then(value_to_f32)?;
+            Some(CornerRadii::new(tl, tr, bl, br))
+        }
+        _ => None,
+    }
+}
+
+fn parse_text_align(value: &str) -> Option<TextAlign> {
+    match value.to_lowercase().as_str() {
+        "left" => Some(TextAlign::Left),
+        "center" => Some(TextAlign::Center),
+        "right" => Some(TextAlign::Right),
+        _ => None,
+    }
+}
+
+fn parse_flex_alignment(value: &str) -> Option<Alignment> {
+    match value.to_lowercase().as_str() {
+        "start" => Some(Alignment::Start),
+        "center" => Some(Alignment::Center),
+        "end" => Some(Alignment::End),
+        "space_between" => Some(Alignment::SpaceBetween),
+        "space_around" => Some(Alignment::SpaceAround),
+        _ => None,
     }
 }

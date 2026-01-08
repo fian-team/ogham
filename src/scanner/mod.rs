@@ -50,6 +50,10 @@ impl Scanner {
         self.skip_whitespace();
 
         if self.is_at_end() {
+            // Important: `skip_whitespace()` may have consumed trailing newlines and advanced
+            // `last_newline`. If we create EOF with an older `start` (from the previous token),
+            // `start - last_newline` can underflow when computing the column.
+            self.start = self.current;
             return self.create_token(TokenType::EOF);
         }
 

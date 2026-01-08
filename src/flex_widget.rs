@@ -53,7 +53,10 @@ impl Widget for FlexWidget {
             self.block_interactions = new_flex_widget.block_interactions;
             self.layout = new_flex_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
-            std::mem::swap(&mut self.event_listeners, &mut new_flex_widget.event_listeners);
+            std::mem::swap(
+                &mut self.event_listeners,
+                &mut new_flex_widget.event_listeners,
+            );
 
             // Update existing children and remove children without corresponding new_child
             let new_child_count = new_flex_widget.children.len();

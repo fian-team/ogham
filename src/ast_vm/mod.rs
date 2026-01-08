@@ -154,7 +154,6 @@ impl VM {
             }
             Statement::Log(log_stmt) => {
                 let value = self.evaluate_expression(&log_stmt.get_value())?;
-                println!("{:?}", value);
                 Ok(Value::Void)
             }
             Statement::Event(_) => {

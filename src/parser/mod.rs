@@ -176,7 +176,10 @@ impl Parser {
     // If there's a semicolon, consume it and return as expression statement.
     // If we're at the end of block without semicolon, treat as implicit return.
     // Otherwise, return as expression statement.
-    fn expression_to_statement(&mut self, expression: Expression) -> Result<Statement, SyntaxError> {
+    fn expression_to_statement(
+        &mut self,
+        expression: Expression,
+    ) -> Result<Statement, SyntaxError> {
         if self.next_is(vec![scanner::TokenType::Semicolon]) {
             self.consume_if(scanner::TokenType::Semicolon)?;
             Ok(Statement::new_expression(expression))
@@ -201,14 +204,14 @@ impl Parser {
     // a function call, or a widget expression.
     fn parse_identifier_statement(&mut self) -> Result<Statement, SyntaxError> {
         let identifier = self.consume_if_identifier()?;
-        
+
         // Check what the next token is (after consuming the identifier)
         let next_token_type = if self.current < self.input.len() {
             Some(&self.input[self.current].token_type)
         } else {
             None
         };
-        
+
         match next_token_type {
             Some(scanner::TokenType::LeftParenthesis) => {
                 let call = self.parse_call(identifier)?;

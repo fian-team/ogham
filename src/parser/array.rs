@@ -20,4 +20,3 @@ impl Array {
         self.elements.push(element);
     }
 }
-

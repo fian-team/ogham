@@ -1,4 +1,7 @@
-use crate::app::{ClientUI, ClientUpdate};
+use crate::{
+    app::{ClientUI, ClientUpdate},
+    home_page::HOME_PAGE,
+};
 use glow::Context as GlowContext;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use skia_safe::Surface;
@@ -27,39 +30,18 @@ pub struct Client {
 
 impl Client {
     pub fn new(width: u32, height: u32) -> Self {
-        let src =
-            fs::read_to_string("./examples/hello_world.ogh").unwrap_or_else(|_| String::new());
+        let src = HOME_PAGE.to_string();
         let mut scanner = Scanner::new(src.clone());
         let tokens = scanner.scan();
-        println!("{:?}", tokens);
         let mut parser = Parser::new(tokens);
         let module = parser.parse().unwrap();
-        println!("{:?}", module);
         let mut vm = VM::new();
         let value = vm.execute_module(&module).unwrap();
         let widget = ast_bridge::widget_value_to_widget_ref(&mut vm, &value).unwrap();
-        // let mut container = FlexWidget::with_style(
-        //     FlexStyle::builder()
-        //         .width(Size::Grow(1.0))
-        //         .height(Size::Grow(1.0))
-        //         .background_color(Color::new(255, 255, 255, 255))
-        //         .build(),
-        // );
-        // let text_widget: WidgetRef =
-        //     Arc::new(Mutex::new(TextWidget::new("Hello, world!".to_string())));
-        // container.add_child(text_widget);
         let ui: UI = UI::new(widget);
-        let initial_path = "./examples/hello_world.ogh".to_string();
-        let (tx, rx) = mpsc::channel();
-        let mut watcher_opt = None;
-        if let Ok(mut watcher) = notify::recommended_watcher(tx) {
-            let path_buf = PathBuf::from(&initial_path);
-            if let Some(parent) = path_buf.parent() {
-                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
-            }
-            watcher_opt = Some(watcher);
-        }
-
+        let initial_path = "".to_string();
+        let (_tx, rx) = mpsc::channel();
+        let watcher_opt = None;
         Self {
             width,
             height,
@@ -122,7 +104,6 @@ impl Client {
                 .add_filter("All files", &["*"])
                 .pick_file()
             {
-                println!("Selected file: {:?}", path);
                 self.path = Some(path.to_string_lossy().to_string());
                 self.load();
             }

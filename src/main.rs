@@ -13,6 +13,7 @@ mod client;
 mod parser;
 mod scanner;
 
+mod home_page;
 mod input;
 
 struct UIStandalone(Application<Client>);
