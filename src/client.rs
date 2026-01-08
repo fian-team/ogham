@@ -1,24 +1,16 @@
 use crate::app::{ClientUI, ClientUpdate};
 use glow::Context as GlowContext;
-use input::Input;
+use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use skia_safe::Surface;
-use std::{
-    fs,
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::{fs, path::PathBuf, rc::Rc, sync::mpsc};
 use ui::{
-    ast_bridge,
-    ast_vm::VM,
-    event::Event,
-    flex_widget::FlexWidget,
-    parser::Parser,
-    scanner::Scanner,
-    style::{Color, FlexStyle, Size},
-    text_widget::TextWidget,
+    ast_bridge, ast_vm::VM, event::Event, input::Input, parser::Parser, scanner::Scanner,
     WidgetRef, UI,
 };
-use winit::window::Window;
+use winit::{
+    keyboard::{Key, NamedKey},
+    window::Window,
+};
 
 pub struct Client {
     width: u32,
@@ -28,12 +20,15 @@ pub struct Client {
     ui: UI,
     gl: Option<Rc<GlowContext>>,
     src: String,
+    path: Option<String>,
+    file_watcher: Option<RecommendedWatcher>,
+    file_watcher_receiver: mpsc::Receiver<Result<NotifyEvent, notify::Error>>,
 }
 
 impl Client {
     pub fn new(width: u32, height: u32) -> Self {
         let src =
-            fs::read_to_string("./ui/examples/hello_world.ogh").unwrap_or_else(|_| String::new());
+            fs::read_to_string("./examples/hello_world.ogh").unwrap_or_else(|_| String::new());
         let mut scanner = Scanner::new(src.clone());
         let tokens = scanner.scan();
         println!("{:?}", tokens);
@@ -54,6 +49,17 @@ impl Client {
         //     Arc::new(Mutex::new(TextWidget::new("Hello, world!".to_string())));
         // container.add_child(text_widget);
         let ui: UI = UI::new(widget);
+        let initial_path = "./examples/hello_world.ogh".to_string();
+        let (tx, rx) = mpsc::channel();
+        let mut watcher_opt = None;
+        if let Ok(mut watcher) = notify::recommended_watcher(tx) {
+            let path_buf = PathBuf::from(&initial_path);
+            if let Some(parent) = path_buf.parent() {
+                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+            }
+            watcher_opt = Some(watcher);
+        }
+
         Self {
             width,
             height,
@@ -62,6 +68,9 @@ impl Client {
             ui,
             gl: None,
             src,
+            path: Some(initial_path),
+            file_watcher: watcher_opt,
+            file_watcher_receiver: rx,
         }
     }
 
@@ -72,7 +81,17 @@ impl Client {
     }
 
     fn recompile(&mut self) {
-        // TODO: Implement recompile
+        let mut scanner = Scanner::new(self.src.clone());
+        let tokens = scanner.scan();
+        let mut parser = Parser::new(tokens);
+        if let Ok(module) = parser.parse() {
+            let mut vm = VM::new();
+            if let Ok(value) = vm.execute_module(&module) {
+                if let Ok(widget) = ast_bridge::widget_value_to_widget_ref(&mut vm, &value) {
+                    self.ui = UI::new(widget);
+                }
+            }
+        }
     }
 
     pub fn set_gl_context(&mut self, gl: Rc<GlowContext>) {
@@ -92,7 +111,73 @@ impl Client {
         self.height = height;
     }
 
-    fn update_impl(&mut self, input: &mut Input, frame_length: f32) {}
+    fn update_impl(&mut self, input: &mut Input, frame_length: f32) {
+        // Check for Ctrl+O to open file dialog
+        // Note: For now, we check for 'o' key press
+        // TODO: Add proper modifier tracking to Input struct to detect Control key
+        // The file dialog will work when 'o' is pressed (user should hold Ctrl)
+        if input.pressed(Key::Character("o".into())) {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Ogham files", &["ogh"])
+                .add_filter("All files", &["*"])
+                .pick_file()
+            {
+                println!("Selected file: {:?}", path);
+                self.path = Some(path.to_string_lossy().to_string());
+                self.load();
+            }
+        }
+
+        // Check for file change events
+        while let Ok(Ok(event)) = self.file_watcher_receiver.try_recv() {
+            if let EventKind::Modify(_) | EventKind::Create(_) = event.kind {
+                let path_to_check = self.path.as_ref().map(|p| PathBuf::from(p));
+                if let Some(ref path_buf) = path_to_check {
+                    // Check if the changed file matches our watched file
+                    if event.paths.iter().any(|p| p == path_buf) {
+                        self.load();
+                    }
+                }
+            }
+        }
+    }
+
+    fn load(&mut self) {
+        let path_clone = self.path.clone();
+        if let Some(ref path) = path_clone {
+            if let Ok(src) = fs::read_to_string(path) {
+                self.src = src;
+                self.recompile();
+                self.dirty = true;
+            }
+        }
+
+        // Set up file watching for the new file (after loading)
+        if let Some(ref path) = path_clone {
+            self.setup_file_watcher(path);
+        }
+    }
+
+    fn setup_file_watcher(&mut self, path: &str) {
+        // Unwatch the previous file if any
+        if let Some(ref mut watcher) = self.file_watcher {
+            let path_buf = PathBuf::from(path);
+            if let Some(parent) = path_buf.parent() {
+                let _ = watcher.unwatch(parent);
+            }
+        }
+
+        // Create a new watcher for the new file
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut watcher) = notify::recommended_watcher(tx) {
+            let path_buf = PathBuf::from(path);
+            if let Some(parent) = path_buf.parent() {
+                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+            }
+            self.file_watcher = Some(watcher);
+            self.file_watcher_receiver = rx;
+        }
+    }
 
     pub fn render(&mut self, surface: &mut Surface) {}
 

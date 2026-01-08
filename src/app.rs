@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use ui::{event::Event, point::Point, skia::SkiaEnv, Surface as UISurface, UI};
+use ui::{event::Event, input::Input, point::Point, skia::SkiaEnv, Surface as UISurface, UI};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -25,7 +25,6 @@ use winit::{
     window::Window,
 };
 
-use input::Input;
 use nalgebra_glm as glm;
 use std::num::NonZeroU32;
 

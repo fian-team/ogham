@@ -11,7 +11,8 @@ winit = "0.30.2"
 glutin = { version = "0.32.0", features = ["egl", "glx", "wgl"] }
 glutin-winit = "0.5.0"
 glow = "0.16.0"
-input = { path = "../input" }
 nalgebra-glm = "0.19.0"
 gl-rs = { version = "0.14.0", package = "gl" }
 raw-window-handle = "0.6.0"
+rfd = "0.14"
+notify = "6.1"

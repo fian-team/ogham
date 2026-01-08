@@ -217,7 +217,7 @@ fn create_flex_widget(
 
     flex_widget.style = style_builder.build();
 
-    println!("Flex widget style: {:?}", flex_widget.style);
+    // println!("Flex widget style: {:?}", flex_widget.style);
 
     // Add children
     for child in children {

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::event::*;
 use super::point::*;
@@ -57,6 +58,11 @@ impl Widget for FlexWidget {
             // Update existing children and remove children without corresponding new_child
             let new_child_count = new_flex_widget.children.len();
             for i in 0..self.children.len().min(new_child_count) {
+                // Check if the child references are the same Arc to avoid deadlock
+                if Arc::ptr_eq(&self.children[i], &new_flex_widget.children[i]) {
+                    // Same widget reference, skip update to avoid deadlock
+                    continue;
+                }
                 let mut child = self.children[i].lock().unwrap();
                 if !child.update(new_flex_widget.children[i].clone()) {
                     drop(child); // Drop the lock before replacing the child

@@ -21,6 +21,8 @@ pub mod ast_vm;
 pub mod parser;
 pub mod scanner;
 
+pub mod input;
+
 /// Prepackaged components for common functionality. Final resting place TBD.
 pub mod components;
 pub mod event;
@@ -151,8 +153,13 @@ impl UI {
     /// Subsequently triggers a layout to update element bounds.
     pub fn update(&mut self, new_root: WidgetRef, width: f32, height: f32) {
         {
-            let mut root = self.root.lock().unwrap();
-            root.update(new_root);
+            // Check if the root references are the same Arc to avoid deadlock
+            if Arc::ptr_eq(&self.root, &new_root) {
+                // Same widget reference, skip update to avoid deadlock
+            } else {
+                let mut root = self.root.lock().unwrap();
+                root.update(new_root);
+            }
         }
         if let Some(focused_widget) = self.focused.as_ref() {
             let focused_ref_count = Arc::strong_count(focused_widget);

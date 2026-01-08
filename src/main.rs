@@ -13,6 +13,8 @@ mod client;
 mod parser;
 mod scanner;
 
+mod input;
+
 struct UIStandalone(Application<Client>);
 
 fn main() {
