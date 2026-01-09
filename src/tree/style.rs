@@ -1,4 +1,4 @@
-use crate::WidgetRef;
+use crate::tree::WidgetRef;
 
 #[derive(Debug, Default, Clone)]
 pub struct FlexStyle {

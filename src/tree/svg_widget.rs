@@ -6,9 +6,9 @@ use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::Widget;
-use crate::event::EventContext;
-use crate::style::{Color, Direction};
-use crate::WidgetRef;
+use crate::tree::event::EventContext;
+use crate::tree::style::{Color, Direction};
+use crate::tree::WidgetRef;
 
 /// Widget for rendering SVG files.
 /// Loads the SVG at creation time. If the SVG file doesn't exist or fails to load,

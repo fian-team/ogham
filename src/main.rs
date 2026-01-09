@@ -1,20 +1,11 @@
 use std::ops::{Deref, DerefMut};
 
-use crate::app::{create_application, Application};
+use ui::app::{create_application, Application};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::EventLoop;
 
-use crate::client::Client;
-mod app;
-mod ast_vm;
-mod browser;
-mod client;
-mod parser;
-mod scanner;
-
-mod home_page;
-mod input;
+use ui::client::Client;
 
 struct UIStandalone(Application<Client>);
 

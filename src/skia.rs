@@ -8,12 +8,14 @@ use skia_safe::{
 };
 use std::sync::Arc;
 
-use crate::{
+use crate::tree::{
+    flex_widget::FlexWidget,
     image::ImageCache,
     style::{FontWeight, TextAlign},
     svg_widget::SvgWidget,
+    text_input_widget::TextInputWidget,
     text_widget::TextWidget,
-    FlexWidget, Surface, TextInputWidget, WidgetRef, UI,
+    Surface, WidgetRef, UI,
 };
 
 pub struct SkiaEnv {
@@ -488,7 +490,7 @@ impl Surface for SkiaEnv {
             let text_color = widget
                 .style
                 .text_color
-                .unwrap_or(crate::style::Color::new(0, 0, 0, 255));
+                .unwrap_or(crate::tree::style::Color::new(0, 0, 0, 255));
             self.paint.set_color(Color::from_argb(
                 text_color.a,
                 text_color.r,
@@ -732,7 +734,7 @@ impl SkiaEnv {
             let text_color = widget
                 .style
                 .text_color
-                .unwrap_or(crate::style::Color::new(0, 0, 0, 255));
+                .unwrap_or(crate::tree::style::Color::new(0, 0, 0, 255));
             self.paint.set_color(Color::from_argb(
                 text_color.a,
                 text_color.r,
@@ -795,7 +797,7 @@ impl SkiaEnv {
     /// - Blue outline: border area  
     /// - Green outline: padding area
     /// - Purple outline: content area
-    pub fn draw_debug_outlines(&mut self, widget: &FlexWidget, layout: &crate::rect::Rect) {
+    pub fn draw_debug_outlines(&mut self, widget: &FlexWidget, layout: &crate::tree::rect::Rect) {
         // Calculate all the boundary coordinates
         let margin_left = self.scale_coord(widget.style.margin.get_left());
         let margin_top = self.scale_coord(widget.style.margin.get_top());

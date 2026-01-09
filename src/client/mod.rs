@@ -1,19 +1,15 @@
-use crate::{
-    app::{ClientUI, ClientUpdate},
-    home_page::HOME_PAGE,
-};
+use crate::app::{ClientUI, ClientUpdate};
+use crate::ast_bridge;
+use crate::client::home_page::HOME_PAGE;
+use crate::tree::{event::Event, WidgetRef, UI};
+use crate::{ast_vm::VM, input::Input, parser::Parser, scanner::Scanner};
 use glow::Context as GlowContext;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use skia_safe::Surface;
+use skia_safe::Surface as SkiaSurface;
 use std::{fs, path::PathBuf, rc::Rc, sync::mpsc};
-use ui::{
-    ast_bridge, ast_vm::VM, event::Event, input::Input, parser::Parser, scanner::Scanner,
-    WidgetRef, UI,
-};
-use winit::{
-    keyboard::{Key, NamedKey},
-    window::Window,
-};
+use winit::{keyboard::Key, window::Window};
+
+mod home_page;
 
 pub struct Client {
     width: u32,
@@ -171,7 +167,7 @@ impl Client {
         }
     }
 
-    pub fn render(&mut self, surface: &mut Surface) {}
+    pub fn render(&mut self, surface: &mut SkiaSurface) {}
 
     pub fn render_ui(&mut self) -> WidgetRef {
         self.ui.root.clone()
@@ -227,7 +223,7 @@ impl ClientUpdate for Client {
 }
 
 impl ClientUI for Client {
-    fn handle_ui_event(&mut self, event: &ui::event::Event) -> bool {
+    fn handle_ui_event(&mut self, event: &Event) -> bool {
         self.handle_ui_event(event)
     }
 
@@ -239,11 +235,11 @@ impl ClientUI for Client {
         self.update_ui_layout(width, height)
     }
 
-    fn get_ui_mut(&mut self) -> &mut ui::UI {
+    fn get_ui_mut(&mut self) -> &mut UI {
         self.get_ui_mut()
     }
 
-    fn render(&mut self, surface: &mut skia_safe::Surface) {
+    fn render(&mut self, surface: &mut SkiaSurface) {
         self.render(surface)
     }
 }

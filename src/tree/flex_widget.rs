@@ -6,9 +6,9 @@ use super::point::*;
 use super::rect::*;
 use super::style::*;
 use super::Widget;
-use crate::event::EventContext;
-use crate::style::Direction;
-use crate::WidgetRef;
+use crate::tree::event::EventContext;
+use crate::tree::style::Direction;
+use crate::tree::WidgetRef;
 
 /// Flexbox-like layout widget. Supports rendering child elements in either a row or a column with styling applied to the surrounding box.
 pub struct FlexWidget {

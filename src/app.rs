@@ -1,21 +1,23 @@
-// This is a duplicate of the `app` package. We need to do this to avoid
-// a dependency cycle betwen `ui` and `app`.
-
+use crate::skia::SkiaEnv;
+use crate::tree::event::KeyModifiers;
+use crate::tree::point::Point;
+use crate::tree::{Surface, UI};
+use crate::{input::Input, tree::event::Event};
 use glow::Context as GlowContext;
 use glutin::{
     context::PossiblyCurrentContext,
     surface::{GlSurface, Surface as GlutinSurface, WindowSurface},
 };
+use skia_safe::Surface as SkiaSurface;
 use skia_safe::{
     gpu::{self, backend_render_targets, gl::FramebufferInfo, SurfaceOrigin},
-    ColorType, Surface,
+    ColorType,
 };
 use std::{
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
-use ui::{event::Event, input::Input, point::Point, skia::SkiaEnv, Surface as UISurface, UI};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -34,7 +36,7 @@ pub fn create_surface(
     gr_context: &mut skia_safe::gpu::DirectContext,
     num_samples: usize,
     stencil_size: usize,
-) -> Surface {
+) -> SkiaSurface {
     let backend_render_target =
         backend_render_targets::make_gl(size, num_samples, stencil_size, fb_info);
 
@@ -132,7 +134,7 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 // Only process key events on key up (Released)
                 if *state == ElementState::Released {
                     // Create a simple key modifiers struct
-                    let key_modifiers = ui::event::KeyModifiers::new();
+                    let key_modifiers = KeyModifiers::new();
 
                     // Handle both keydown and keypress events
                     let mut ui_handled = false;
@@ -184,7 +186,7 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                     };
 
                     // Always send keydown event
-                    let keydown_event = ui::event::Event::keydown(
+                    let keydown_event = Event::keydown(
                         key_code,
                         None, // Character will be handled in keypress
                         key_modifiers.clone(),
@@ -194,17 +196,13 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                     // Send keypress event for printable characters
                     if let Key::Character(c) = logical_key {
                         if let Some(character) = c.chars().next() {
-                            let keypress_event = ui::event::Event::keypress(
-                                key_code,
-                                Some(character),
-                                key_modifiers,
-                            );
+                            let keypress_event =
+                                Event::keypress(key_code, Some(character), key_modifiers);
                             ui_handled |= self.client.handle_ui_event(&keypress_event);
                         }
                     } else if key_code == 32 {
                         // Handle space key (which comes as NamedKey::Space, not Character)
-                        let keypress_event =
-                            ui::event::Event::keypress(key_code, Some(' '), key_modifiers);
+                        let keypress_event = Event::keypress(key_code, Some(' '), key_modifiers);
                         ui_handled |= self.client.handle_ui_event(&keypress_event);
                     }
 
@@ -370,7 +368,7 @@ pub trait ClientUI {
     fn is_ui_dirty(&self) -> bool;
     fn update_ui_layout(&mut self, width: f32, height: f32);
     fn get_ui_mut(&mut self) -> &mut UI;
-    fn render(&mut self, surface: &mut skia_safe::Surface);
+    fn render(&mut self, surface: &mut SkiaSurface);
 }
 
 pub fn create_application<T: ClientUpdate + ClientUI>(

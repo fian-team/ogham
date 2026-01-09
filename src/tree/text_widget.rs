@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::event::EventContext;
-use crate::WidgetRef;
+use crate::tree::event::EventContext;
+use crate::tree::WidgetRef;
 
 use super::event::*;
 use super::point::*;

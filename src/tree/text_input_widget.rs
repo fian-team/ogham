@@ -5,9 +5,9 @@ use super::point::*;
 use super::rect::*;
 use super::style::*;
 use super::Widget;
-use crate::event::EventContext;
-use crate::style::Direction;
-use crate::WidgetRef;
+use crate::tree::event::EventContext;
+use crate::tree::style::Direction;
+use crate::tree::WidgetRef;
 
 pub struct TextInputWidget {
     pub value: String,

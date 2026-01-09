@@ -1,11 +1,9 @@
 use ui::{
     ast_bridge,
     ast_vm::VM,
-    flex_widget::FlexWidget,
     parser::Parser,
     scanner::Scanner,
-    text_widget::TextWidget,
-    Widget,
+    tree::{flex_widget::FlexWidget, text_widget::TextWidget, Widget},
 };
 
 #[test]
@@ -88,13 +86,15 @@ let main = fn () {
         .expect("expected Flex root");
 
     // Basic sanity check: style got applied from the nested `style` map.
-    assert!(matches!(flex.style.width, ui::style::Size::Grow(_)));
-    assert!(matches!(flex.style.height, ui::style::Size::Grow(_)));
-    let bg = flex.style.background_color.as_ref().expect("expected background");
+    assert!(matches!(flex.style.width, ui::tree::style::Size::Grow(_)));
+    assert!(matches!(flex.style.height, ui::tree::style::Size::Grow(_)));
+    let bg = flex
+        .style
+        .background_color
+        .as_ref()
+        .expect("expected background");
     assert_eq!(bg.r, 200);
     assert_eq!(bg.g, 200);
     assert_eq!(bg.b, 255);
     assert_eq!(bg.a, 255);
 }
-
-

@@ -1,15 +1,17 @@
 use super::point::Point;
 use std::sync::{Arc, Mutex};
 
+use crate::tree::Widget;
+
 /// EventContext is used to communicate UI-level state changes from widgets
 /// back to the root UI during event handling. This allows widgets to request
 /// actions that require coordination at the UI level (like focus management,
 /// cursor style changes, etc.) without needing direct access to the UI struct.
 pub struct EventContext {
     /// Widget that should receive focus (if any)
-    focus_request: Option<Arc<Mutex<dyn crate::Widget>>>,
+    focus_request: Option<Arc<Mutex<dyn Widget>>>,
     /// Currently focused widget (if any)
-    pub focused_widget: Option<Arc<Mutex<dyn crate::Widget>>>,
+    pub focused_widget: Option<Arc<Mutex<dyn Widget>>>,
 }
 
 impl EventContext {
@@ -21,7 +23,7 @@ impl EventContext {
     }
 
     /// Create a new EventContext with a focused widget reference
-    pub fn with_focused(focused_widget: Option<Arc<Mutex<dyn crate::Widget>>>) -> Self {
+    pub fn with_focused(focused_widget: Option<Arc<Mutex<dyn Widget>>>) -> Self {
         Self {
             focus_request: None,
             focused_widget,
@@ -29,12 +31,12 @@ impl EventContext {
     }
 
     /// Request that a widget receives focus
-    pub fn request_focus(&mut self, widget: Arc<Mutex<dyn crate::Widget>>) {
+    pub fn request_focus(&mut self, widget: Arc<Mutex<dyn Widget>>) {
         self.focus_request = Some(widget);
     }
 
     /// Take the focus request, consuming it
-    pub fn take_focus_request(&mut self) -> Option<Arc<Mutex<dyn crate::Widget>>> {
+    pub fn take_focus_request(&mut self) -> Option<Arc<Mutex<dyn Widget>>> {
         self.focus_request.take()
     }
 
@@ -46,7 +48,7 @@ impl EventContext {
     /// Check if the given widget reference is the currently focused widget
     /// This compares the inner pointers of the Arc, not the Arc instances themselves,
     /// since cloned Arcs are different instances but point to the same data.
-    pub fn is_focused(&self, widget_ref: &Arc<Mutex<dyn crate::Widget>>) -> bool {
+    pub fn is_focused(&self, widget_ref: &Arc<Mutex<dyn Widget>>) -> bool {
         if let Some(ref focused) = self.focused_widget {
             let focused_ptr = Arc::as_ptr(focused);
             let widget_ptr = Arc::as_ptr(widget_ref);
