@@ -14,13 +14,13 @@ Alternatively, Ogham can be used to create standalone applications using the Ogh
 Here's a simple counter app that tracks state and updates on button clicks:
 
 ```ogh
-let counter = () widget {
+let counter = fn (): widget {
   state count = 0;
   
   Flex {
     children: [
       Flex {
-        on_click: () {
+        on_click: fn () {
           count++;
         },
         children: [
@@ -36,7 +36,7 @@ let counter = () widget {
   }
 };
 
-let main = () {
+let main = fn () {
   counter()
 };
 ```
