@@ -120,7 +120,6 @@ let panel = fn (children: widget[]) {
   }
 };
 
-
 let main = fn () {
   Flex {
     style: page_style,

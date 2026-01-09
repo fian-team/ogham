@@ -19,11 +19,15 @@ let counter = () widget {
   
   Flex {
     children: [
-      Button {
-        text: "Increment",
+      Flex {
         on_click: () {
           count++;
         },
+        children: [
+          Text {
+            text: "Increment counter",
+          }
+        ]
       },
       Text {
         text: count -> string,
