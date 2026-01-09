@@ -136,7 +136,7 @@ impl Widget for FlexWidget {
         let width = match self.style.width {
             Size::Fixed(w) => w,
             Size::Shrink => {
-                let occupied_width: f32 = self.get_children_fixed_width();
+                let _occupied_width: f32 = self.get_children_fixed_width();
                 let occupied_height = self.get_children_fixed_height();
                 let get_dimensions = |child: &WidgetRef| {
                     // Skip absolute positioned children in dimension calculations
@@ -152,7 +152,8 @@ impl Widget for FlexWidget {
                         // Parent is shrinking along row axis, so no available space for Grow children
                         0.0
                     } else {
-                        parent_available_width - occupied_width
+                        // In column direction, width is the cross axis. Don't subtract sibling widths.
+                        parent_available_width
                     };
                     let child_available_height = if !self.style.direction.is_row() {
                         // Parent is shrinking along column axis, so no available space for Grow children
@@ -209,26 +210,12 @@ impl Widget for FlexWidget {
                     + gap_size
             }
             Size::Grow(basis) => {
+                // A child's own `direction` should not affect how its size is allocated by its parent.
+                // Width grows along the parent's main axis only when the parent is a row.
                 if parent_direction.is_row() {
-                    if self.style.direction.is_row() {
-                        self.style.direction.get_grow_size(
-                            basis,
-                            sibling_basis,
-                            parent_available_width,
-                        )
-                    } else {
-                        parent_width
-                    }
+                    parent_direction.get_grow_size(basis, sibling_basis, parent_available_width)
                 } else {
-                    if self.style.direction.is_row() {
-                        parent_width
-                    } else {
-                        self.style.direction.get_grow_size(
-                            basis,
-                            sibling_basis,
-                            parent_available_width,
-                        )
-                    }
+                    parent_width
                 }
             }
             Size::Percent(_) => 0.0, // Will be calculated during layout based on parent
@@ -426,13 +413,13 @@ impl Widget for FlexWidget {
             0.0
         };
 
+        // Available space should only subtract fixed-size children along the *main* axis.
         let available_width = width
             - (self.style.margin.get_left() + self.style.margin.get_right())
             - (self.style.padding.get_left() + self.style.padding.get_right())
             - (self.style.border.get_left() + self.style.border.get_right())
-            - self.get_children_fixed_width()
             - if self.style.direction.is_row() {
-                gap_space
+                self.get_children_fixed_width() + gap_space
             } else {
                 0.0
             };
@@ -440,11 +427,10 @@ impl Widget for FlexWidget {
             - (self.style.margin.get_top() + self.style.margin.get_bottom())
             - (self.style.padding.get_top() + self.style.padding.get_bottom())
             - (self.style.border.get_top() + self.style.border.get_bottom())
-            - self.get_children_fixed_height()
             - if self.style.direction.is_row() {
                 0.0
             } else {
-                gap_space
+                self.get_children_fixed_height() + gap_space
             };
 
         // Calculate the content area by subtracting padding and margin

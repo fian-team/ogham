@@ -56,21 +56,32 @@ impl Client {
         }
     }
 
-    pub fn set_src(&mut self, src: String) {
-        self.src = src;
-        self.recompile();
-        self.dirty = true;
-    }
-
-    fn recompile(&mut self) {
+    fn recompile(&mut self, log_syntax_errors: bool) {
         let mut scanner = Scanner::new(self.src.clone());
         let tokens = scanner.scan();
         let mut parser = Parser::new(tokens);
-        if let Ok(module) = parser.parse() {
-            let mut vm = VM::new();
-            if let Ok(value) = vm.execute_module(&module) {
-                if let Ok(widget) = ast_bridge::widget_value_to_widget_ref(&mut vm, &value) {
-                    self.ui = UI::new(widget);
+        match parser.parse() {
+            Ok(module) => {
+                let mut vm = VM::new();
+                if let Ok(value) = vm.execute_module(&module) {
+                    if let Ok(widget) = ast_bridge::widget_value_to_widget_ref(&mut vm, &value) {
+                        self.ui = UI::new(widget);
+                    }
+                }
+            }
+            Err(err) => {
+                if log_syntax_errors {
+                    if let Some(path) = self.path.as_ref() {
+                        eprintln!(
+                            "[ogham] Syntax error in {}:{}:{}: {}",
+                            path, err.line, err.column, err.message
+                        );
+                    } else {
+                        eprintln!(
+                            "[ogham] Syntax error at {}:{}: {}",
+                            err.line, err.column, err.message
+                        );
+                    }
                 }
             }
         }
@@ -128,7 +139,7 @@ impl Client {
         if let Some(ref path) = path_clone {
             if let Ok(src) = fs::read_to_string(path) {
                 self.src = src;
-                self.recompile();
+                self.recompile(true);
                 self.dirty = true;
             }
         }

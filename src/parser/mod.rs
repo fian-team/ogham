@@ -14,7 +14,7 @@ mod widget;
 
 pub use {
     array::*, block::*, call::*, expression::*, function::*, identifier::*, literal::*, map::*,
-    node::*, operator::*, statement::*, syntax_error::*, widget::*,
+    operator::*, statement::*, syntax_error::*, widget::*,
 };
 
 use super::scanner;
@@ -194,10 +194,28 @@ impl Parser {
     fn parse_optional_type(&mut self) -> Result<Identifier, SyntaxError> {
         if self.next_is(vec![scanner::TokenType::Colon]) {
             self.consume_if(scanner::TokenType::Colon)?;
-            self.consume_if_identifier()
+            self.parse_type_identifier()
         } else {
             Ok(Identifier::new("infer"))
         }
+    }
+
+    /// Parses a type identifier, including postfix array syntax like `int[]` or `widget[][]`.
+    ///
+    /// Internally, types are represented as an `Identifier` string, so `int[][]` is stored
+    /// as the identifier `"int[][]"`.
+    fn parse_type_identifier(&mut self) -> Result<Identifier, SyntaxError> {
+        let base = self.consume_if_identifier()?;
+        let mut type_str = base.get();
+
+        while self.next_is(vec![scanner::TokenType::LeftSquareBracket]) {
+            self.consume_if(scanner::TokenType::LeftSquareBracket)?;
+            // For types, we only support empty array brackets: `[]`
+            self.consume_if(scanner::TokenType::RightSquareBracket)?;
+            type_str.push_str("[]");
+        }
+
+        Ok(Identifier::new(&type_str))
     }
 
     // When an identifier is used as a statement, it can be an assignment,
@@ -474,7 +492,7 @@ impl Parser {
             let identifier = self.consume_if_identifier()?;
             self.consume_if(scanner::TokenType::Colon)?;
             // TODO: Include types with arguments
-            let _arg_type = self.consume_if_identifier()?;
+            let _arg_type = self.parse_type_identifier()?;
             function.arguments.push(identifier);
             if !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
                 self.consume_if(scanner::TokenType::Comma)?;

@@ -1,6 +1,14 @@
 use super::parser::*;
 use std::collections::HashMap;
 
+/// A widget value produced by the VM. Unlike the parser's `Widget`, all properties
+/// are evaluated to runtime `Value`s at the time the widget expression is evaluated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeWidget {
+    pub identifier: Identifier,
+    pub properties: HashMap<String, Value>,
+}
+
 /// Runtime value types that can be stored and manipulated during execution
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -11,7 +19,7 @@ pub enum Value {
     Function(Function),
     Map(HashMap<String, Value>),
     Array(Vec<Value>),
-    Widget(Widget),
+    Widget(RuntimeWidget),
     Void,
 }
 
@@ -153,7 +161,7 @@ impl VM {
                 }
             }
             Statement::Log(log_stmt) => {
-                let value = self.evaluate_expression(&log_stmt.get_value())?;
+                let _value = self.evaluate_expression(&log_stmt.get_value())?;
                 Ok(Value::Void)
             }
             Statement::Event(_) => {
@@ -179,8 +187,17 @@ impl VM {
             }
             Expression::Grouping(grouping) => self.evaluate_expression(&grouping.value),
             Expression::Widget(widget) => {
-                // Convert widget to a value (for now, just store it)
-                Ok(Value::Widget(widget.clone()))
+                // Evaluate widget properties now (while variables are still in scope) so
+                // widget values do not depend on later environment lookups.
+                let mut evaluated_props: HashMap<String, Value> = HashMap::new();
+                for (key, expr) in &widget.properties {
+                    let value = self.evaluate_expression(expr)?;
+                    evaluated_props.insert(key.clone(), value);
+                }
+                Ok(Value::Widget(RuntimeWidget {
+                    identifier: widget.identifier.clone(),
+                    properties: evaluated_props,
+                }))
             }
         }
     }

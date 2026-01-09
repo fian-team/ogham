@@ -43,9 +43,17 @@ impl SvgWidget {
     ///
     /// # Example
     ///
-    /// ```rust
-    /// let svg_widget = SvgWidget::new("assets/icons/select.svg", 24.0, 24.0, None);
-    /// let red_svg = SvgWidget::new("assets/icons/select.svg", 24.0, 24.0, Some(Color::new(255, 0, 0, 255)));
+    /// ```rust,no_run
+    /// use ui::style::Color;
+    /// use ui::svg_widget::SvgWidget;
+    ///
+    /// let svg_widget = SvgWidget::new("assets/icons/select.svg".to_string(), 24.0, 24.0, None);
+    /// let red_svg = SvgWidget::new(
+    ///     "assets/icons/select.svg".to_string(),
+    ///     24.0,
+    ///     24.0,
+    ///     Some(Color::new(255, 0, 0, 255)),
+    /// );
     /// ```
     pub fn new(path: String, width: f32, height: f32, color: Option<Color>) -> Self {
         // Try to load the SVG file with the specified color
