@@ -1,9 +1,9 @@
 use ui::{
-    ast_bridge,
-    ast_vm::VM,
     parser::Parser,
     scanner::Scanner,
+    tree::ast_bridge,
     tree::{flex_widget::FlexWidget, text_widget::TextWidget, Widget},
+    vm::VM,
 };
 
 #[test]

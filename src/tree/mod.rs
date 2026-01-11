@@ -33,6 +33,9 @@ pub mod text_input_widget;
 /// Text rendering widget.
 pub mod text_widget;
 
+/// Bridge between the AST and the UI tree.
+pub mod ast_bridge;
+
 use std::sync::{Arc, Mutex};
 
 use crate::tree::{

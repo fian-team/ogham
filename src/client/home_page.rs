@@ -1,3 +1,4 @@
+/// Ogham browser landing page.
 pub const HOME_PAGE: &str = r#"
 
 let main = fn () {

@@ -1,8 +1,9 @@
 use crate::app::{ClientUI, ClientUpdate};
-use crate::ast_bridge;
 use crate::client::home_page::HOME_PAGE;
+pub use crate::client::input::Input;
+use crate::tree::ast_bridge;
 use crate::tree::{event::Event, WidgetRef, UI};
-use crate::{ast_vm::VM, input::Input, parser::Parser, scanner::Scanner};
+use crate::{parser::Parser, scanner::Scanner, vm::VM};
 use glow::Context as GlowContext;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use skia_safe::Surface as SkiaSurface;
@@ -10,6 +11,7 @@ use std::{fs, path::PathBuf, rc::Rc, sync::mpsc};
 use winit::{keyboard::Key, window::Window};
 
 mod home_page;
+mod input;
 
 pub struct Client {
     width: u32,
@@ -100,7 +102,7 @@ impl Client {
         self.height = height;
     }
 
-    fn update_impl(&mut self, input: &mut Input, frame_length: f32) {
+    fn update_impl(&mut self, input: &mut Input, _frame_length: f32) {
         // Check for Ctrl+O to open file dialog
         // Note: For now, we check for 'o' key press
         // TODO: Add proper modifier tracking to Input struct to detect Control key
@@ -167,7 +169,7 @@ impl Client {
         }
     }
 
-    pub fn render(&mut self, surface: &mut SkiaSurface) {}
+    pub fn render(&mut self, _surface: &mut SkiaSurface) {}
 
     pub fn render_ui(&mut self) -> WidgetRef {
         self.ui.root.clone()

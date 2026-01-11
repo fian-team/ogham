@@ -48,14 +48,6 @@ impl Default for MouseButtonState {
     }
 }
 
-/*
-
-- cursor events happen outside of update loop, meaning they're desynced from framerate
-- whenever a cursor move event occurs, set new un-updated position
-- in the update method, compare last updated position to new un-updated position, set delta, set new updated position
-
-*/
-
 pub struct Input {
     key_map: HashMap<Key, KeyState>,
     cursor_delta: glm::Vec2,
@@ -460,7 +452,6 @@ impl Input {
     }
 
     pub fn set_cursor_delta(&mut self, delta: glm::Vec2) {
-        println!("Setting cursor delta: {:?}", delta);
         self.cursor_delta = delta;
     }
 

@@ -1,8 +1,8 @@
-use super::ast_vm::{RuntimeWidget, VMError, Value, VM};
 use crate::tree::{
     flex_widget::FlexWidget, style::*, svg_widget::SvgWidget, text_input_widget::TextInputWidget,
     text_widget::TextWidget, WidgetRef,
 };
+use crate::vm::{RuntimeWidget, VMError, Value, VM};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

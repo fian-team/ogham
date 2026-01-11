@@ -1,8 +1,9 @@
+use crate::client::Input;
 use crate::skia::SkiaEnv;
+use crate::tree::event::Event;
 use crate::tree::event::KeyModifiers;
 use crate::tree::point::Point;
 use crate::tree::{Surface, UI};
-use crate::{input::Input, tree::event::Event};
 use glow::Context as GlowContext;
 use glutin::{
     context::PossiblyCurrentContext,
