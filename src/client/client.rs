@@ -4,11 +4,11 @@ use crate::input::Input;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use skia_safe::Surface as SkiaSurface;
 use std::{fs, path::PathBuf, sync::mpsc};
-use ui::parser::Parser;
-use ui::scanner::Scanner;
-use ui::tree::event::Event;
-use ui::tree::{ast_bridge, WidgetRef, UI};
-use ui::vm::VM;
+use ogham::parser::Parser;
+use ogham::scanner::Scanner;
+use ogham::tree::event::Event;
+use ogham::tree::{ast_bridge, WidgetRef, UI};
+use ogham::vm::VM;
 use winit::keyboard::NamedKey;
 use winit::{keyboard::Key, window::Window};
 
@@ -34,7 +34,7 @@ impl Client {
         let mut vm = VM::new();
         let value = vm.execute_module(&module).unwrap();
         let widget = ast_bridge::widget_value_to_widget_ref(&mut vm, &value).unwrap();
-        let ui: UI = UI::new(widget);
+        let ui: UI = ogham::new(widget);
         let initial_path = "".to_string();
         let (_tx, rx) = mpsc::channel();
         let watcher_opt = None;
@@ -60,7 +60,7 @@ impl Client {
                 let mut vm = VM::new();
                 if let Ok(value) = vm.execute_module(&module) {
                     if let Ok(widget) = ast_bridge::widget_value_to_widget_ref(&mut vm, &value) {
-                        self.ui = UI::new(widget);
+                        self.ui = ogham::new(widget);
                     }
                 }
             }

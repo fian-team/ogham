@@ -8,7 +8,7 @@ use skia_safe::{
     ColorType,
 };
 use std::time::{Duration, Instant};
-use ui::{
+use ogham::{
     skia::SkiaEnv,
     tree::{
         event::{Event, KeyModifiers},

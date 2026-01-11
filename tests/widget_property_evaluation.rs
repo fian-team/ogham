@@ -1,4 +1,4 @@
-use ui::{
+use ogham::{
     parser::Parser,
     scanner::Scanner,
     tree::ast_bridge,
@@ -86,8 +86,14 @@ let main = fn () {
         .expect("expected Flex root");
 
     // Basic sanity check: style got applied from the nested `style` map.
-    assert!(matches!(flex.style.width, ui::tree::style::Size::Grow(_)));
-    assert!(matches!(flex.style.height, ui::tree::style::Size::Grow(_)));
+    assert!(matches!(
+        flex.style.width,
+        ogham::tree::style::Size::Grow(_)
+    ));
+    assert!(matches!(
+        flex.style.height,
+        ogham::tree::style::Size::Grow(_)
+    ));
     let bg = flex
         .style
         .background_color

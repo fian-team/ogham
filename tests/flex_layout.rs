@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use ui::tree::{
+use ogham::tree::{
     flex_widget::FlexWidget,
     style::{Direction, FlexStyle},
     Widget, WidgetRef,

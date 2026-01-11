@@ -1,4 +1,4 @@
-use ui::{parser::Parser, scanner::Scanner};
+use ogham::{parser::Parser, scanner::Scanner};
 
 #[test]
 fn array_types_are_accepted_in_type_annotations() {
@@ -16,12 +16,12 @@ let main = fn (xs: int[], widgets: widget[][]): widget[] {
     // Find `main` and assert its return type was parsed with `[]`.
     let mut found = false;
     for stmt in &module.body.statement_list {
-        if let ui::parser::Statement::Declare(declare_stmt) = stmt {
+        if let ogham::parser::Statement::Declare(declare_stmt) = stmt {
             if declare_stmt.get_identifier_value() == "main" {
                 found = true;
                 let expr = declare_stmt.get_value();
                 match expr {
-                    ui::parser::Expression::Literal(ui::parser::Literal::Function(f)) => {
+                    ogham::parser::Expression::Literal(ogham::parser::Literal::Function(f)) => {
                         assert_eq!(f.return_type.get(), "widget[]");
                     }
                     other => panic!("expected main to be a function literal, got {:?}", other),
@@ -32,5 +32,3 @@ let main = fn (xs: int[], widgets: widget[][]): widget[] {
 
     assert!(found, "expected to find `main` declaration");
 }
-
-

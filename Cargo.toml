@@ -7,6 +7,10 @@ edition = "2021"
 name = "client"
 path = "src/client/main.rs"
 
+[lib]
+name = "ogham"
+path = "src/lib.rs"
+
 [dependencies]
 downcast-rs = "2.0.1"
 skia-safe = { version = "0.91.0", features = ["gl", "textlayout", "svg"] }
