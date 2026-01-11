@@ -5,7 +5,7 @@ edition = "2021"
 
 [[bin]]
 name = "client"
-path = "src/main.rs"
+path = "src/client/main.rs"
 
 [dependencies]
 downcast-rs = "2.0.1"

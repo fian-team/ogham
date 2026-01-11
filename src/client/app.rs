@@ -1,10 +1,3 @@
-use crate::client::Input;
-use crate::skia::SkiaEnv;
-use crate::tree::event::Event;
-use crate::tree::event::KeyModifiers;
-use crate::tree::point::Point;
-use crate::tree::{Surface, UI};
-use glow::Context as GlowContext;
 use glutin::{
     context::PossiblyCurrentContext,
     surface::{GlSurface, Surface as GlutinSurface, WindowSurface},
@@ -14,10 +7,14 @@ use skia_safe::{
     gpu::{self, backend_render_targets, gl::FramebufferInfo, SurfaceOrigin},
     ColorType,
 };
-use std::{
-    rc::Rc,
-    sync::Arc,
-    time::{Duration, Instant},
+use std::time::{Duration, Instant};
+use ui::{
+    skia::SkiaEnv,
+    tree::{
+        event::{Event, KeyModifiers},
+        point::Point,
+        Surface, UI,
+    },
 };
 use winit::{
     application::ApplicationHandler,
@@ -30,6 +27,8 @@ use winit::{
 
 use nalgebra_glm as glm;
 use std::num::NonZeroU32;
+
+use crate::input::Input;
 
 pub fn create_surface(
     size: (i32, i32),
@@ -63,7 +62,6 @@ pub struct Application<Client> {
     pub gl_surface: GlutinSurface<WindowSurface>,
     pub gr_context: skia_safe::gpu::DirectContext,
     pub gl_context: PossiblyCurrentContext,
-    pub gl: Rc<GlowContext>,
     pub window: Window,
     pub input: Input,
     pub client: Client,
@@ -518,12 +516,6 @@ pub fn create_application<T: ClientUpdate + ClientUI>(
 
     let ui_skia = SkiaEnv::new_with_dpi_scale(surface, window.scale_factor() as f32);
 
-    // Create glow context for OpenGL rendering
-    let gl_display = Arc::new(gl_config.display());
-    let gl = Rc::new(unsafe {
-        glow::Context::from_loader_function_cstr(|s| gl_display.get_proc_address(s))
-    });
-
     Application::<T> {
         ui_skia,
         fb_info,
@@ -535,7 +527,6 @@ pub fn create_application<T: ClientUpdate + ClientUI>(
         gl_surface,
         gr_context,
         gl_context,
-        gl,
         window,
         input: Input::new(),
         client,

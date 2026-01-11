@@ -1,17 +1,16 @@
 use crate::app::{ClientUI, ClientUpdate};
-use crate::client::home_page::HOME_PAGE;
-pub use crate::client::input::Input;
-use crate::tree::ast_bridge;
-use crate::tree::{event::Event, WidgetRef, UI};
-use crate::{parser::Parser, scanner::Scanner, vm::VM};
-use glow::Context as GlowContext;
+use crate::home_page::HOME_PAGE;
+use crate::input::Input;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use skia_safe::Surface as SkiaSurface;
-use std::{fs, path::PathBuf, rc::Rc, sync::mpsc};
+use std::{fs, path::PathBuf, sync::mpsc};
+use ui::parser::Parser;
+use ui::scanner::Scanner;
+use ui::tree::event::Event;
+use ui::tree::{ast_bridge, WidgetRef, UI};
+use ui::vm::VM;
+use winit::keyboard::NamedKey;
 use winit::{keyboard::Key, window::Window};
-
-mod home_page;
-mod input;
 
 pub struct Client {
     width: u32,
@@ -19,7 +18,6 @@ pub struct Client {
     dpi_scale: f32,
     dirty: bool,
     ui: UI,
-    gl: Option<Rc<GlowContext>>,
     src: String,
     path: Option<String>,
     file_watcher: Option<RecommendedWatcher>,
@@ -46,7 +44,6 @@ impl Client {
             dpi_scale: 1.0,
             dirty: false,
             ui,
-            gl: None,
             src,
             path: Some(initial_path),
             file_watcher: watcher_opt,
@@ -85,14 +82,6 @@ impl Client {
         }
     }
 
-    pub fn set_gl_context(&mut self, gl: Rc<GlowContext>) {
-        self.gl = Some(gl.clone());
-        // Initialize sandbox with glow context
-        // if self.sandbox.is_none() {
-        //     self.sandbox = Some(Sandbox::new(&gl));
-        // }
-    }
-
     pub fn set_dpi_scale(&mut self, dpi_scale: f32) {
         self.dpi_scale = dpi_scale;
     }
@@ -104,10 +93,7 @@ impl Client {
 
     fn update_impl(&mut self, input: &mut Input, _frame_length: f32) {
         // Check for Ctrl+O to open file dialog
-        // Note: For now, we check for 'o' key press
-        // TODO: Add proper modifier tracking to Input struct to detect Control key
-        // The file dialog will work when 'o' is pressed (user should hold Ctrl)
-        if input.pressed(Key::Character("o".into())) {
+        if input.pressed(Key::Character("o".into())) && input.held(Key::Named(NamedKey::Control)) {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("Ogham files", &["ogh"])
                 .add_filter("All files", &["*"])
@@ -169,13 +155,9 @@ impl Client {
         }
     }
 
-    pub fn render(&mut self, _surface: &mut SkiaSurface) {}
-
     pub fn render_ui(&mut self) -> WidgetRef {
         self.ui.root.clone()
     }
-
-    pub fn on_close_requested(&mut self) {}
 
     pub fn is_dirty(&self) -> bool {
         self.dirty
@@ -241,7 +223,5 @@ impl ClientUI for Client {
         self.get_ui_mut()
     }
 
-    fn render(&mut self, surface: &mut SkiaSurface) {
-        self.render(surface)
-    }
+    fn render(&mut self, _surface: &mut SkiaSurface) {}
 }

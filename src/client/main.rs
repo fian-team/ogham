@@ -1,11 +1,16 @@
 use std::ops::{Deref, DerefMut};
 
-use ui::app::{create_application, Application};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::EventLoop;
 
-use ui::client::Client;
+use crate::app::{create_application, Application};
+use crate::client::Client;
+
+mod app;
+mod client;
+mod home_page;
+mod input;
 
 struct UIStandalone(Application<Client>);
 
@@ -13,12 +18,6 @@ fn main() {
     let el = EventLoop::new().expect("Failed to create event loop");
     let client = Client::new(1024, 768);
     let mut application = UIStandalone(create_application(client, &el));
-
-    // Pass glow context to client
-    application
-        .0
-        .client
-        .set_gl_context(application.0.gl.clone());
 
     // Exit fullscreen (if any) and maximize the window to fullscreen with borders (window decorations)
     application.0.window.set_fullscreen(None);
@@ -61,9 +60,7 @@ impl ApplicationHandler for UIStandalone {
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        // Handle app-specific close event
         if let WindowEvent::CloseRequested = &event {
-            self.client.on_close_requested();
             event_loop.exit();
             return;
         }
