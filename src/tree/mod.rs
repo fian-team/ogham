@@ -16,13 +16,13 @@
 //! Despite shipping with Skia rendering supported by default, alternative solutions simply need to
 //! implement Surface for their own backend in order to work with the framework.
 
-pub mod event;
 /// Flexbox-like layout widget.
 pub mod flex_widget;
 pub mod image;
 /// Convenience macros for working with widgets.
 #[macro_use]
 pub mod macros;
+pub mod event;
 pub mod point;
 pub mod rect;
 pub mod style;

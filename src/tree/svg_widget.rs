@@ -44,8 +44,8 @@ impl SvgWidget {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ogham::style::Color;
-    /// use ogham::svg_widget::SvgWidget;
+    /// use ogham::tree::style::Color;
+    /// use ogham::tree::svg_widget::SvgWidget;
     ///
     /// let svg_widget = SvgWidget::new("assets/icons/select.svg".to_string(), 24.0, 24.0, None);
     /// let red_svg = SvgWidget::new(

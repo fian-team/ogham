@@ -22,9 +22,11 @@ pub mod vm;
 /// # Example
 ///
 /// ```no_run
-/// use ogham;
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// let ui = ogham::compile_file("ui.ogh")?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn compile_file<P: AsRef<std::path::Path>>(
     path: P,
@@ -47,8 +49,8 @@ pub fn compile_file<P: AsRef<std::path::Path>>(
 ///
 /// # Example
 ///
-/// ```
-/// use ogham;
+/// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// let source = r#"
 ///     fn main() {
@@ -59,6 +61,8 @@ pub fn compile_file<P: AsRef<std::path::Path>>(
 /// "#;
 ///
 /// let ui = ogham::compile_source(source)?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn compile_source(source: &str) -> Result<tree::UI, runtime::RuntimeError> {
     runtime::from_source(source, None)
@@ -90,7 +94,7 @@ pub fn new(widget: tree::WidgetRef) -> tree::UI {
 /// # Example
 ///
 /// ```no_run
-/// use ogham;
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// let (mut ui, mut watcher) = ogham::watch_file("ui.ogh")?;
 ///
@@ -98,6 +102,8 @@ pub fn new(widget: tree::WidgetRef) -> tree::UI {
 /// if watcher.check_for_changes() {
 ///     ui = watcher.recompile(None)?;
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub fn watch_file<P: AsRef<std::path::Path>>(
     path: P,

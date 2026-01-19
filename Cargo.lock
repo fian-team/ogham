@@ -1831,6 +1831,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogham"
+version = "0.1.0"
+dependencies = [
+ "downcast-rs 2.0.2",
+ "gl",
+ "glow",
+ "glutin",
+ "glutin-winit",
+ "lodepng",
+ "nalgebra-glm",
+ "notify",
+ "raw-window-handle",
+ "rfd",
+ "skia-safe",
+ "winit",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2645,24 +2663,6 @@ dependencies = [
  "memoffset",
  "tempfile",
  "winapi",
-]
-
-[[package]]
-name = "ui"
-version = "0.1.0"
-dependencies = [
- "downcast-rs 2.0.2",
- "gl",
- "glow",
- "glutin",
- "glutin-winit",
- "lodepng",
- "nalgebra-glm",
- "notify",
- "raw-window-handle",
- "rfd",
- "skia-safe",
- "winit",
 ]
 
 [[package]]
