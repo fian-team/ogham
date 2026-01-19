@@ -7,6 +7,18 @@ edition = "2021"
 name = "client"
 path = "src/client/main.rs"
 
+[[example]]
+name = "library_usage"
+path = "examples/library_usage.rs"
+
+[[example]]
+name = "simple_integration"
+path = "examples/simple_integration.rs"
+
+[[example]]
+name = "complete_app"
+path = "examples/complete_app.rs"
+
 [lib]
 name = "ogham"
 path = "src/lib.rs"

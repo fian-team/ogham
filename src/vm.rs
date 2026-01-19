@@ -74,6 +74,7 @@ impl Environment {
 /// Virtual machine for executing parsed AST
 pub struct VM {
     environment: Environment,
+    host_state: HashMap<String, Value>,
 }
 
 #[derive(Debug)]
@@ -88,7 +89,47 @@ impl VM {
     pub fn new() -> Self {
         Self {
             environment: Environment::new(),
+            host_state: HashMap::new(),
         }
+    }
+
+    /// Inject host state that can be accessed by the Ogham script.
+    ///
+    /// Host state is separate from the execution environment and persists
+    /// across function calls. This allows the host application to provide
+    /// data that the script can read but not modify.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the variable to inject
+    /// * `value` - The value to inject
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ogham::vm::{VM, Value};
+    ///
+    /// let mut vm = VM::new();
+    /// vm.inject_host_state("user_name".to_string(), Value::String("Alice".to_string()));
+    /// ```
+    pub fn inject_host_state(&mut self, name: String, value: Value) {
+        self.host_state.insert(name, value);
+    }
+
+    /// Get host state value by name.
+    ///
+    /// This is used internally when the script accesses host state.
+    /// Host state is checked after the environment when resolving identifiers.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the variable to retrieve
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Value)` if the host state exists, `None` otherwise.
+    pub fn get_host_state(&self, name: &str) -> Option<Value> {
+        self.host_state.get(name).cloned()
     }
 
     /// Execute a module (Function) and look for a main function to call
@@ -211,9 +252,14 @@ impl VM {
             Literal::String(s) => Ok(Value::String(s.clone())),
             Literal::Identifier(ident) => {
                 let name = ident.get();
-                self.environment
-                    .get(&name)
-                    .ok_or_else(|| VMError::UndefinedVariable(name))
+                // First check environment, then host state
+                if let Some(value) = self.environment.get(&name) {
+                    Ok(value)
+                } else if let Some(value) = self.get_host_state(&name) {
+                    Ok(value)
+                } else {
+                    Err(VMError::UndefinedVariable(name))
+                }
             }
             Literal::Call(call) => self.execute_call(call),
             Literal::Function(func) => Ok(Value::Function(func.clone())),
