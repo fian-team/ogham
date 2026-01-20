@@ -29,9 +29,9 @@ pub fn widget_value_to_widget_ref(
         let identifier = runtime_widget.identifier.get().to_lowercase();
 
         match identifier.as_str() {
-            "flex" | "box" => create_flex_widget(vm, runtime_widget),
+            "flex" => create_flex_widget(vm, runtime_widget),
             "text" => create_text_widget(vm, runtime_widget),
-            "textinput" | "text_input" => create_text_input_widget(vm, runtime_widget),
+            "text_input" => create_text_input_widget(vm, runtime_widget),
             "svg" => create_svg_widget(vm, runtime_widget),
             _ => Err(BridgeError::InvalidWidgetType(format!(
                 "Unknown widget type: {}",
