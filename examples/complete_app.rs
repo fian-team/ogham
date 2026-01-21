@@ -47,34 +47,24 @@ impl App {
         // Step 2: Create runtime configuration
         let config = RuntimeConfig::new()
             .with_host_state(host_state)
-            .with_event_handler(|event_name, data| {
-                // Handle events from the Ogham UI
-                // This callback is called when the UI emits events
-                match event_name {
-                    "button_clicked" => {
-                        println!("Button clicked!");
-                        if let Some(Value::String(button_id)) = data {
-                            println!("  Button ID: {}", button_id);
-                        }
-                        true // Event was handled
-                    }
-                    "text_submitted" => {
-                        if let Some(Value::String(text)) = data {
-                            println!("Text submitted: {}", text);
-                        }
-                        true
-                    }
-                    "menu_item_selected" => {
-                        if let Some(Value::Integer(item_id)) = data {
-                            println!("Menu item {} selected", item_id);
-                        }
-                        true
-                    }
-                    _ => {
-                        println!("Unhandled event: {} ({:?})", event_name, data);
-                        false // Event not handled
-                    }
+            .with_event_handler("button_clicked", |args| {
+                println!("Button clicked!");
+                if let Some(Value::String(button_id)) = args.get(0) {
+                    println!("  Button ID: {}", button_id);
                 }
+                true
+            })
+            .with_event_handler("text_submitted", |args| {
+                if let Some(Value::String(text)) = args.get(0) {
+                    println!("Text submitted: {}", text);
+                }
+                true
+            })
+            .with_event_handler("menu_item_selected", |args| {
+                if let Some(Value::Integer(item_id)) = args.get(0) {
+                    println!("Menu item {} selected", item_id);
+                }
+                true
             });
 
         // Step 3: Watch and compile the UI file

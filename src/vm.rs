@@ -1,5 +1,6 @@
 use super::parser::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A widget value produced by the VM. Unlike the parser's `Widget`, all properties
 /// are evaluated to runtime `Value`s at the time the widget expression is evaluated.
@@ -75,6 +76,7 @@ impl Environment {
 pub struct VM {
     environment: Environment,
     host_state: HashMap<String, Value>,
+    event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> bool + Send + Sync>>,
 }
 
 #[derive(Debug)]
@@ -90,6 +92,7 @@ impl VM {
         Self {
             environment: Environment::new(),
             host_state: HashMap::new(),
+            event_handlers: HashMap::new(),
         }
     }
 
@@ -130,6 +133,38 @@ impl VM {
     /// Returns `Some(Value)` if the host state exists, `None` otherwise.
     pub fn get_host_state(&self, name: &str) -> Option<Value> {
         self.host_state.get(name).cloned()
+    }
+
+    /// Register a handler for an event name that can be emitted from Ogham via `event("name", ...)`.
+    ///
+    /// If the same event name is registered multiple times, the most recent handler wins.
+    pub fn register_event_handler<S, F>(&mut self, name: S, handler: F)
+    where
+        S: Into<String>,
+        F: Fn(&[Value]) -> bool + Send + Sync + 'static,
+    {
+        self.event_handlers.insert(name.into(), Arc::new(handler));
+    }
+
+    /// Register a handler for an event name that can be emitted from Ogham via `event("name", ...)`.
+    ///
+    /// If the same event name is registered multiple times, the most recent handler wins.
+    pub fn register_event_handler_arc(
+        &mut self,
+        name: String,
+        handler: Arc<dyn Fn(&[Value]) -> bool + Send + Sync>,
+    ) {
+        self.event_handlers.insert(name, handler);
+    }
+
+    /// Emit an event to the host application if a handler is registered for it.
+    ///
+    /// Returns `true` if an event handler was invoked and returned `true`.
+    pub fn emit_event(&self, name: &str, args: &[Value]) -> bool {
+        self.event_handlers
+            .get(name)
+            .map(|handler| handler(args))
+            .unwrap_or(false)
     }
 
     /// Execute a module (Function) and look for a main function to call
@@ -463,6 +498,26 @@ impl VM {
 
         // Look up the function
         let func_name = call.identifier.get();
+        if func_name == "event" {
+            if args.is_empty() {
+                return Err(VMError::InvalidOperation(
+                    "event() requires at least an event name".to_string(),
+                ));
+            }
+            let event_name = match &args[0] {
+                Value::String(s) => s.clone(),
+                other => {
+                    return Err(VMError::TypeMismatch(format!(
+                        "event() requires a string event name as the first argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+
+            // Only dispatch to the host if the event name was registered.
+            let _handled = self.emit_event(&event_name, &args[1..]);
+            return Ok(Value::Void);
+        }
         if let Some(Value::Function(func)) = self.environment.get(&func_name) {
             self.call_function(&func, &args)
         } else {
@@ -473,8 +528,11 @@ impl VM {
         }
     }
 
-    /// Call a function with arguments
-    fn call_function(&mut self, func: &Function, args: &[Value]) -> Result<Value, VMError> {
+    /// Call a function with arguments.
+    ///
+    /// This is used internally by the VM and also by the UI bridge when wiring
+    /// Ogham functions to widget event listeners (e.g. `mouse_down` handlers).
+    pub fn call_function(&mut self, func: &Function, args: &[Value]) -> Result<Value, VMError> {
         // Check argument count
         if args.len() != func.arguments.len() {
             return Err(VMError::InvalidOperation(format!(

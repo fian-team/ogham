@@ -5,6 +5,7 @@ use ogham::{
     tree::{flex_widget::FlexWidget, text_widget::TextWidget, Widget},
     vm::VM,
 };
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn widget_properties_are_evaluated_when_widget_expression_is_evaluated() {
@@ -28,9 +29,13 @@ let main = fn () {
     let mut parser = Parser::new(tokens);
     let module = parser.parse().expect("parse failed");
 
-    let mut vm = VM::new();
-    let value = vm.execute_module(&module).expect("vm execution failed");
-    let root = ast_bridge::widget_value_to_widget_ref(&mut vm, &value).expect("bridge failed");
+    let vm = Arc::new(Mutex::new(VM::new()));
+    let value = vm
+        .lock()
+        .unwrap()
+        .execute_module(&module)
+        .expect("vm execution failed");
+    let root = ast_bridge::widget_value_to_widget_ref(&vm, &value).expect("bridge failed");
 
     let root_guard = root.lock().unwrap();
     let flex = root_guard
@@ -76,9 +81,13 @@ let main = fn () {
     let mut parser = Parser::new(tokens);
     let module = parser.parse().expect("parse failed");
 
-    let mut vm = VM::new();
-    let value = vm.execute_module(&module).expect("vm execution failed");
-    let root = ast_bridge::widget_value_to_widget_ref(&mut vm, &value).expect("bridge failed");
+    let vm = Arc::new(Mutex::new(VM::new()));
+    let value = vm
+        .lock()
+        .unwrap()
+        .execute_module(&module)
+        .expect("vm execution failed");
+    let root = ast_bridge::widget_value_to_widget_ref(&vm, &value).expect("bridge failed");
 
     let root_guard = root.lock().unwrap();
     let flex = root_guard

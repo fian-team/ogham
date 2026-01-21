@@ -16,8 +16,8 @@ fn main() -> Result<(), RuntimeError> {
     // Step 2: Create runtime configuration
     let config = RuntimeConfig::new()
         .with_host_state(host_state)
-        .with_event_handler(|event_name, data| {
-            println!("UI Event: {} -> {:?}", event_name, data);
+        .with_event_handler("ui_event", |args| {
+            println!("UI Event: ui_event -> {:?}", args);
             true // Event handled
         });
     

@@ -179,28 +179,17 @@ fn complete_integration_example() -> Result<(), RuntimeError> {
     
     let config = RuntimeConfig::new()
         .with_host_state(host_state)
-        .with_event_handler(|event_name, data| {
-            // Handle events from the Ogham UI
-            println!("Received event: {} with data: {:?}", event_name, data);
-            
-            // You can handle different event types
-            match event_name {
-                "button_clicked" => {
-                    println!("Button was clicked!");
-                    // Perform some action in your application
-                    true // Event was handled
-                }
-                "text_changed" => {
-                    if let Some(Value::String(text)) = data {
-                        println!("Text changed to: {}", text);
-                    }
-                    true
-                }
-                _ => {
-                    println!("Unhandled event: {}", event_name);
-                    false // Event was not handled
-                }
+        .with_event_handler("button_clicked", |args| {
+            println!("Received event: button_clicked with args: {:?}", args);
+            println!("Button was clicked!");
+            true
+        })
+        .with_event_handler("text_changed", |args| {
+            println!("Received event: text_changed with args: {:?}", args);
+            if let Some(Value::String(text)) = args.get(0) {
+                println!("Text changed to: {}", text);
             }
+            true
         });
     
     // Watch and compile the UI

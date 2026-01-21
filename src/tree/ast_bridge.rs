@@ -22,7 +22,7 @@ impl From<VMError> for BridgeError {
 
 /// Converts a Value::Widget from the VM to a WidgetRef for use in the UI
 pub fn widget_value_to_widget_ref(
-    vm: &mut VM,
+    vm: &Arc<Mutex<VM>>,
     widget_value: &Value,
 ) -> Result<WidgetRef, BridgeError> {
     if let Value::Widget(runtime_widget) = widget_value {
@@ -54,7 +54,7 @@ fn optional_style_map<'a>(parser_widget: &'a RuntimeWidget) -> Option<&'a HashMa
 }
 
 fn create_flex_widget(
-    vm: &mut VM,
+    vm: &Arc<Mutex<VM>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let mut flex_widget = FlexWidget::new();
@@ -63,6 +63,32 @@ fn create_flex_widget(
     let mut style_builder = FlexStyle::builder();
 
     let mut children = Vec::new();
+
+    // Event handlers (e.g. `mouse_down: fn () { ... }`)
+    if let Some(value) = parser_widget.properties.get("mouse_down") {
+        match value {
+            Value::Function(func) => {
+                let vm_for_handler = vm.clone();
+                let func = func.clone();
+                flex_widget
+                    .event_listeners
+                    .entry("mouse_down".to_string())
+                    .or_default()
+                    .push(Box::new(move |_event| {
+                        let result = vm_for_handler.lock().unwrap().call_function(&func, &[]);
+                        if let Err(err) = result {
+                            eprintln!("[ogham] mouse_down handler error: {:?}", err);
+                        }
+                    }));
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "mouse_down".to_string(),
+                    format!("Expected Function, got {:?}", other),
+                ));
+            }
+        }
+    }
 
     if let Some(value) = parser_widget.properties.get("children") {
         // Children can be:
@@ -239,7 +265,7 @@ fn create_flex_widget(
 }
 
 fn create_text_widget(
-    _vm: &mut VM,
+    _vm: &Arc<Mutex<VM>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let style_props = optional_style_map(parser_widget);
@@ -339,7 +365,7 @@ fn create_text_widget(
 }
 
 fn create_text_input_widget(
-    _vm: &mut VM,
+    _vm: &Arc<Mutex<VM>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let mut text_input = TextInputWidget::new();
@@ -391,7 +417,7 @@ fn create_text_input_widget(
 }
 
 fn create_svg_widget(
-    _vm: &mut VM,
+    _vm: &Arc<Mutex<VM>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let style_props = optional_style_map(parser_widget);

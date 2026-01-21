@@ -4,11 +4,8 @@ use crate::input::Input;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use skia_safe::Surface as SkiaSurface;
 use std::{fs, path::PathBuf, sync::mpsc};
-use ogham::parser::Parser;
-use ogham::scanner::Scanner;
 use ogham::tree::event::Event;
-use ogham::tree::{ast_bridge, WidgetRef, UI};
-use ogham::vm::VM;
+use ogham::tree::{WidgetRef, UI};
 use winit::keyboard::NamedKey;
 use winit::{keyboard::Key, window::Window};
 
@@ -27,14 +24,7 @@ pub struct Client {
 impl Client {
     pub fn new(width: u32, height: u32) -> Self {
         let src = HOME_PAGE.to_string();
-        let mut scanner = Scanner::new(src.clone());
-        let tokens = scanner.scan();
-        let mut parser = Parser::new(tokens);
-        let module = parser.parse().unwrap();
-        let mut vm = VM::new();
-        let value = vm.execute_module(&module).unwrap();
-        let widget = ast_bridge::widget_value_to_widget_ref(&mut vm, &value).unwrap();
-        let ui: UI = ogham::new(widget);
+        let ui = ogham::runtime::from_source(&src, None).unwrap();
         let initial_path = "".to_string();
         let (_tx, rx) = mpsc::channel();
         let watcher_opt = None;
@@ -52,30 +42,16 @@ impl Client {
     }
 
     fn recompile(&mut self, log_syntax_errors: bool) {
-        let mut scanner = Scanner::new(self.src.clone());
-        let tokens = scanner.scan();
-        let mut parser = Parser::new(tokens);
-        match parser.parse() {
-            Ok(module) => {
-                let mut vm = VM::new();
-                if let Ok(value) = vm.execute_module(&module) {
-                    if let Ok(widget) = ast_bridge::widget_value_to_widget_ref(&mut vm, &value) {
-                        self.ui = ogham::new(widget);
-                    }
-                }
+        match ogham::runtime::from_source(&self.src, None) {
+            Ok(ui) => {
+                self.ui = ui;
             }
             Err(err) => {
                 if log_syntax_errors {
                     if let Some(path) = self.path.as_ref() {
-                        eprintln!(
-                            "[ogham] Syntax error in {}:{}:{}: {}",
-                            path, err.line, err.column, err.message
-                        );
+                        eprintln!("[ogham] Error compiling {}: {}", path, err);
                     } else {
-                        eprintln!(
-                            "[ogham] Syntax error at {}:{}: {}",
-                            err.line, err.column, err.message
-                        );
+                        eprintln!("[ogham] Error compiling source: {}", err);
                     }
                 }
             }

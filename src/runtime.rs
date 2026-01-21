@@ -8,6 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -85,13 +87,10 @@ pub struct RuntimeConfig {
     /// to provide data that the Ogham script can access but not modify.
     pub host_state: Option<std::collections::HashMap<String, Value>>,
 
-    /// Optional callback for handling events emitted by the UI.
-    /// This allows the host application to receive and process events
-    /// from the Ogham UI.
+    /// Per-event handlers for `event("name", arg1, arg2, ...)` emitted from Ogham.
     ///
-    /// The callback receives the event name and any associated data.
-    /// Returning `true` indicates the event was handled.
-    pub event_handler: Option<Arc<dyn Fn(&str, Option<&Value>) -> bool + Send + Sync>>,
+    /// Only events present in this map will be dispatched.
+    pub event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> bool + Send + Sync>>,
 }
 
 impl RuntimeConfig {
@@ -107,12 +106,15 @@ impl RuntimeConfig {
         self
     }
 
-    /// Set an event handler callback.
-    pub fn with_event_handler<F>(mut self, handler: F) -> Self
+    /// Register an event handler for `event("name", ...)`.
+    ///
+    /// If the same event name is registered multiple times, the most recent handler wins.
+    pub fn with_event_handler<S, F>(mut self, name: S, handler: F) -> Self
     where
-        F: Fn(&str, Option<&Value>) -> bool + Send + Sync + 'static,
+        S: Into<String>,
+        F: Fn(&[Value]) -> bool + Send + Sync + 'static,
     {
-        self.event_handler = Some(Arc::new(handler));
+        self.event_handlers.insert(name.into(), Arc::new(handler));
         self
     }
 }
@@ -197,22 +199,31 @@ pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<UI, Ru
     let mut parser = Parser::new(tokens);
     let module = parser.parse()?;
 
-    // Step 3: Execute in VM
-    let mut vm = VM::new();
+    // Step 3: Execute in VM (kept alive for UI event handlers)
+    let vm = Arc::new(Mutex::new(VM::new()));
 
     // Inject host state if provided
     if let Some(config) = config.as_ref() {
         if let Some(ref state) = config.host_state.as_ref() {
             for (name, value) in state.iter() {
-                vm.inject_host_state(name.clone(), value.clone());
+                vm.lock()
+                    .unwrap()
+                    .inject_host_state(name.clone(), value.clone());
             }
+        }
+
+        // Register per-event handlers (for `event("name", ...)`).
+        for (name, handler) in config.event_handlers.iter() {
+            vm.lock()
+                .unwrap()
+                .register_event_handler_arc(name.clone(), handler.clone());
         }
     }
 
-    let value = vm.execute_module(&module)?;
+    let value = vm.lock().unwrap().execute_module(&module)?;
 
     // Step 4: Convert VM value to UI widget
-    let widget = ast_bridge::widget_value_to_widget_ref(&mut vm, &value)?;
+    let widget = ast_bridge::widget_value_to_widget_ref(&vm, &value)?;
 
     // Step 5: Create UI
     Ok(UI::new(widget))
