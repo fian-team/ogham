@@ -128,7 +128,7 @@ impl Parser {
                 message: format!(
                     "Expected token {:#?}, received {:#?}",
                     token.clone(),
-                    self.peek()
+                    current_token.token_type
                 )
                 .to_owned(),
                 column: current_token.column,
@@ -402,18 +402,18 @@ impl Parser {
     }
 
     pub fn primary(&mut self) -> Result<Expression, SyntaxError> {
-        match &self.input[self.current].token_type {
+        let expr = match &self.input[self.current].token_type {
             scanner::TokenType::Integer(value) => {
                 self.current += 1;
-                Ok(Expression::Literal(Literal::Integer(*value)))
+                Expression::Literal(Literal::Integer(*value))
             }
             scanner::TokenType::Float(value) => {
                 self.current += 1;
-                Ok(Expression::Literal(Literal::Float(*value)))
+                Expression::Literal(Literal::Float(*value))
             }
             scanner::TokenType::Boolean(value) => {
                 self.current += 1;
-                Ok(Expression::Literal(Literal::Boolean(*value)))
+                Expression::Literal(Literal::Boolean(*value))
             }
             scanner::TokenType::Identifier(value) => {
                 self.current += 1;
@@ -421,34 +421,34 @@ impl Parser {
                 let is_call = self.next_is(vec![scanner::TokenType::LeftParenthesis]);
                 if is_call {
                     let call = self.parse_call(identifier)?;
-                    return Ok(Expression::Literal(Literal::Call(call)));
+                    Expression::Literal(Literal::Call(call))
                 } else if self.next_is(vec![scanner::TokenType::LeftBracket]) {
                     let widget = self.parse_widget(identifier)?;
-                    return Ok(Expression::Widget(widget));
+                    Expression::Widget(widget)
                 } else {
-                    Ok(Expression::Literal(Literal::Identifier(identifier)))
+                    Expression::Literal(Literal::Identifier(identifier))
                 }
             }
             scanner::TokenType::LeftBracket => {
                 let map = self.parse_map()?;
-                return Ok(Expression::Literal(Literal::Map(map)));
+                Expression::Literal(Literal::Map(map))
             }
             scanner::TokenType::LeftSquareBracket => {
                 let array = self.parse_array()?;
-                return Ok(Expression::Literal(Literal::Array(array)));
+                Expression::Literal(Literal::Array(array))
             }
             scanner::TokenType::Fn => {
                 let function = self.parse_function()?;
-                return Ok(Expression::Literal(Literal::Function(function)));
+                Expression::Literal(Literal::Function(function))
             }
             scanner::TokenType::LeftParenthesis => {
                 self.current += 1;
                 let expression = self.expression()?;
                 if self.next_is(vec![scanner::TokenType::RightParenthesis]) {
                     self.current += 1;
-                    return Ok(Expression::Grouping(Grouping {
+                    Expression::Grouping(Grouping {
                         value: Box::new(expression),
-                    }));
+                    })
                 } else {
                     let current_token = self.current().unwrap();
                     return Err(SyntaxError {
@@ -460,7 +460,7 @@ impl Parser {
             }
             scanner::TokenType::String(value) => {
                 self.current += 1;
-                return Ok(Expression::Literal(Literal::String(value.clone())));
+                Expression::Literal(Literal::String(value.clone()))
             }
             _ => {
                 let current_token = &self.input[self.current];
@@ -470,7 +470,19 @@ impl Parser {
                     column: current_token.column,
                 });
             }
+        };
+
+        self.parse_member_access(expr)
+    }
+
+    /// Parse chained member accesses (e.g. `colors.bg.r`) with high precedence.
+    fn parse_member_access(&mut self, mut expr: Expression) -> Result<Expression, SyntaxError> {
+        while self.next_is(vec![scanner::TokenType::Dot]) {
+            self.consume_if(scanner::TokenType::Dot)?;
+            let property = self.consume_if_identifier()?;
+            expr = Expression::new_member_access(expr, property);
         }
+        Ok(expr)
     }
 
     pub fn parse_string(&mut self) -> Result<String, SyntaxError> {
@@ -544,10 +556,14 @@ impl Parser {
             let identifier = self.consume_if_identifier()?;
             self.consume_if(scanner::TokenType::Colon)?;
             let expression = self.expression()?;
-            self.consume_if(scanner::TokenType::Comma)?;
+            // Comma is optional before the closing bracket:
+            // { a: 1 } and { a: 1, } are both valid.
+            if self.input[self.current].token_type != scanner::TokenType::RightBracket {
+                self.consume_if(scanner::TokenType::Comma)?;
+            }
             map.set(identifier, expression);
         }
-        self.consume();
+        self.consume_if(scanner::TokenType::RightBracket)?;
         return Ok(map);
     }
 

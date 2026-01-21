@@ -8,6 +8,7 @@ pub enum TokenType {
     RightBracket,
     LeftSquareBracket,
     RightSquareBracket,
+    Dot,
     Equal,
     EqualEqual, // ==
     Colon,
@@ -46,5 +47,9 @@ pub enum TokenType {
     Float(f64),
     Boolean(bool),
     // Other
-    Error,
+    /// Scanner error token.
+    ///
+    /// This is emitted when the scanner encounters an unexpected character or
+    /// an unterminated construct (e.g. string/comment).
+    Error(String),
 }

@@ -227,6 +227,22 @@ impl VM {
                 self.evaluate_binary_operation(&left, &binary.operator, &right)
             }
             Expression::Grouping(grouping) => self.evaluate_expression(&grouping.value),
+            Expression::MemberAccess(access) => {
+                let object = self.evaluate_expression(&access.object)?;
+                let key = access.property.get();
+                match object {
+                    Value::Map(map) => map.get(&key).cloned().ok_or_else(|| {
+                        VMError::InvalidOperation(format!("Map has no property '{}'", key))
+                    }),
+                    Value::Widget(widget) => widget.properties.get(&key).cloned().ok_or_else(|| {
+                        VMError::InvalidOperation(format!("Widget has no property '{}'", key))
+                    }),
+                    other => Err(VMError::TypeMismatch(format!(
+                        "Cannot access property '{}' on {:?}",
+                        key, other
+                    ))),
+                }
+            }
             Expression::Widget(widget) => {
                 // Evaluate widget properties now (while variables are still in scope) so
                 // widget values do not depend on later environment lookups.

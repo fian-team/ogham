@@ -1,4 +1,4 @@
-use super::{literal::*, operator::*, widget::*};
+use super::{identifier::*, literal::*, operator::*, widget::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expression {
@@ -7,6 +7,7 @@ pub enum Expression {
     Binary(Binary),     // 5 + 3, 8 * 1
     Grouping(Grouping), // (5 + 3)
     Widget(Widget),     // WidgetIdentifier { key: value }
+    MemberAccess(MemberAccess), // foo.bar
 }
 
 impl Expression {
@@ -21,6 +22,25 @@ impl Expression {
     }
     pub fn new_widget(widget: Widget) -> Expression {
         Expression::Widget(widget)
+    }
+
+    pub fn new_member_access(object: Expression, property: Identifier) -> Expression {
+        Expression::MemberAccess(MemberAccess::new(object, property))
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct MemberAccess {
+    pub object: Box<Expression>,
+    pub property: Identifier,
+}
+
+impl MemberAccess {
+    pub fn new(object: Expression, property: Identifier) -> Self {
+        Self {
+            object: Box::new(object),
+            property,
+        }
     }
 }
 

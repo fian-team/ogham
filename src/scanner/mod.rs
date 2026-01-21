@@ -98,7 +98,9 @@ impl Scanner {
                     if self.consume_comment_block() {
                         return self.scan_token(); // Recursively scan next token after comment
                     } else {
-                        return self.create_token(TokenType::Error); // Unterminated comment
+                        return self.create_token(TokenType::Error(
+                            "Unterminated block comment".to_owned(),
+                        ));
                     }
                 } else {
                     self.create_token(TokenType::Divide)
@@ -106,6 +108,7 @@ impl Scanner {
             }
             '%' => self.create_token(TokenType::Modulo),
             '^' => self.create_token(TokenType::Power),
+            '.' => self.create_token(TokenType::Dot),
             ':' => self.create_token(TokenType::Colon),
             ';' => self.create_token(TokenType::Semicolon),
             ',' => self.create_token(TokenType::Comma),
@@ -150,7 +153,10 @@ impl Scanner {
                 if c.is_alphabetic() {
                     return self.consume_keyword_or_identifier();
                 }
-                self.create_token(TokenType::Error)
+                self.create_token(TokenType::Error(format!(
+                    "Unexpected character {:?}",
+                    c
+                )))
             }
         }
     }
@@ -278,7 +284,7 @@ impl Scanner {
         }
 
         if self.is_at_end() {
-            return self.create_token(TokenType::Error);
+            return self.create_token(TokenType::Error("Unterminated string".to_owned()));
         }
 
         let value: String = self.input[self.start..self.current]
