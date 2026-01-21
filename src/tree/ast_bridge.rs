@@ -262,8 +262,10 @@ fn create_text_widget(
         }
     };
 
-    // Build text style
+    // Build text style (also carries minimal width/height sizing for Text widgets).
     let mut style_builder = TextStyle::builder();
+    let mut width_override: Option<Size> = None;
+    let mut height_override: Option<Size> = None;
 
     if let Some(style_map) = style_props {
         for (key, value) in style_map {
@@ -291,6 +293,32 @@ fn create_text_widget(
                         }
                     }
                 }
+                "width" => {
+                    if let Value::Float(f) = value {
+                        width_override = Some(Size::Fixed(*f as f32));
+                    } else if let Value::Integer(i) = value {
+                        width_override = Some(Size::Fixed(*i as f32));
+                    } else if let Value::String(s) = value {
+                        match s.to_lowercase().as_str() {
+                            "shrink" => width_override = Some(Size::Shrink),
+                            "grow" => width_override = Some(Size::Grow(1.0)),
+                            _ => {}
+                        }
+                    }
+                }
+                "height" => {
+                    if let Value::Float(f) = value {
+                        height_override = Some(Size::Fixed(*f as f32));
+                    } else if let Value::Integer(i) = value {
+                        height_override = Some(Size::Fixed(*i as f32));
+                    } else if let Value::String(s) = value {
+                        match s.to_lowercase().as_str() {
+                            "shrink" => height_override = Some(Size::Shrink),
+                            "grow" => height_override = Some(Size::Grow(1.0)),
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -299,7 +327,14 @@ fn create_text_widget(
     // Build full style; preserve all fields (including alignment), while keeping existing
     // behavior of defaulting via TextStyle.
     let mut text_widget = TextWidget::new(text);
-    text_widget.style = style_builder.build();
+    let mut style = style_builder.build();
+    if let Some(w) = width_override {
+        style.width = w;
+    }
+    if let Some(h) = height_override {
+        style.height = h;
+    }
+    text_widget.style = style;
     Ok(Arc::new(Mutex::new(text_widget)))
 }
 

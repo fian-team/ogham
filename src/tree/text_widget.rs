@@ -1,13 +1,41 @@
 use std::collections::HashMap;
+use std::cell::RefCell;
 
 use crate::tree::event::EventContext;
 use crate::tree::WidgetRef;
+
+use skia_safe::{
+    font_style::{Slant, Weight, Width},
+    textlayout::{
+        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as SkiaTextAlign,
+        TextStyle as SkiaTextStyle,
+    },
+    FontMgr, FontStyle, Paint,
+};
 
 use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::style::*;
 use super::Widget;
+
+struct TextLayoutCache {
+    font_collection: FontCollection,
+    paragraph_style: ParagraphStyle,
+    skia_text_style: SkiaTextStyle,
+}
+
+thread_local! {
+    static TEXT_LAYOUT_CACHE: RefCell<TextLayoutCache> = RefCell::new({
+        let mut font_collection = FontCollection::new();
+        font_collection.set_default_font_manager(FontMgr::new(), None);
+        TextLayoutCache {
+            font_collection,
+            paragraph_style: ParagraphStyle::new(),
+            skia_text_style: SkiaTextStyle::new(),
+        }
+    });
+}
 
 pub struct TextWidget {
     pub text: String,
@@ -33,6 +61,44 @@ impl TextWidget {
             style: TextStyle::default().with_color(color),
             layout: None,
         }
+    }
+
+    fn build_paragraph(&self) -> skia_safe::textlayout::Paragraph {
+        // Text layout is requested during layout (not rendering), so we keep a small per-thread
+        // cache of the expensive Skia objects (FontMgr/FontCollection/etc) and just mutate their
+        // parameters for the current measurement.
+        TEXT_LAYOUT_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+
+            cache.paragraph_style.set_text_align(match self.style.get_align() {
+                TextAlign::Left => SkiaTextAlign::Left,
+                TextAlign::Center => SkiaTextAlign::Center,
+                TextAlign::Right => SkiaTextAlign::Right,
+            });
+
+            // Color doesn't affect measurement, but Skia requires a foreground paint.
+            let c = self.style.get_color();
+            let mut paint = Paint::default();
+            paint.set_color(skia_safe::Color::from_argb(c.a, c.r, c.g, c.b));
+            cache.skia_text_style.set_foreground_paint(&paint);
+            cache.skia_text_style.set_font_size(self.style.get_size());
+            cache.skia_text_style.set_font_style(FontStyle::new(
+                match self.style.get_weight() {
+                    FontWeight::Normal => Weight::NORMAL,
+                    FontWeight::SemiBold => Weight::SEMI_BOLD,
+                    FontWeight::Bold => Weight::BOLD,
+                    FontWeight::Light => Weight::LIGHT,
+                },
+                Width::NORMAL,
+                Slant::Upright,
+            ));
+
+            let mut paragraph_builder =
+                ParagraphBuilder::new(&cache.paragraph_style, &cache.font_collection);
+            paragraph_builder.push_style(&cache.skia_text_style);
+            paragraph_builder.add_text(self.text.clone());
+            paragraph_builder.build()
+        })
     }
 }
 
@@ -67,33 +133,92 @@ impl Widget for TextWidget {
         parent_available_height: f32,
         sibling_basis: f32,
     ) -> (f32, f32) {
-        let basis = self.get_basis(parent_direction);
-        match parent_direction {
-            Direction::Row | Direction::RowReverse => {
-                let width = if sibling_basis > 0.0 {
-                    (basis / sibling_basis) * parent_available_width
+        // If either axis is Shrink, measure the text using Skia's paragraph layout.
+        let needs_measurement =
+            matches!(self.style.width, Size::Shrink) || matches!(self.style.height, Size::Shrink);
+
+        let mut measured_paragraph = if needs_measurement {
+            Some(self.build_paragraph())
+        } else {
+            None
+        };
+
+        // First compute the width this widget is allowed to use.
+        let width = match self.style.width {
+            Size::Fixed(w) => w,
+            Size::Shrink => {
+                if needs_measurement {
+                    let intrinsic = measured_paragraph
+                        .as_ref()
+                        .expect("paragraph must exist when measuring")
+                        .max_intrinsic_width();
+                    if parent_available_width > 0.0 {
+                        intrinsic.min(parent_available_width)
+                    } else {
+                        intrinsic
+                    }
                 } else {
-                    parent_available_width
-                };
-                (width, parent_height)
+                    0.0
+                }
             }
-            Direction::Column | Direction::ColumnReverse => {
-                let height = if sibling_basis > 0.0 {
-                    (basis / sibling_basis) * parent_available_height
+            Size::Grow(basis) => {
+                if parent_direction.is_row() {
+                    parent_direction.get_grow_size(basis, sibling_basis, parent_available_width)
                 } else {
-                    parent_available_height
-                };
-                (parent_width, height)
+                    parent_width
+                }
             }
-        }
+            Size::Percent(_) => 0.0, // Calculated during layout (not currently supported for Text)
+        };
+
+        let height = match self.style.height {
+            Size::Fixed(h) => h,
+            Size::Shrink => {
+                if needs_measurement {
+                    let paragraph = measured_paragraph
+                        .as_mut()
+                        .expect("paragraph must exist when measuring");
+                    // Height depends on layout width due to wrapping; ensure we lay out with the
+                    // width computed above.
+                    let layout_width = width.max(0.0);
+                    paragraph.layout(layout_width);
+                    paragraph.height()
+                } else {
+                    0.0
+                }
+            }
+            Size::Grow(basis) => {
+                if parent_direction.is_row() {
+                    parent_height
+                } else {
+                    parent_direction.get_grow_size(basis, sibling_basis, parent_available_height)
+                }
+            }
+            Size::Percent(_) => 0.0, // Calculated during layout (not currently supported for Text)
+        };
+
+        (width, height)
     }
 
     fn get_children(&self) -> Vec<WidgetRef> {
         Vec::new() // Text widgets have no children
     }
 
-    fn get_basis(&self, _direction: &Direction) -> f32 {
-        1.0 // Always grow with basis 1.0
+    fn get_basis(&self, direction: &Direction) -> f32 {
+        match direction {
+            Direction::Row | Direction::RowReverse => match self.style.width {
+                Size::Fixed(_) => 0.0,
+                Size::Shrink => 0.0,
+                Size::Grow(basis) => basis,
+                Size::Percent(_) => 0.0,
+            },
+            Direction::Column | Direction::ColumnReverse => match self.style.height {
+                Size::Fixed(_) => 0.0,
+                Size::Shrink => 0.0,
+                Size::Grow(basis) => basis,
+                Size::Percent(_) => 0.0,
+            },
+        }
     }
 
     fn get_children_basis(&self) -> f32 {
@@ -109,11 +234,17 @@ impl Widget for TextWidget {
     }
 
     fn get_fixed_width(&self) -> Option<f32> {
-        None // Text widgets never have fixed width
+        match self.style.width {
+            Size::Fixed(w) => Some(w),
+            _ => None,
+        }
     }
 
     fn get_fixed_height(&self) -> Option<f32> {
-        None // Text widgets never have fixed height
+        match self.style.height {
+            Size::Fixed(h) => Some(h),
+            _ => None,
+        }
     }
 
     fn handle_event(
@@ -142,19 +273,22 @@ impl Widget for TextWidget {
         &mut self,
         cursor_x: f32,
         cursor_y: f32,
-        _parent_direction: &Direction,
-        _parent_width: f32,
+        parent_direction: &Direction,
+        parent_width: f32,
         parent_available_width: f32,
-        _parent_height: f32,
+        parent_height: f32,
         parent_available_height: f32,
-        _sibling_basis: f32,
+        sibling_basis: f32,
     ) {
-        self.layout = Some(Rect::new(
-            cursor_x,
-            cursor_y,
+        let (width, height) = self.get_dimensions(
+            parent_direction,
+            parent_width,
             parent_available_width,
+            parent_height,
             parent_available_height,
-        ));
+            sibling_basis,
+        );
+        self.layout = Some(Rect::new(cursor_x, cursor_y, width, height));
     }
 
     fn contains_point(&self, point: &Point) -> bool {

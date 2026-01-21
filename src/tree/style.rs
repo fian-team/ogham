@@ -364,6 +364,10 @@ pub struct TextStyle {
     pub weight: FontWeight,
     pub decoration: TextDecoration,
     pub align: TextAlign,
+    /// Controls layout width behavior for text widgets.
+    pub width: Size,
+    /// Controls layout height behavior for text widgets.
+    pub height: Size,
 }
 
 impl TextStyle {
@@ -523,6 +527,9 @@ impl Default for TextStyle {
             weight: FontWeight::Normal,
             decoration: TextDecoration::None,
             align: TextAlign::Left,
+            // Preserve historical behavior: text expands to fill its allocation by default.
+            width: Size::Grow(1.0),
+            height: Size::Grow(1.0),
         }
     }
 }
