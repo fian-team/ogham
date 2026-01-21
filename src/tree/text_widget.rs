@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::tree::event::EventContext;
 use crate::tree::WidgetRef;
@@ -70,11 +70,13 @@ impl TextWidget {
         TEXT_LAYOUT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
 
-            cache.paragraph_style.set_text_align(match self.style.get_align() {
-                TextAlign::Left => SkiaTextAlign::Left,
-                TextAlign::Center => SkiaTextAlign::Center,
-                TextAlign::Right => SkiaTextAlign::Right,
-            });
+            cache
+                .paragraph_style
+                .set_text_align(match self.style.get_align() {
+                    TextAlign::Left => SkiaTextAlign::Left,
+                    TextAlign::Center => SkiaTextAlign::Center,
+                    TextAlign::Right => SkiaTextAlign::Right,
+                });
 
             // Color doesn't affect measurement, but Skia requires a foreground paint.
             let c = self.style.get_color();
