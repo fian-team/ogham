@@ -1,4 +1,4 @@
-use ogham::{parser::Parser, scanner::Scanner, vm::Value, vm::VM};
+use ogham::{parser::Parser, scanner::Scanner, runtime::{Value, Runtime}};
 
 #[test]
 fn map_property_access_works() {
@@ -14,8 +14,8 @@ let main = fn () {
     let mut parser = Parser::new(tokens);
     let module = parser.parse().expect("parse failed");
 
-    let mut vm = VM::new();
-    let value = vm.execute_module(&module).expect("vm execution failed");
+    let mut runtime = Runtime::new();
+    let value = runtime.execute_module(&module).expect("runtime execution failed");
     assert_eq!(value, Value::Integer(2));
 }
 
@@ -35,8 +35,8 @@ let main = fn () {
     let mut parser = Parser::new(tokens);
     let module = parser.parse().expect("parse failed");
 
-    let mut vm = VM::new();
-    let value = vm.execute_module(&module).expect("vm execution failed");
+    let mut runtime = Runtime::new();
+    let value = runtime.execute_module(&module).expect("runtime execution failed");
     assert_eq!(value, Value::Integer(18));
 }
 

@@ -1,7 +1,7 @@
 use ogham::runtime::RuntimeConfig;
 use ogham::tree::event::Event;
 use ogham::tree::point::Point;
-use ogham::vm::Value;
+use ogham::runtime::Value;
 use std::sync::{Arc, Mutex};
 
 #[test]

@@ -2,7 +2,7 @@ use crate::tree::{
     flex_widget::FlexWidget, style::*, svg_widget::SvgWidget, text_input_widget::TextInputWidget,
     text_widget::TextWidget, WidgetRef,
 };
-use crate::vm::{RuntimeWidget, VMError, Value, VM};
+use crate::runtime::{Runtime, RuntimeWidget, VMError, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -20,19 +20,19 @@ impl From<VMError> for BridgeError {
     }
 }
 
-/// Converts a Value::Widget from the VM to a WidgetRef for use in the UI
+/// Converts a Value::Widget from the Runtime to a WidgetRef for use in the UI
 pub fn widget_value_to_widget_ref(
-    vm: &Arc<Mutex<VM>>,
+    runtime: &Arc<Mutex<Runtime>>,
     widget_value: &Value,
 ) -> Result<WidgetRef, BridgeError> {
     if let Value::Widget(runtime_widget) = widget_value {
         let identifier = runtime_widget.identifier.get().to_lowercase();
 
         match identifier.as_str() {
-            "flex" => create_flex_widget(vm, runtime_widget),
-            "text" => create_text_widget(vm, runtime_widget),
-            "text_input" => create_text_input_widget(vm, runtime_widget),
-            "svg" => create_svg_widget(vm, runtime_widget),
+            "flex" => create_flex_widget(runtime, runtime_widget),
+            "text" => create_text_widget(runtime, runtime_widget),
+            "text_input" => create_text_input_widget(runtime, runtime_widget),
+            "svg" => create_svg_widget(runtime, runtime_widget),
             _ => Err(BridgeError::InvalidWidgetType(format!(
                 "Unknown widget type: {}",
                 identifier
@@ -54,7 +54,7 @@ fn optional_style_map<'a>(parser_widget: &'a RuntimeWidget) -> Option<&'a HashMa
 }
 
 fn create_flex_widget(
-    vm: &Arc<Mutex<VM>>,
+    runtime: &Arc<Mutex<Runtime>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let mut flex_widget = FlexWidget::new();
@@ -68,14 +68,14 @@ fn create_flex_widget(
     if let Some(value) = parser_widget.properties.get("mouse_down") {
         match value {
             Value::Function(func) => {
-                let vm_for_handler = vm.clone();
+                let runtime_for_handler = runtime.clone();
                 let func = func.clone();
                 flex_widget
                     .event_listeners
                     .entry("mouse_down".to_string())
                     .or_default()
                     .push(Box::new(move |_event| {
-                        let result = vm_for_handler.lock().unwrap().call_function(&func, &[]);
+                        let result = runtime_for_handler.lock().unwrap().call_function(&func, &[]);
                         if let Err(err) = result {
                             eprintln!("[ogham] mouse_down handler error: {:?}", err);
                         }
@@ -100,7 +100,7 @@ fn create_flex_widget(
             for child_value in children_array {
                 if let Value::Widget(child_widget) = child_value {
                     let child_ref =
-                        widget_value_to_widget_ref(vm, &Value::Widget(child_widget.clone()))?;
+                        widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
                     children.push(child_ref);
                 }
             }
@@ -120,13 +120,13 @@ fn create_flex_widget(
             for (_, child_value) in sorted_entries {
                 if let Value::Widget(child_widget) = child_value {
                     let child_ref =
-                        widget_value_to_widget_ref(vm, &Value::Widget(child_widget.clone()))?;
+                        widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
                     children.push(child_ref);
                 }
             }
         } else if let Value::Widget(child_widget) = value {
             // Single child widget
-            let child_ref = widget_value_to_widget_ref(vm, &Value::Widget(child_widget.clone()))?;
+            let child_ref = widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
             children.push(child_ref);
         }
     }
@@ -134,7 +134,7 @@ fn create_flex_widget(
     let style_props = optional_style_map(parser_widget);
     if let Some(style_map) = style_props {
         for (key, value) in style_map {
-            // Properties have already been evaluated by the VM when the widget expression was evaluated.
+            // Properties have already been evaluated by the Runtime when the widget expression was evaluated.
             match key.as_str() {
                 "direction" => {
                     if let Value::String(dir_str) = value {
@@ -244,7 +244,7 @@ fn create_flex_widget(
                     // If a value is a widget, treat it as a child (named-slot style).
                     if let Value::Widget(child_widget) = value {
                         let child_ref =
-                            widget_value_to_widget_ref(vm, &Value::Widget(child_widget.clone()))?;
+                            widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
                         children.push(child_ref);
                     }
                 }
@@ -265,7 +265,7 @@ fn create_flex_widget(
 }
 
 fn create_text_widget(
-    _vm: &Arc<Mutex<VM>>,
+    _runtime: &Arc<Mutex<Runtime>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let style_props = optional_style_map(parser_widget);
@@ -365,7 +365,7 @@ fn create_text_widget(
 }
 
 fn create_text_input_widget(
-    _vm: &Arc<Mutex<VM>>,
+    _runtime: &Arc<Mutex<Runtime>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let mut text_input = TextInputWidget::new();
@@ -417,7 +417,7 @@ fn create_text_input_widget(
 }
 
 fn create_svg_widget(
-    _vm: &Arc<Mutex<VM>>,
+    _runtime: &Arc<Mutex<Runtime>>,
     parser_widget: &RuntimeWidget,
 ) -> Result<WidgetRef, BridgeError> {
     let style_props = optional_style_map(parser_widget);

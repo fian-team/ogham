@@ -1,4 +1,4 @@
-use ogham::{parser::Parser, scanner::Scanner, vm::Value, vm::VM};
+use ogham::{parser::Parser, scanner::Scanner, runtime::{Value, Runtime}};
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -20,8 +20,8 @@ let main = fn () {
     let calls: Arc<Mutex<Vec<(String, Vec<Value>)>>> = Arc::new(Mutex::new(Vec::new()));
     let calls_for_handler = calls.clone();
 
-    let mut vm = VM::new();
-    vm.register_event_handler("registered", move |args| {
+    let mut runtime = Runtime::new();
+    runtime.register_event_handler("registered", move |args| {
         calls_for_handler
             .lock()
             .unwrap()
@@ -29,7 +29,7 @@ let main = fn () {
         true
     });
 
-    let value = vm.execute_module(&module).expect("vm execution failed");
+    let value = runtime.execute_module(&module).expect("runtime execution failed");
     assert_eq!(value, Value::Integer(0));
 
     let got = calls.lock().unwrap().clone();
