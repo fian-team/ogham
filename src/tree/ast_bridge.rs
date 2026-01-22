@@ -67,24 +67,25 @@ fn create_flex_widget(
     // Event handlers (e.g. `mouse_down: fn () { ... }`)
     if let Some(value) = parser_widget.properties.get("mouse_down") {
         match value {
-            Value::Function(func) => {
+            Value::Closure(closure) => {
                 let runtime_for_handler = runtime.clone();
-                let func = func.clone();
+                let closure = closure.clone();
+                let event_name = "mouse_down".to_string();
                 flex_widget
                     .event_listeners
-                    .entry("mouse_down".to_string())
+                    .entry(event_name.clone())
                     .or_default()
                     .push(Box::new(move |_event| {
-                        let result = runtime_for_handler.lock().unwrap().call_function(&func, &[]);
+                        let result = runtime_for_handler.lock().unwrap().call_closure(&closure, &[], &format!("event_handler_{}", event_name));
                         if let Err(err) = result {
-                            eprintln!("[ogham] mouse_down handler error: {:?}", err);
+                            eprintln!("[ogham] {} handler error: {:?}", event_name, err);
                         }
                     }));
             }
             other => {
                 return Err(BridgeError::InvalidPropertyType(
                     "mouse_down".to_string(),
-                    format!("Expected Function, got {:?}", other),
+                    format!("Expected Closure, got {:?}", other),
                 ));
             }
         }
