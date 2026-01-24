@@ -102,6 +102,42 @@ impl Client {
             let new_root = ui.root.clone();
             ui.update(new_root, width, height);
         }
+
+        // Check if runtime needs a rerender due to state updates
+        let needs_rerender = {
+            let runtime = self.ogham.get_runtime();
+            runtime.lock().unwrap().needs_rerender()
+        };
+
+        if needs_rerender {
+            // Rerender the module to get updated widget tree
+            let runtime = self.ogham.get_runtime().clone();
+            let widget_value = {
+                let mut rt = runtime.lock().unwrap();
+                rt.rerender().map_err(|e| {
+                    eprintln!("[ogham] Rerender error: {:?}", e);
+                    e
+                }).ok()
+            };
+
+            if let Some(widget_value) = widget_value {
+                // Convert the widget value to a WidgetRef
+                let new_root = ogham::tree::ast_bridge::widget_value_to_widget_ref(
+                    &runtime,
+                    &widget_value,
+                ).map_err(|e| {
+                    eprintln!("[ogham] Bridge error during rerender: {:?}", e);
+                    e
+                }).ok();
+
+                if let Some(new_root) = new_root {
+                    // Update the UI with the new root
+                    let ui = self.ogham.get_ui_mut();
+                    ui.update(new_root, width, height);
+                }
+            }
+        }
+
         self.ogham.get_ui_mut().layout(width, height);
     }
 

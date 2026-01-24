@@ -35,6 +35,9 @@ pub struct RuntimeWidget {
 pub struct Closure {
     pub function: Function,
     pub captured_env: Environment,
+    /// The call tree path where this closure was created.
+    /// This allows event handlers to access state from the correct call node.
+    pub captured_path: Vec<usize>,
 }
 
 impl PartialEq for Closure {
@@ -245,6 +248,9 @@ struct CallTree {
     is_rerendering: bool,
     /// Counter for tracking call order during rerender
     rerender_call_index: usize,
+    /// Active path for state lookups. When a closure is called, this is set to
+    /// the closure's captured path so state is looked up from the correct node.
+    active_state_path: Option<Vec<usize>>,
 }
 
 impl CallTree {
@@ -255,6 +261,7 @@ impl CallTree {
             call_sequence: Vec::new(),
             is_rerendering: false,
             rerender_call_index: 0,
+            active_state_path: None,
         }
     }
 
@@ -375,81 +382,143 @@ impl CallTree {
     }
 
     /// Set state in the call tree node where it was originally declared.
-    /// This searches the tree to find the node containing the state variable
-    /// and updates it there, allowing state to be updated from child function calls.
+    /// Searches from the current node up to the root to find where the state
+    /// was declared, and updates it there. If not found, creates it in the current node.
+    ///
+    /// Uses the active_state_path if set (for closures), otherwise uses current_path.
     fn set_state(&mut self, name: String, value: Value) {
-        // Find the node that contains this state variable and update it
-        if Self::find_and_set_state_in_tree(&mut self.root, &name, &value) {
+        let path = self.active_state_path.as_ref().map(|p| p.clone()).unwrap_or_else(|| self.current_path.clone());
+        self.set_state_at_path(name, value, &path)
+    }
+
+    /// Set state at a specific path, searching from that node up to the root.
+    fn set_state_at_path(&mut self, name: String, value: Value, path: &[usize]) {
+        // First, navigate to the node at the end of the path
+        let mut current = &mut self.root;
+        for &index in path {
+            if index >= current.children.len() {
+                // Path doesn't exist, create state in the node we can reach
+                let node = self.get_node_at_path(path);
+                node.set_state(name, value);
+                return;
+            }
+            current = &mut current.children[index];
+        }
+        
+        // Check the node at the end of the path first (most specific)
+        if current.get_state(&name).is_some() {
+            current.set_state(name.clone(), value.clone());
             return;
         }
-
-        // If state doesn't exist anywhere, create it in the current node
-        let node = self.get_current_node();
+        
+        // If not found, search up the path (check parent nodes)
+        // We need to traverse from root again to check each parent
+        let mut check_path = path.to_vec();
+        while !check_path.is_empty() {
+            check_path.pop();
+            let mut check_current = &mut self.root;
+            for &index in &check_path {
+                if index >= check_current.children.len() {
+                    break;
+                }
+                check_current = &mut check_current.children[index];
+            }
+            if check_current.get_state(&name).is_some() {
+                check_current.set_state(name.clone(), value.clone());
+                return;
+            }
+        }
+        
+        // Check root node
+        if self.root.get_state(&name).is_some() {
+            self.root.set_state(name.clone(), value.clone());
+            return;
+        }
+        
+        // If state doesn't exist anywhere, create it in the node at the path
+        let node = self.get_node_at_path(path);
         node.set_state(name, value);
     }
 
-    /// Recursively search the call tree for a node containing the state variable and update it.
-    /// Returns true if the state was found and updated, false otherwise.
-    fn find_and_set_state_in_tree(node: &mut CallTreeNode, name: &str, value: &Value) -> bool {
-        // Check current node
-        if node.get_state(name).is_some() {
-            node.set_state(name.to_string(), value.clone());
-            return true;
-        }
-
-        // Recursively search children
-        for child in &mut node.children {
-            if Self::find_and_set_state_in_tree(child, name, value) {
-                return true;
+    /// Get the node at a specific path.
+    fn get_node_at_path(&mut self, path: &[usize]) -> &mut CallTreeNode {
+        let mut current = &mut self.root;
+        for &index in path {
+            // Ensure we have enough children
+            while current.children.len() <= index {
+                current.children.push(CallTreeNode::new(
+                    "unknown".to_string(),
+                    current.children.len(),
+                ));
             }
+            current = &mut current.children[index];
         }
+        current
+    }
 
-        false
+    /// Get the node at a specific path (immutable version for checking).
+    fn get_node_at_path_mut(&mut self, path: &[usize]) -> &mut CallTreeNode {
+        self.get_node_at_path(path)
     }
 
     /// Get state from the current call node or any parent node.
     /// This allows child function calls (like event handlers) to access
     /// state declared in their parent function calls.
     ///
-    /// Since event handlers may be called in a different call tree context
-    /// than where they were created, we search all nodes in the call tree
-    /// to find the state. In practice, state should be unique per function
-    /// call, so we return the first match found.
+    /// Uses the active_state_path if set (for closures), otherwise uses current_path.
     fn get_state(&self, name: &str) -> Option<Value> {
-        // First, try the current path (most specific)
+        let path = self.active_state_path.as_ref().unwrap_or(&self.current_path);
+        self.get_state_at_path(name, path)
+    }
+
+    /// Set the active state path for state lookups.
+    fn set_active_state_path(&mut self, path: Option<Vec<usize>>) {
+        self.active_state_path = path;
+    }
+
+    /// Get state from a specific path, searching from that node up to the root.
+    /// This searches from the most specific node (at the end of the path) up to the root.
+    fn get_state_at_path(&self, name: &str, path: &[usize]) -> Option<Value> {
+        // First, navigate to the node at the end of the path
         let mut current = &self.root;
-        for &index in &self.current_path {
+        for &index in path {
             if index >= current.children.len() {
-                break;
+                // Path doesn't exist, can't find state
+                return None;
             }
             current = &current.children[index];
-            if let Some(value) = current.get_state(name) {
+        }
+        
+        // Check the node at the end of the path first (most specific)
+        if let Some(value) = current.get_state(name) {
+            return Some(value.clone());
+        }
+        
+        // If not found, search up the path (check parent nodes)
+        // We need to traverse from root again to check each parent
+        let mut check_path = path.to_vec();
+        while !check_path.is_empty() {
+            check_path.pop();
+            let mut check_current = &self.root;
+            for &index in &check_path {
+                if index >= check_current.children.len() {
+                    break;
+                }
+                check_current = &check_current.children[index];
+            }
+            if let Some(value) = check_current.get_state(name) {
                 return Some(value.clone());
             }
         }
-
-        // If not found in current path, search all nodes in the tree
-        // This handles the case where event handlers are called in a
-        // different context than where they were created
-        self.search_state_in_tree(&self.root, name)
-    }
-
-    /// Recursively search the call tree for state with the given name.
-    fn search_state_in_tree(&self, node: &CallTreeNode, name: &str) -> Option<Value> {
-        // Check current node
-        if let Some(value) = node.get_state(name) {
+        
+        // Check root node last
+        if let Some(value) = self.root.get_state(name) {
             return Some(value.clone());
         }
-
-        // Recursively search children
-        for child in &node.children {
-            if let Some(value) = self.search_state_in_tree(child, name) {
-                return Some(value);
-            }
-        }
-
+        
         None
     }
+
 }
 
 /// Configuration for runtime execution, allowing customization of the execution process.
@@ -708,18 +777,33 @@ impl Runtime {
                 // State is stored in the call tree, not the environment
                 let name = state_stmt.get_identifier_value();
 
-                // Check if state already exists in the call tree (from a previous render)
-                // If it exists, preserve it; otherwise, initialize with the expression value
-                let value = if self.call_tree.get_state(&name).is_some() {
-                    // State already exists - preserve it
-                    self.call_tree.get_state(&name).unwrap()
+                // Get the current path where state should be stored
+                // Use active_state_path if set (for closures), otherwise current_path
+                let path = self.call_tree.active_state_path.as_ref()
+                    .map(|p| p.clone())
+                    .unwrap_or_else(|| self.call_tree.current_path.clone());
+
+                // Check if state already exists in the CURRENT node (from a previous render)
+                // We check the specific node, not search globally
+                let existing_value = {
+                    let node = self.call_tree.get_node_at_path_mut(&path);
+                    node.get_state(&name).cloned()
+                };
+
+                // Determine the value - use existing if found, otherwise evaluate
+                let value = if let Some(existing) = existing_value {
+                    // State already exists in this node - preserve it
+                    existing
                 } else {
                     // State doesn't exist - initialize with the expression value
                     self.evaluate_expression(&state_stmt.get_value())?
                 };
 
-                // Store in call tree for persistent state tracking
-                self.call_tree.set_state(name.clone(), value.clone());
+                // Store in the current node for persistent state tracking
+                {
+                    let node = self.call_tree.get_node_at_path_mut(&path);
+                    node.set_state(name.clone(), value.clone());
+                }
 
                 // Also store in environment for immediate access during execution
                 self.environment.define(name, value);
@@ -730,8 +814,10 @@ impl Runtime {
                 let value = self.evaluate_expression(&assign_stmt.get_value())?;
 
                 // Check if this is a state variable (exists in call tree)
-                if self.call_tree.get_state(&name).is_some() {
-                    // Update state in call tree
+                // Use the active_state_path if set (for closures), otherwise current_path
+                let state_value = self.call_tree.get_state(&name);
+                if state_value.is_some() {
+                    // Update state in call tree (will use active_state_path if set)
                     self.call_tree.set_state(name.clone(), value.clone());
                     // Flag that a rerender is needed (multiple updates in one render
                     // will only set this flag once, which is the desired behavior)
@@ -841,10 +927,11 @@ impl Runtime {
             }
             Literal::Call(call) => self.execute_call(call),
             Literal::Function(func) => {
-                // Capture the current environment when creating the closure
+                // Capture the current environment and call tree path when creating the closure
                 Ok(Value::Closure(Closure {
                     function: func.clone(),
                     captured_env: self.environment.clone(),
+                    captured_path: self.call_tree.current_path.clone(),
                 }))
             }
             Literal::Map(map) => {
@@ -1084,13 +1171,33 @@ impl Runtime {
         // Enter the function call in the call tree
         self.call_tree.enter_call(function_name.to_string());
 
-        // Get state from the call tree (searching all nodes, not just current)
-        // This allows event handlers to access state from parent function calls
-        // We collect all state from the entire tree to make it available in the environment
+        // Set the active state path to the closure's captured path
+        // This ensures state lookups use the correct path (where the closure was created)
+        let old_active_path = self.call_tree.active_state_path.take();
+        self.call_tree.set_active_state_path(Some(closure.captured_path.clone()));
+
+        // Get state from the closure's captured path (where the closure was created)
+        // This allows event handlers to access state from the correct call node
+        // We collect state from the closure's path up to the root
         let all_state: Vec<(String, Value)> = {
-            // Search the entire call tree for state variables
             let mut state_map = HashMap::new();
-            CallTree::collect_state_from_tree(&self.call_tree.root, &mut state_map);
+            // Collect state from the closure's captured path
+            let mut current = &self.call_tree.root;
+            for &index in &closure.captured_path {
+                if index < current.children.len() {
+                    // Add state from this node
+                    for (name, value) in &current.children[index].state {
+                        state_map.insert(name.clone(), value.clone());
+                    }
+                    current = &current.children[index];
+                } else {
+                    break;
+                }
+            }
+            // Also add state from the root
+            for (name, value) in &current.state {
+                state_map.insert(name.clone(), value.clone());
+            }
             state_map.into_iter().collect()
         };
 
@@ -1121,6 +1228,9 @@ impl Runtime {
         // Restore environment
         self.environment = old_env;
 
+        // Restore the active state path
+        self.call_tree.set_active_state_path(old_active_path);
+
         // Exit the function call in the call tree
         self.call_tree.exit_call();
 
@@ -1141,6 +1251,7 @@ impl Runtime {
         let closure = Closure {
             function: func.clone(),
             captured_env: self.environment.clone(),
+            captured_path: self.call_tree.current_path.clone(),
         };
         self.call_closure(&closure, args, function_name)
     }

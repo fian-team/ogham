@@ -104,25 +104,37 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
         // Handle UI events first for MouseInput events
         let ui_handled_event = match &event {
             WindowEvent::MouseInput { state, button, .. } => {
-                if *state == ElementState::Pressed && *button == MouseButton::Left {
+                let handled = if *state == ElementState::Pressed && *button == MouseButton::Left {
                     let cursor_pos = self.input.cursor_position();
                     let ui_event = Event::with_point(
                         "mouse_down".to_string(),
                         Point::new(cursor_pos.x, cursor_pos.y),
                     );
-                    let handled = self.client.handle_ui_event(&ui_event);
-                    handled
+                    self.client.handle_ui_event(&ui_event)
                 } else if *state == ElementState::Released && *button == MouseButton::Left {
                     let cursor_pos = self.input.cursor_position();
                     let ui_event = Event::with_point(
                         "mouse_up".to_string(),
                         Point::new(cursor_pos.x, cursor_pos.y),
                     );
-                    let handled = self.client.handle_ui_event(&ui_event);
-                    handled
+                    self.client.handle_ui_event(&ui_event)
                 } else {
                     false
+                };
+
+                // Check if UI needs update after handling the event
+                if handled && self.client.is_ui_dirty() {
+                    let logical_size: LogicalSize<f64> = self
+                        .window
+                        .inner_size()
+                        .to_logical(self.window.scale_factor());
+                    self.client.update_ui_layout(
+                        logical_size.width as f32,
+                        logical_size.height as f32,
+                    );
                 }
+
+                handled
             }
             WindowEvent::KeyboardInput {
                 event: KeyEvent {
