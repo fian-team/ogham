@@ -1,11 +1,11 @@
 use crate::app::{ClientUI, ClientUpdate};
 use crate::home_page::HOME_PAGE;
 use crate::input::Input;
-use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use skia_safe::Surface as SkiaSurface;
-use std::{fs, path::PathBuf, sync::mpsc};
+use ogham::runtime::RuntimeConfig;
 use ogham::tree::event::Event;
-use ogham::tree::{WidgetRef, UI};
+use ogham::tree::UI;
+use ogham::Ogham;
+use skia_safe::Surface as SkiaSurface;
 use winit::keyboard::NamedKey;
 use winit::{keyboard::Key, window::Window};
 
@@ -14,47 +14,22 @@ pub struct Client {
     height: u32,
     dpi_scale: f32,
     dirty: bool,
-    ui: UI,
-    src: String,
+    ogham: Ogham,
     path: Option<String>,
-    file_watcher: Option<RecommendedWatcher>,
-    file_watcher_receiver: mpsc::Receiver<Result<NotifyEvent, notify::Error>>,
 }
 
 impl Client {
     pub fn new(width: u32, height: u32) -> Self {
         let src = HOME_PAGE.to_string();
-        let ui = ogham::runtime::from_source(&src, None).unwrap();
-        let initial_path = "".to_string();
-        let (_tx, rx) = mpsc::channel();
-        let watcher_opt = None;
+        let ogham = Ogham::from_source(&src, RuntimeConfig::new())
+            .expect("Failed to create Ogham from HOME_PAGE");
         Self {
             width,
             height,
             dpi_scale: 1.0,
             dirty: false,
-            ui,
-            src,
-            path: Some(initial_path),
-            file_watcher: watcher_opt,
-            file_watcher_receiver: rx,
-        }
-    }
-
-    fn recompile(&mut self, log_syntax_errors: bool) {
-        match ogham::runtime::from_source(&self.src, None) {
-            Ok(ui) => {
-                self.ui = ui;
-            }
-            Err(err) => {
-                if log_syntax_errors {
-                    if let Some(path) = self.path.as_ref() {
-                        eprintln!("[ogham] Error compiling {}: {}", path, err);
-                    } else {
-                        eprintln!("[ogham] Error compiling source: {}", err);
-                    }
-                }
-            }
+            ogham,
+            path: None,
         }
     }
 
@@ -75,64 +50,28 @@ impl Client {
                 .add_filter("All files", &["*"])
                 .pick_file()
             {
-                self.path = Some(path.to_string_lossy().to_string());
-                self.load();
+                let path_str = path.to_string_lossy().to_string();
+                if let Err(err) = self.ogham.load_file(path_str.clone()) {
+                    eprintln!("[ogham] Error loading {}: {}", path_str, err);
+                } else {
+                    self.path = Some(path_str);
+                    self.dirty = true;
+                }
             }
         }
 
         // Check for file change events
-        while let Ok(Ok(event)) = self.file_watcher_receiver.try_recv() {
-            if let EventKind::Modify(_) | EventKind::Create(_) = event.kind {
-                let path_to_check = self.path.as_ref().map(|p| PathBuf::from(p));
-                if let Some(ref path_buf) = path_to_check {
-                    // Check if the changed file matches our watched file
-                    if event.paths.iter().any(|p| p == path_buf) {
-                        self.load();
-                    }
+        if self.ogham.check_for_changes() {
+            if let Err(err) = self.ogham.reload() {
+                if let Some(path) = self.path.as_ref() {
+                    eprintln!("[ogham] Error reloading {}: {}", path, err);
+                } else {
+                    eprintln!("[ogham] Error reloading: {}", err);
                 }
-            }
-        }
-    }
-
-    fn load(&mut self) {
-        let path_clone = self.path.clone();
-        if let Some(ref path) = path_clone {
-            if let Ok(src) = fs::read_to_string(path) {
-                self.src = src;
-                self.recompile(true);
+            } else {
                 self.dirty = true;
             }
         }
-
-        // Set up file watching for the new file (after loading)
-        if let Some(ref path) = path_clone {
-            self.setup_file_watcher(path);
-        }
-    }
-
-    fn setup_file_watcher(&mut self, path: &str) {
-        // Unwatch the previous file if any
-        if let Some(ref mut watcher) = self.file_watcher {
-            let path_buf = PathBuf::from(path);
-            if let Some(parent) = path_buf.parent() {
-                let _ = watcher.unwatch(parent);
-            }
-        }
-
-        // Create a new watcher for the new file
-        let (tx, rx) = mpsc::channel();
-        if let Ok(mut watcher) = notify::recommended_watcher(tx) {
-            let path_buf = PathBuf::from(path);
-            if let Some(parent) = path_buf.parent() {
-                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
-            }
-            self.file_watcher = Some(watcher);
-            self.file_watcher_receiver = rx;
-        }
-    }
-
-    pub fn render_ui(&mut self) -> WidgetRef {
-        self.ui.root.clone()
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -145,12 +84,12 @@ impl Client {
 
     /// Handle a UI event and return whether it was handled
     pub fn handle_ui_event(&mut self, event: &Event) -> bool {
-        self.ui.call_event(event)
+        self.ogham.get_ui_mut().call_event(event)
     }
 
     /// Check if UI is dirty
     pub fn is_ui_dirty(&self) -> bool {
-        self.ui.is_dirty()
+        self.ogham.get_ui().is_dirty()
     }
 
     /// Update UI if dirty, then layout with the given dimensions
@@ -158,15 +97,17 @@ impl Client {
         let dirty = self.is_dirty();
         if dirty {
             self.clean();
-            let new_root = self.render_ui();
-            self.ui.update(new_root, width, height);
+            // UI is already updated when we reload/recompile, so we just need to update the layout
+            let ui = self.ogham.get_ui_mut();
+            let new_root = ui.root.clone();
+            ui.update(new_root, width, height);
         }
-        self.ui.layout(width, height);
+        self.ogham.get_ui_mut().layout(width, height);
     }
 
     /// Get mutable reference to UI for drawing
     pub fn get_ui_mut(&mut self) -> &mut UI {
-        &mut self.ui
+        self.ogham.get_ui_mut()
     }
 
     /// Update cursor state based on current view

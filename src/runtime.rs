@@ -9,7 +9,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -18,7 +17,7 @@ use crate::parser::{
     SyntaxError,
 };
 use crate::scanner::Scanner;
-use crate::tree::{ast_bridge, UI};
+use crate::tree::ast_bridge;
 
 // Core runtime types (previously in vm module)
 
@@ -1153,82 +1152,15 @@ impl Default for Runtime {
     }
 }
 
-/// Compile an Ogham source file into a UI.
-///
-/// This function handles the complete compilation pipeline:
-/// 1. Read the source file
-/// 2. Scan the source into tokens
-/// 3. Parse tokens into an AST
-/// 4. Execute the AST in the Runtime
-/// 5. Convert the result to a UI widget tree
-///
-/// # Arguments
-///
-/// * `path` - Path to the Ogham source file (`.ogh` extension)
-/// * `config` - Optional runtime configuration
-///
-/// # Returns
-///
-/// Returns a tuple of `(UI, Arc<Mutex<Runtime>>)` on success, or a `RuntimeError` if any stage fails.
-/// The Runtime is returned so that callers can check for rerenders and trigger them as needed.
-///
-/// # Example
-///
-/// ```no_run
-/// use ogham::runtime;
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-///
-/// let (ui, runtime) = runtime::from_file("ui.ogh", None)?;
-/// # Ok(())
-/// # }
-/// ```
 pub fn from_file<P: AsRef<Path>>(
     path: P,
     config: Option<RuntimeConfig>,
-) -> Result<(UI, Arc<Mutex<Runtime>>), RuntimeError> {
+) -> Result<Runtime, RuntimeError> {
     let source = fs::read_to_string(path)?;
     from_source(&source, config)
 }
 
-/// Compile Ogham source code from a string into a UI.
-///
-/// This function handles the complete compilation pipeline:
-/// 1. Scan the source into tokens
-/// 2. Parse tokens into an AST
-/// 3. Execute the AST in the Runtime
-/// 4. Convert the result to a UI widget tree
-///
-/// # Arguments
-///
-/// * `source` - The Ogham source code as a string
-/// * `config` - Optional runtime configuration
-///
-/// # Returns
-///
-/// Returns a `UI` instance on success, or a `RuntimeError` if any stage fails.
-///
-/// # Example
-///
-/// ```no_run
-/// use ogham::runtime;
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-///
-/// let source = r#"
-///     fn main() {
-///         return flex {
-///             children: [text { text: "Hello, World!" }]
-///         }
-///     }
-/// "#;
-///
-/// let ui = runtime::from_source(source, None)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn from_source(
-    source: &str,
-    config: Option<RuntimeConfig>,
-) -> Result<(UI, Arc<Mutex<Runtime>>), RuntimeError> {
+pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtime, RuntimeError> {
     // Step 1: Scan source into tokens
     let mut scanner = Scanner::new(source.to_string());
     let tokens = scanner.scan();
@@ -1238,44 +1170,30 @@ pub fn from_source(
     let module = parser.parse()?;
 
     // Step 3: Execute in Runtime (kept alive for UI event handlers)
-    let runtime = Arc::new(Mutex::new(Runtime::new()));
+    let mut runtime = Runtime::new();
 
     // Inject host state if provided
     if let Some(config) = config.as_ref() {
         if let Some(ref state) = config.host_state.as_ref() {
             for (name, value) in state.iter() {
-                runtime
-                    .lock()
-                    .unwrap()
-                    .inject_host_state(name.clone(), value.clone());
+                runtime.inject_host_state(name.clone(), value.clone());
             }
         }
 
         // Register per-event handlers (for `event("name", ...)`).
         for (name, handler) in config.event_handlers.iter() {
-            runtime
-                .lock()
-                .unwrap()
-                .register_event_handler_arc(name.clone(), handler.clone());
+            runtime.register_event_handler_arc(name.clone(), handler.clone());
         }
     }
 
     // Store the module in the runtime for potential rerendering
-    runtime.lock().unwrap().set_module(module.clone());
+    runtime.set_module(module.clone());
 
-    let value = runtime.lock().unwrap().execute_module(&module)?;
+    // let value = runtime.execute_module(&module)?;
 
-    // Step 4: Convert Runtime value to UI widget
-    let widget = ast_bridge::widget_value_to_widget_ref(&runtime, &value)?;
-
-    // Step 5: Create UI
-    Ok((UI::new(widget), runtime))
+    Ok(runtime)
 }
 
-/// File watcher for monitoring Ogham source files for changes.
-///
-/// This struct wraps the underlying file system watcher and provides
-/// a simple API for watching a file and receiving change notifications.
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
     receiver: mpsc::Receiver<Result<NotifyEvent, notify::Error>>,
@@ -1283,27 +1201,6 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
-    /// Create a new file watcher for the specified file.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to the file to watch
-    ///
-    /// # Returns
-    ///
-    /// Returns a `FileWatcher` on success, or a `RuntimeError` if the watcher
-    /// could not be created or the file path is invalid.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use ogham::runtime;
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///
-    /// let watcher = runtime::FileWatcher::new("ui.ogh")?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, RuntimeError> {
         let path_buf = PathBuf::from(path.as_ref());
 
@@ -1342,36 +1239,6 @@ impl FileWatcher {
         })
     }
 
-    /// Check if the watched file has changed.
-    ///
-    /// This method should be called periodically (e.g., in an event loop)
-    /// to check for file changes. It returns `true` if the watched file
-    /// was modified or created.
-    ///
-    /// # Returns
-    ///
-    /// Returns `true` if the watched file changed, `false` otherwise.
-    /// Errors from the underlying watcher are logged but don't cause this
-    /// method to return an error.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use ogham::runtime;
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///
-    /// let mut watcher = runtime::FileWatcher::new("ui.ogh")?;
-    /// let mut ui = runtime::from_file("ui.ogh", None)?;
-    ///
-    /// // In your event loop:
-    /// if watcher.check_for_changes() {
-    ///     // File changed, recompile
-    ///     let (new_ui, _new_runtime) = runtime::from_file("ui.ogh", None)?;
-    ///     ui = new_ui;
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn check_for_changes(&self) -> bool {
         // Try to receive all pending events
         let mut file_changed = false;
@@ -1391,84 +1258,20 @@ impl FileWatcher {
         file_changed
     }
 
-    /// Get a reference to the watched file path.
     pub fn path(&self) -> &Path {
         &self.watched_path
     }
 
-    /// Recompile the watched file with the given configuration.
-    ///
-    /// This is a convenience method that reads the file and compiles it.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Optional runtime configuration
-    ///
-    /// # Returns
-    ///
-    /// Returns a tuple of `(UI, Arc<Mutex<Runtime>>)` on success, or a `RuntimeError` if compilation fails.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use ogham::runtime;
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///
-    /// let mut watcher = runtime::FileWatcher::new("ui.ogh")?;
-    /// let (mut ui, mut runtime) = runtime::from_file("ui.ogh", None)?;
-    ///
-    /// // In your event loop:
-    /// if watcher.check_for_changes() {
-    ///     let (new_ui, new_runtime) = watcher.recompile(None)?;
-    ///     ui = new_ui;
-    ///     runtime = new_runtime;
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn recompile(
-        &self,
-        config: Option<RuntimeConfig>,
-    ) -> Result<(UI, Arc<Mutex<Runtime>>), RuntimeError> {
+    pub fn recompile(&self, config: Option<RuntimeConfig>) -> Result<Runtime, RuntimeError> {
         from_file(&self.watched_path, config)
     }
 }
 
-/// Create a file watcher and compile the file in one step.
-///
-/// This is a convenience function that creates a watcher and compiles
-/// the file, returning both the UI and the watcher.
-///
-/// # Arguments
-///
-/// * `path` - Path to the Ogham source file to watch and compile
-/// * `config` - Optional runtime configuration
-///
-/// # Returns
-///
-/// Returns a tuple of `(UI, FileWatcher)` on success, or a `RuntimeError` if
-/// compilation or watcher creation fails.
-///
-/// # Example
-///
-/// ```no_run
-/// use ogham::runtime;
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-///
-/// let (mut ui, mut watcher) = runtime::watch_and_compile("ui.ogh", None)?;
-///
-/// // In your event loop:
-/// if watcher.check_for_changes() {
-///     ui = watcher.recompile(None)?;
-/// }
-/// # Ok(())
-/// # }
-/// ```
 pub fn watch_and_compile<P: AsRef<Path>>(
     path: P,
     config: Option<RuntimeConfig>,
-) -> Result<(UI, FileWatcher, Arc<Mutex<Runtime>>), RuntimeError> {
+) -> Result<(Runtime, FileWatcher), RuntimeError> {
     let watcher = FileWatcher::new(&path)?;
-    let (ui, runtime) = from_file(&path, config)?;
-    Ok((ui, watcher, runtime))
+    let runtime = from_file(&path, config)?;
+    Ok((runtime, watcher))
 }

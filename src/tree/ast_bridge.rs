@@ -1,8 +1,8 @@
+use crate::runtime::{Runtime, RuntimeWidget, VMError, Value};
 use crate::tree::{
     flex_widget::FlexWidget, style::*, svg_widget::SvgWidget, text_input_widget::TextInputWidget,
     text_widget::TextWidget, WidgetRef,
 };
-use crate::runtime::{Runtime, RuntimeWidget, VMError, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -76,7 +76,11 @@ fn create_flex_widget(
                     .entry(event_name.clone())
                     .or_default()
                     .push(Box::new(move |_event| {
-                        let result = runtime_for_handler.lock().unwrap().call_closure(&closure, &[], &format!("event_handler_{}", event_name));
+                        let result = runtime_for_handler.lock().unwrap().call_closure(
+                            &closure,
+                            &[],
+                            &format!("event_handler_{}", event_name),
+                        );
                         if let Err(err) = result {
                             eprintln!("[ogham] {} handler error: {:?}", event_name, err);
                         }
@@ -127,7 +131,8 @@ fn create_flex_widget(
             }
         } else if let Value::Widget(child_widget) = value {
             // Single child widget
-            let child_ref = widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
+            let child_ref =
+                widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
             children.push(child_ref);
         }
     }
@@ -244,8 +249,10 @@ fn create_flex_widget(
                 _ => {
                     // If a value is a widget, treat it as a child (named-slot style).
                     if let Value::Widget(child_widget) = value {
-                        let child_ref =
-                            widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
+                        let child_ref = widget_value_to_widget_ref(
+                            runtime,
+                            &Value::Widget(child_widget.clone()),
+                        )?;
                         children.push(child_ref);
                     }
                 }

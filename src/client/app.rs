@@ -2,12 +2,6 @@ use glutin::{
     context::PossiblyCurrentContext,
     surface::{GlSurface, Surface as GlutinSurface, WindowSurface},
 };
-use skia_safe::Surface as SkiaSurface;
-use skia_safe::{
-    gpu::{self, backend_render_targets, gl::FramebufferInfo, SurfaceOrigin},
-    ColorType,
-};
-use std::time::{Duration, Instant};
 use ogham::{
     skia::SkiaEnv,
     tree::{
@@ -16,6 +10,12 @@ use ogham::{
         Surface, UI,
     },
 };
+use skia_safe::Surface as SkiaSurface;
+use skia_safe::{
+    gpu::{self, backend_render_targets, gl::FramebufferInfo, SurfaceOrigin},
+    ColorType,
+};
+use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
