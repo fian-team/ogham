@@ -1,6 +1,6 @@
 let button_colors = {
   content: { r: 33, g: 30, b: 25, a: 255 },
-  border: { r: 134, g: 114, b: 62, a: 255 },
+  border: { r: 134, g: 134, b: 145, a: 255 },
   background: { r: 255, g: 255, b: 255, a: 170 },
 };
 
@@ -11,7 +11,7 @@ let button = fn (label: String) {
       counter = counter + 1;
     },
     style: {
-      width: "grow",
+      width: 250,
       height: 44,
       direction: "row",
       main_alignment: "start",
@@ -51,6 +51,12 @@ let main = fn () {
       direction: "column",
       padding: 24,
       gap: 12,
+      background_color: {
+        r: 30,
+        g: 30,
+        b: 30,
+        a: 255,
+      },
     },
     children: [
       button("Counter 1"),

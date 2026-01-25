@@ -1,4 +1,4 @@
-use crate::runtime::{Runtime, RuntimeWidget, VMError, Value};
+use crate::runtime::{error::VMError, value::Value, widget::RuntimeWidget, Runtime};
 use crate::tree::{
     flex_widget::FlexWidget, style::*, svg_widget::SvgWidget, text_input_widget::TextInputWidget,
     text_widget::TextWidget, WidgetRef,

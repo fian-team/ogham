@@ -1,7 +1,7 @@
 use crate::app::{ClientUI, ClientUpdate};
 use crate::home_page::HOME_PAGE;
 use crate::input::Input;
-use ogham::runtime::RuntimeConfig;
+use ogham::runtime::config::RuntimeConfig;
 use ogham::tree::event::Event;
 use ogham::tree::UI;
 use ogham::Ogham;
@@ -114,21 +114,23 @@ impl Client {
             let runtime = self.ogham.get_runtime().clone();
             let widget_value = {
                 let mut rt = runtime.lock().unwrap();
-                rt.rerender().map_err(|e| {
-                    eprintln!("[ogham] Rerender error: {:?}", e);
-                    e
-                }).ok()
+                rt.rerender()
+                    .map_err(|e| {
+                        eprintln!("[ogham] Rerender error: {:?}", e);
+                        e
+                    })
+                    .ok()
             };
 
             if let Some(widget_value) = widget_value {
                 // Convert the widget value to a WidgetRef
-                let new_root = ogham::tree::ast_bridge::widget_value_to_widget_ref(
-                    &runtime,
-                    &widget_value,
-                ).map_err(|e| {
-                    eprintln!("[ogham] Bridge error during rerender: {:?}", e);
-                    e
-                }).ok();
+                let new_root =
+                    ogham::tree::ast_bridge::widget_value_to_widget_ref(&runtime, &widget_value)
+                        .map_err(|e| {
+                            eprintln!("[ogham] Bridge error during rerender: {:?}", e);
+                            e
+                        })
+                        .ok();
 
                 if let Some(new_root) = new_root {
                     // Update the UI with the new root
