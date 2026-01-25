@@ -108,7 +108,29 @@ impl Scanner {
             }
             '%' => self.create_token(TokenType::Modulo),
             '^' => self.create_token(TokenType::Power),
-            '.' => self.create_token(TokenType::Dot),
+            '.' => {
+                // Check if next character is also '.' using peek (like other multi-char tokens)
+                if let Some(next_char) = self.peek() {
+                    if next_char == '.' {
+                        self.consume(); // consume the second '.'
+                        // Check if next character is also '.' (for ... spread operator)
+                        if let Some(third_char) = self.peek() {
+                            if third_char == '.' {
+                                self.consume(); // consume the third '.'
+                                self.create_token(TokenType::Spread)
+                            } else {
+                                self.create_token(TokenType::Range)
+                            }
+                        } else {
+                            self.create_token(TokenType::Range)
+                        }
+                    } else {
+                        self.create_token(TokenType::Dot)
+                    }
+                } else {
+                    self.create_token(TokenType::Dot)
+                }
+            }
             ':' => self.create_token(TokenType::Colon),
             ';' => self.create_token(TokenType::Semicolon),
             ',' => self.create_token(TokenType::Comma),
@@ -357,6 +379,8 @@ impl Scanner {
             ['r', 'e', 't', 'u', 'r', 'n'] => self.create_token(TokenType::Return),
             ['l', 'o', 'g'] => self.create_token(TokenType::Log),
             ['f', 'n'] => self.create_token(TokenType::Fn),
+            ['f', 'o', 'r'] => self.create_token(TokenType::For),
+            ['i', 'n'] => self.create_token(TokenType::In),
             ['t', 'r', 'u', 'e'] => self.create_token(TokenType::Boolean(true)),
             ['f', 'a', 'l', 's', 'e'] => self.create_token(TokenType::Boolean(false)),
             _ => self.create_token(TokenType::Identifier(value)),

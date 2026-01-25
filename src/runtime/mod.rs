@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::parser::{Block, Call, Expression, Function, Literal, Operator, Parser, Statement};
+use crate::parser::{Block, Call, Expression, ForLoopExpression, Function, Literal, Operator, Parser, Statement};
 use crate::runtime::closure::Closure;
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::environment::Environment;
@@ -25,6 +25,12 @@ pub struct Runtime {
     event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> bool + Send + Sync>>,
     needs_rerender: bool,
     module: Option<Function>,
+    // State management
+    component_state: HashMap<String, Value>, // Key format: "{call_stack_path}:{variable_name}"
+    call_stack: Vec<String>,                // Current execution path
+    active_state_paths: HashSet<String>,    // Paths that declared state in current render
+    has_branched: bool,                     // Track if branching has occurred in current function
+    call_counters: HashMap<String, usize>,  // Track call counts per function to generate unique paths
 }
 
 impl Runtime {
@@ -35,6 +41,11 @@ impl Runtime {
             event_handlers: HashMap::new(),
             needs_rerender: false,
             module: None,
+            component_state: HashMap::new(),
+            call_stack: Vec::new(),
+            active_state_paths: HashSet::new(),
+            has_branched: false,
+            call_counters: HashMap::new(),
         }
     }
 
@@ -94,19 +105,164 @@ impl Runtime {
         self.needs_rerender = false;
         // Reset environment to module level
         self.environment = Environment::new();
+        // Clear active state paths for new render
+        self.active_state_paths.clear();
+        // Clear call stack
+        self.call_stack.clear();
+        // Reset call counters for new render
+        self.call_counters.clear();
         let result = self.execute_module(&module);
+        // Cleanup state for unmounted components
+        self.cleanup_unmounted_state();
         result
     }
 
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
+        // Clear active state paths for new render
+        self.active_state_paths.clear();
+        // Clear call stack
+        self.call_stack.clear();
+        // Reset call counters for new render
+        self.call_counters.clear();
         // Execute the module body to populate the environment
         self.execute_block(&module.body)?;
         // Look for a 'main' variable that is a function
-        if let Some(Value::Closure(main_closure)) = self.environment.get("main") {
+        let result = if let Some(Value::Closure(main_closure)) = self.environment.get("main") {
             // Call the main function
             self.call_closure(&main_closure, &[], "main")
         } else {
             Ok(Value::Void)
+        };
+        // Cleanup state for unmounted components
+        self.cleanup_unmounted_state();
+        result
+    }
+
+    /// Get the current call stack path as a string
+    fn get_call_stack_path(&self) -> String {
+        if self.call_stack.is_empty() {
+            "".to_string()
+        } else {
+            self.call_stack.join("/")
+        }
+    }
+
+    /// Generate a state key from the current call stack path and variable name
+    fn get_state_key(&self, variable_name: &str) -> String {
+        let path = self.get_call_stack_path();
+        if path.is_empty() {
+            format!(":{}", variable_name)
+        } else {
+            format!("{}:{}", path, variable_name)
+        }
+    }
+
+    /// Get state value for a variable, searching up the call stack
+    fn get_state_value(&self, variable_name: &str) -> Option<Value> {
+        // Search up the call stack, from most specific to least specific
+        let mut search_path = self.call_stack.clone();
+        
+        // First try with full path
+        loop {
+            let path_str = if search_path.is_empty() {
+                "".to_string()
+            } else {
+                search_path.join("/")
+            };
+            let key = if path_str.is_empty() {
+                format!(":{}", variable_name)
+            } else {
+                format!("{}:{}", path_str, variable_name)
+            };
+            
+            if let Some(value) = self.component_state.get(&key) {
+                return Some(value.clone());
+            }
+            
+            // If we've exhausted the path, break
+            if search_path.is_empty() {
+                break;
+            }
+            
+            // Try with shorter path (pop one level)
+            search_path.pop();
+        }
+        
+        None
+    }
+    
+    /// Check if a variable is a state variable, searching up the call stack
+    fn is_state_variable(&self, variable_name: &str) -> bool {
+        self.get_state_value(variable_name).is_some()
+    }
+    
+    /// Set state value for a variable at the current call stack path
+    /// This will update the state at the most specific path where it exists,
+    /// or create it at the current path if it doesn't exist
+    fn set_state_value(&mut self, variable_name: &str, value: Value) {
+        // First, try to find existing state up the call stack
+        let mut search_path = self.call_stack.clone();
+        let mut found = false;
+        
+        loop {
+            let path_str = if search_path.is_empty() {
+                "".to_string()
+            } else {
+                search_path.join("/")
+            };
+            let key = if path_str.is_empty() {
+                format!(":{}", variable_name)
+            } else {
+                format!("{}:{}", path_str, variable_name)
+            };
+            
+            if self.component_state.contains_key(&key) {
+                // Found existing state, update it
+                self.component_state.insert(key, value.clone());
+                found = true;
+                break;
+            }
+            
+            // If we've exhausted the path, break
+            if search_path.is_empty() {
+                break;
+            }
+            
+            // Try with shorter path (pop one level)
+            search_path.pop();
+        }
+        
+        // If not found, create at current path
+        if !found {
+            let key = self.get_state_key(variable_name);
+            self.component_state.insert(key, value);
+        }
+    }
+
+
+    /// Cleanup state for components that are no longer mounted
+    fn cleanup_unmounted_state(&mut self) {
+        // Collect keys to remove
+        let keys_to_remove: Vec<String> = self
+            .component_state
+            .keys()
+            .filter(|key| {
+                // Extract path from key (format: "{path}:{variable_name}")
+                if let Some(colon_pos) = key.find(':') {
+                    let path = &key[..colon_pos];
+                    // Remove if path is not in active_state_paths
+                    !self.active_state_paths.contains(path)
+                } else {
+                    // Malformed key, remove it
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
+        // Remove the keys
+        for key in keys_to_remove {
+            self.component_state.remove(&key);
         }
     }
 
@@ -133,9 +289,34 @@ impl Runtime {
                 Ok(Value::Void)
             }
             Statement::DeclareState(state_stmt) => {
-                // Treat state declarations like regular variable declarations
+                // Enforce that state declarations must be at the beginning of a function
+                if self.has_branched {
+                    return Err(VMError::InvalidOperation(
+                        "State declarations must occur at the beginning of a function, before any branching statements".to_string(),
+                    ));
+                }
+
                 let name = state_stmt.get_identifier_value();
-                let value = self.evaluate_expression(&state_stmt.get_value())?;
+                let call_stack_path = self.get_call_stack_path();
+                
+                // Add this path to active state paths
+                if !call_stack_path.is_empty() {
+                    self.active_state_paths.insert(call_stack_path.clone());
+                }
+
+                // Check if state already exists at the CURRENT call stack path (not up the stack)
+                let state_key = self.get_state_key(&name);
+                let value = if let Some(existing_value) = self.component_state.get(&state_key) {
+                    // State exists at current path, use existing value (don't reinitialize)
+                    existing_value.clone()
+                } else {
+                    // State doesn't exist at current path, initialize with provided value
+                    let initial_value = self.evaluate_expression(&state_stmt.get_value())?;
+                    self.component_state.insert(state_key, initial_value.clone());
+                    initial_value
+                };
+
+                // Also store in environment for immediate access during current execution
                 self.environment.define(name, value);
                 Ok(Value::Void)
             }
@@ -143,12 +324,25 @@ impl Runtime {
                 let name = assign_stmt.get_identifier_value();
                 let value = self.evaluate_expression(&assign_stmt.get_value())?;
 
-                if !self.environment.assign(&name, value.clone()) {
-                    return Err(VMError::UndefinedVariable(name));
+                // Check if this is a state variable
+                if self.is_state_variable(&name) {
+                    // Update state map
+                    self.set_state_value(&name, value.clone());
+                    // Trigger rerender
+                    self.needs_rerender = true;
+                    // Also update environment for immediate access
+                    self.environment.assign(&name, value);
+                    Ok(Value::Void)
+                } else if self.environment.assign(&name, value.clone()) {
+                    // Regular variable assignment
+                    Ok(Value::Void)
+                } else {
+                    Err(VMError::UndefinedVariable(name))
                 }
-                Ok(Value::Void)
             }
             Statement::Return(return_stmt) => {
+                // Mark that branching has occurred (return is a form of branching)
+                self.has_branched = true;
                 if let Some(expr) = return_stmt.get_value() {
                     let value = self.evaluate_expression(&expr)?;
                     Err(VMError::Return(value))
@@ -157,6 +351,8 @@ impl Runtime {
                 }
             }
             Statement::Conditional(cond_stmt) => {
+                // Mark that branching has occurred
+                self.has_branched = true;
                 let condition = self.evaluate_expression(&cond_stmt.get_condition())?;
                 if let Value::Boolean(true) = condition {
                     self.execute_block(&cond_stmt.get_block())
@@ -170,6 +366,47 @@ impl Runtime {
             }
             Statement::Event(_) => {
                 // Events are not executed by the runtime
+                Ok(Value::Void)
+            }
+            Statement::ForLoop(for_loop) => {
+                // Mark that branching has occurred
+                self.has_branched = true;
+                let range_start = self.evaluate_expression(&for_loop.get_range_start())?;
+                let range_end = self.evaluate_expression(&for_loop.get_range_end())?;
+                
+                let start = match range_start {
+                    Value::Integer(i) => i,
+                    _ => return Err(VMError::TypeMismatch(
+                        "Range start must be an integer".to_string()
+                    )),
+                };
+                
+                let end = match range_end {
+                    Value::Integer(i) => i,
+                    _ => return Err(VMError::TypeMismatch(
+                        "Range end must be an integer".to_string()
+                    )),
+                };
+                
+                let variable_name = for_loop.get_variable().get();
+                let body = for_loop.get_body();
+                
+                // Create a new scope for the loop
+                let parent_env = self.environment.clone();
+                
+                // Iterate from start to end (exclusive)
+                for i in start..end {
+                    // Create new environment for this iteration
+                    self.environment = Environment::new_with_parent(parent_env.clone());
+                    // Set loop variable
+                    self.environment.define(variable_name.clone(), Value::Integer(i));
+                    // Execute body
+                    self.execute_block(&body)?;
+                }
+                
+                // Restore parent environment
+                self.environment = parent_env;
+                
                 Ok(Value::Void)
             }
         }
@@ -220,7 +457,82 @@ impl Runtime {
                     properties: evaluated_props,
                 }))
             }
+            Expression::Range(range) => {
+                // Ranges are typically only used in for loops, but we can evaluate them
+                let start = self.evaluate_expression(&range.start)?;
+                let end = self.evaluate_expression(&range.end)?;
+                // Return a tuple-like value? Actually, ranges are usually just used in parsing.
+                // For now, we'll return the start value as a placeholder.
+                // In practice, ranges are extracted before evaluation.
+                Ok(start)
+            }
+            Expression::ForLoop(for_loop) => {
+                self.evaluate_for_loop_expression(for_loop, false)
+            }
+            Expression::SpreadForLoop(for_loop) => {
+                self.evaluate_for_loop_expression(for_loop, true)
+            }
         }
+    }
+
+    fn evaluate_for_loop_expression(&mut self, for_loop: &ForLoopExpression, _is_spread: bool) -> Result<Value, VMError> {
+        let range_start = self.evaluate_expression(&for_loop.range_start)?;
+        let range_end = self.evaluate_expression(&for_loop.range_end)?;
+        
+        let start = match range_start {
+            Value::Integer(i) => i,
+            _ => return Err(VMError::TypeMismatch(
+                "Range start must be an integer".to_string()
+            )),
+        };
+        
+        let end = match range_end {
+            Value::Integer(i) => i,
+            _ => return Err(VMError::TypeMismatch(
+                "Range end must be an integer".to_string()
+            )),
+        };
+        
+        let variable_name = for_loop.variable.get();
+        let body = &for_loop.body;
+        
+        // Create a new scope for the loop
+        let parent_env = self.environment.clone();
+        let mut results = Vec::new();
+        
+        // Iterate from start to end (exclusive)
+        for i in start..end {
+            // Create new environment for this iteration
+            self.environment = Environment::new_with_parent(parent_env.clone());
+            // Set loop variable
+            self.environment.define(variable_name.clone(), Value::Integer(i));
+            // Execute body and collect return values
+            // execute_block propagates VMError::Return, which we need to catch
+            match self.execute_block(body) {
+                Ok(Value::Void) => {
+                    // No return value - this happens when all statements are void
+                    // In for loop expressions, we typically want to collect values, so skip this iteration
+                }
+                Err(VMError::Return(value)) => {
+                    // Explicit or implicit return statement (implicit returns are converted to Return by parser)
+                    results.push(value);
+                }
+                Err(e) => {
+                    // Restore environment before propagating error
+                    self.environment = parent_env;
+                    return Err(e);
+                }
+                Ok(value) => {
+                    // Shouldn't happen normally, but handle it
+                    results.push(value);
+                }
+            }
+        }
+        
+        // Restore parent environment
+        self.environment = parent_env;
+        
+        Ok(Value::Array(results))
     }
 
     fn evaluate_literal(&mut self, literal: &Literal) -> Result<Value, VMError> {
@@ -231,8 +543,10 @@ impl Runtime {
             Literal::String(s) => Ok(Value::String(s.clone())),
             Literal::Identifier(ident) => {
                 let name = ident.get();
-                // First check environment (for regular variables), then call tree state, then host state
-                if let Some(value) = self.environment.get(&name) {
+                // Lookup order: state map → environment → host state
+                if let Some(value) = self.get_state_value(&name) {
+                    Ok(value)
+                } else if let Some(value) = self.environment.get(&name) {
                     Ok(value)
                 } else if let Some(value) = self.get_host_state(&name) {
                     Ok(value)
@@ -242,11 +556,11 @@ impl Runtime {
             }
             Literal::Call(call) => self.execute_call(call),
             Literal::Function(func) => {
-                // Capture the current environment and call tree path when creating the closure
+                // Capture the current environment and call stack path when creating the closure
                 Ok(Value::Closure(Closure {
                     function: func.clone(),
                     captured_env: self.environment.clone(),
-                    captured_path: Vec::new(),
+                    captured_path: self.call_stack.clone(),
                 }))
             }
             Literal::Map(map) => {
@@ -260,8 +574,23 @@ impl Runtime {
             Literal::Array(array) => {
                 let mut value_array = Vec::new();
                 for expr in &array.elements {
-                    let value = self.evaluate_expression(expr)?;
-                    value_array.push(value);
+                    match expr {
+                        Expression::SpreadForLoop(for_loop) => {
+                            // Evaluate the for loop and spread its results
+                            let for_loop_results = self.evaluate_for_loop_expression(for_loop, true)?;
+                            if let Value::Array(results) = for_loop_results {
+                                // Spread the results into the parent array
+                                value_array.extend(results);
+                            } else {
+                                // Shouldn't happen, but handle gracefully
+                                value_array.push(for_loop_results);
+                            }
+                        }
+                        _ => {
+                            let value = self.evaluate_expression(expr)?;
+                            value_array.push(value);
+                        }
+                    }
                 }
                 Ok(Value::Array(value_array))
             }
@@ -477,15 +806,43 @@ impl Runtime {
             )));
         }
 
+        // Save current state
+        let old_env = std::mem::replace(&mut self.environment, Environment::new());
+        let old_has_branched = self.has_branched;
+        let old_call_stack = self.call_stack.clone();
+        
+        // For closures, we need to restore the captured path and then push the function name
+        // This allows closures to access state from their lexical scope
+        self.call_stack = closure.captured_path.clone();
+        
+        // Generate unique identifier for this function call
+        // Use the current call stack path + function name as a key to track call count
+        let call_site_key = if self.call_stack.is_empty() {
+            function_name.to_string()
+        } else {
+            format!("{}/{}", self.call_stack.join("/"), function_name)
+        };
+        
+        // Get or increment call counter for this call site
+        let call_index = self.call_counters.entry(call_site_key.clone()).or_insert(0);
+        *call_index += 1;
+        let current_call_index = *call_index;
+        
+        // Push function name with index to call stack for this call
+        // This ensures each call to the same function gets a unique path
+        let unique_function_id = format!("{}@{}", function_name, current_call_index);
+        self.call_stack.push(unique_function_id);
+
+        // Reset has_branched for new function call
+        self.has_branched = false;
+
         // Create new environment with the captured environment as parent
         // This allows the closure to access variables from its lexical scope
         let mut func_env = Environment::new_with_parent(closure.captured_env.clone());
         for (param, arg_value) in func.arguments.iter().zip(args.iter()) {
             func_env.define(param.get(), arg_value.clone());
         }
-
-        // Save current environment and switch to function environment
-        let old_env = std::mem::replace(&mut self.environment, func_env);
+        self.environment = func_env;
 
         // Execute function body
         let result = match self.execute_block(&func.body) {
@@ -495,8 +852,10 @@ impl Runtime {
             Ok(value) => Ok(value),
         };
 
-        // Restore environment
+        // Restore state
+        self.call_stack = old_call_stack;
         self.environment = old_env;
+        self.has_branched = old_has_branched;
 
         result
     }
@@ -511,7 +870,7 @@ impl Runtime {
         let closure = Closure {
             function: func.clone(),
             captured_env: self.environment.clone(),
-            captured_path: Vec::new(),
+            captured_path: self.call_stack.clone(),
         };
         self.call_closure(&closure, args, function_name)
     }

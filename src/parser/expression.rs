@@ -1,4 +1,4 @@
-use super::{identifier::*, literal::*, operator::*, widget::*};
+use super::{block::*, identifier::*, literal::*, operator::*, widget::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expression {
@@ -8,6 +8,9 @@ pub enum Expression {
     Grouping(Grouping), // (5 + 3)
     Widget(Widget),     // WidgetIdentifier { key: value }
     MemberAccess(MemberAccess), // foo.bar
+    Range(RangeExpression), // 0..5
+    ForLoop(ForLoopExpression), // for (i in 0..5) { ... }
+    SpreadForLoop(ForLoopExpression), // ...for (i in 0..5) { ... }
 }
 
 impl Expression {
@@ -26,6 +29,18 @@ impl Expression {
 
     pub fn new_member_access(object: Expression, property: Identifier) -> Expression {
         Expression::MemberAccess(MemberAccess::new(object, property))
+    }
+
+    pub fn new_range(start: Expression, end: Expression) -> Expression {
+        Expression::Range(RangeExpression::new(start, end))
+    }
+
+    pub fn new_for_loop(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> Expression {
+        Expression::ForLoop(ForLoopExpression::new(variable, range_start, range_end, body))
+    }
+
+    pub fn new_spread_for_loop(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> Expression {
+        Expression::SpreadForLoop(ForLoopExpression::new(variable, range_start, range_end, body))
     }
 }
 
@@ -75,6 +90,40 @@ impl Binary {
             left: Box::new(left),
             right: Box::new(right),
             operator,
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct RangeExpression {
+    pub start: Box<Expression>,
+    pub end: Box<Expression>,
+}
+
+impl RangeExpression {
+    pub fn new(start: Expression, end: Expression) -> RangeExpression {
+        RangeExpression {
+            start: Box::new(start),
+            end: Box::new(end),
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct ForLoopExpression {
+    pub variable: Identifier,
+    pub range_start: Box<Expression>,
+    pub range_end: Box<Expression>,
+    pub body: Block,
+}
+
+impl ForLoopExpression {
+    pub fn new(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> ForLoopExpression {
+        ForLoopExpression {
+            variable,
+            range_start: Box::new(range_start),
+            range_end: Box::new(range_end),
+            body,
         }
     }
 }

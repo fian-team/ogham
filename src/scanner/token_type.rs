@@ -23,6 +23,8 @@ pub enum TokenType {
     Power,     // ^
     Arrow,     // ->
     Increment, // ++
+    Range,     // ..
+    Spread,    // ...
     // Comparison operators
     GreaterThan,          // >
     GreaterThanOrEqualTo, // >=
@@ -38,6 +40,8 @@ pub enum TokenType {
     Return,
     Log,
     Fn,
+    For,
+    In,
     // String delimiters
     Quote,
     // Literals

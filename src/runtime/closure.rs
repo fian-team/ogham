@@ -4,7 +4,7 @@ use crate::{parser::Function, runtime::Environment};
 pub struct Closure {
     pub function: Function,
     pub captured_env: Environment,
-    pub captured_path: Vec<usize>,
+    pub captured_path: Vec<String>, // Call stack path when closure was created
 }
 
 impl PartialEq for Closure {

@@ -1,4 +1,4 @@
-use super::{super::parser::*, block::*, function::*, identifier::*};
+use super::{super::parser::*, block::*, expression::*, function::*, identifier::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Statement {
@@ -10,6 +10,7 @@ pub enum Statement {
     Event(EventStatement),
     Conditional(ConditionalStatement),
     Log(LogStatement),
+    ForLoop(ForLoopStatement),
 }
 
 impl Statement {
@@ -43,6 +44,10 @@ impl Statement {
 
     pub fn new_log(value: Expression) -> Statement {
         Statement::Log(LogStatement::new(value))
+    }
+
+    pub fn new_for_loop(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> Statement {
+        Statement::ForLoop(ForLoopStatement::new(variable, range_start, range_end, body))
     }
 }
 
@@ -186,5 +191,40 @@ impl LogStatement {
 
     pub fn get_value(&self) -> Expression {
         self.0.clone()
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct ForLoopStatement {
+    variable: Identifier,
+    range_start: Expression,
+    range_end: Expression,
+    body: Block,
+}
+
+impl ForLoopStatement {
+    pub fn new(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> ForLoopStatement {
+        ForLoopStatement {
+            variable,
+            range_start,
+            range_end,
+            body,
+        }
+    }
+
+    pub fn get_variable(&self) -> Identifier {
+        self.variable.clone()
+    }
+
+    pub fn get_range_start(&self) -> Expression {
+        self.range_start.clone()
+    }
+
+    pub fn get_range_end(&self) -> Expression {
+        self.range_end.clone()
+    }
+
+    pub fn get_body(&self) -> Block {
+        self.body.clone()
     }
 }

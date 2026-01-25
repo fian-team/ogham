@@ -112,6 +112,7 @@ impl Parser {
             // scanner::TokenType::Event => self.parse_event(),
             scanner::TokenType::Identifier(_) => self.parse_identifier_statement(),
             scanner::TokenType::Log => self.parse_log(),
+            scanner::TokenType::For => self.parse_for_loop_statement(),
             _ => {
                 // Try to parse as an expression statement (for implicit returns)
                 self.parse_expression_statement()
@@ -337,6 +338,158 @@ impl Parser {
         return Ok(Statement::new_log(expression));
     }
 
+    pub fn parse_for_loop_statement(&mut self) -> Result<Statement, SyntaxError> {
+        self.consume_if(scanner::TokenType::For)?;
+        self.consume_if(scanner::TokenType::LeftParenthesis)?;
+        let variable = self.consume_if_identifier()?;
+        self.consume_if(scanner::TokenType::In)?;
+        // Parse range explicitly: start..end
+        // Use primary() directly to parse the start value, but skip member access parsing
+        // since we don't want to consume the Range token
+        let range_start = match &self.input[self.current].token_type {
+            scanner::TokenType::Integer(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Integer(*value))
+            }
+            scanner::TokenType::Float(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Float(*value))
+            }
+            scanner::TokenType::Identifier(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
+            }
+            scanner::TokenType::LeftParenthesis => {
+                self.current += 1;
+                let expr = self.expression()?;
+                self.consume_if(scanner::TokenType::RightParenthesis)?;
+                Expression::Grouping(Grouping { value: Box::new(expr) })
+            }
+            _ => {
+                let current_token = self.current().unwrap();
+                return Err(SyntaxError {
+                    message: format!("Expected range start expression, got {:?}", current_token.token_type),
+                    line: current_token.line,
+                    column: current_token.column,
+                });
+            }
+        };
+        self.consume_if(scanner::TokenType::Range)?;
+        // Parse end value similarly
+        let range_end = match &self.input[self.current].token_type {
+            scanner::TokenType::Integer(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Integer(*value))
+            }
+            scanner::TokenType::Float(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Float(*value))
+            }
+            scanner::TokenType::Identifier(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
+            }
+            scanner::TokenType::LeftParenthesis => {
+                self.current += 1;
+                let expr = self.expression()?;
+                self.consume_if(scanner::TokenType::RightParenthesis)?;
+                Expression::Grouping(Grouping { value: Box::new(expr) })
+            }
+            _ => {
+                let current_token = self.current().unwrap();
+                return Err(SyntaxError {
+                    message: format!("Expected range end expression, got {:?}", current_token.token_type),
+                    line: current_token.line,
+                    column: current_token.column,
+                });
+            }
+        };
+        self.consume_if(scanner::TokenType::RightParenthesis)?;
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let body = self.parse_block()?;
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        return Ok(Statement::new_for_loop(variable, range_start, range_end, body));
+    }
+
+    fn parse_for_loop_expression(&mut self, is_spread: bool) -> Result<Expression, SyntaxError> {
+        if is_spread {
+            self.consume_if(scanner::TokenType::Spread)?;
+        }
+        self.consume_if(scanner::TokenType::For)?;
+        self.consume_if(scanner::TokenType::LeftParenthesis)?;
+        let variable = self.consume_if_identifier()?;
+        self.consume_if(scanner::TokenType::In)?;
+        // Parse range explicitly: start..end
+        // Parse start value directly without going through primary() to avoid member access parsing
+        let range_start = match &self.input[self.current].token_type {
+            scanner::TokenType::Integer(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Integer(*value))
+            }
+            scanner::TokenType::Float(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Float(*value))
+            }
+            scanner::TokenType::Identifier(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
+            }
+            scanner::TokenType::LeftParenthesis => {
+                self.current += 1;
+                let expr = self.expression()?;
+                self.consume_if(scanner::TokenType::RightParenthesis)?;
+                Expression::Grouping(Grouping { value: Box::new(expr) })
+            }
+            _ => {
+                let current_token = self.current().unwrap();
+                return Err(SyntaxError {
+                    message: format!("Expected range start expression, got {:?}", current_token.token_type),
+                    line: current_token.line,
+                    column: current_token.column,
+                });
+            }
+        };
+        self.consume_if(scanner::TokenType::Range)?;
+        // Parse end value similarly
+        let range_end = match &self.input[self.current].token_type {
+            scanner::TokenType::Integer(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Integer(*value))
+            }
+            scanner::TokenType::Float(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Float(*value))
+            }
+            scanner::TokenType::Identifier(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
+            }
+            scanner::TokenType::LeftParenthesis => {
+                self.current += 1;
+                let expr = self.expression()?;
+                self.consume_if(scanner::TokenType::RightParenthesis)?;
+                Expression::Grouping(Grouping { value: Box::new(expr) })
+            }
+            _ => {
+                let current_token = self.current().unwrap();
+                return Err(SyntaxError {
+                    message: format!("Expected range end expression, got {:?}", current_token.token_type),
+                    line: current_token.line,
+                    column: current_token.column,
+                });
+            }
+        };
+        self.consume_if(scanner::TokenType::RightParenthesis)?;
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let body = self.parse_block()?;
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        if is_spread {
+            Ok(Expression::new_spread_for_loop(variable, range_start, range_end, body))
+        } else {
+            Ok(Expression::new_for_loop(variable, range_start, range_end, body))
+        }
+    }
+
     pub fn expression(&mut self) -> Result<Expression, SyntaxError> {
         self.equality()
     }
@@ -370,10 +523,10 @@ impl Parser {
     }
 
     pub fn term(&mut self) -> Result<Expression, SyntaxError> {
-        let mut expression = self.factor()?;
+        let mut expression = self.range()?;
         while self.next_is(vec![scanner::TokenType::Plus, scanner::TokenType::Minus]) {
             let operator = self.get_current_as_operator()?;
-            let right = self.factor()?;
+            let right = self.range()?;
             expression = Expression::new_binary(expression, operator, right);
         }
         Ok(expression)
@@ -392,7 +545,27 @@ impl Parser {
         Ok(expression)
     }
 
+    pub fn range(&mut self) -> Result<Expression, SyntaxError> {
+        let start = self.factor()?;
+        if self.next_is(vec![scanner::TokenType::Range]) {
+            self.consume(); // consume Range token
+            let end = self.factor()?;
+            Ok(Expression::new_range(start, end))
+        } else {
+            Ok(start)
+        }
+    }
+
     pub fn unary(&mut self) -> Result<Expression, SyntaxError> {
+        // Check for spread operator before for loop
+        if self.next_is(vec![scanner::TokenType::Spread]) {
+            // Check if next token is For
+            if self.current + 1 < self.input.len() {
+                if let scanner::TokenType::For = self.input[self.current + 1].token_type {
+                    return self.parse_for_loop_expression(true);
+                }
+            }
+        }
         let expression = self.primary();
         // TODO: Implement ! and -
         // while self.next_is(vec![scanner::TokenType::Not]) {
@@ -440,6 +613,10 @@ impl Parser {
             scanner::TokenType::Fn => {
                 let function = self.parse_function()?;
                 Expression::Literal(Literal::Function(function))
+            }
+            scanner::TokenType::For => {
+                let for_loop = self.parse_for_loop_expression(false)?;
+                for_loop
             }
             scanner::TokenType::LeftParenthesis => {
                 self.current += 1;
@@ -571,6 +748,20 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftSquareBracket)?;
         let mut array = Array::new();
         while !self.next_is(vec![scanner::TokenType::RightSquareBracket]) {
+            // Check for spread for loop
+            if self.next_is(vec![scanner::TokenType::Spread]) {
+                // Check if next token is For
+                if self.current + 1 < self.input.len() {
+                    if let scanner::TokenType::For = self.input[self.current + 1].token_type {
+                        let spread_for_loop = self.parse_for_loop_expression(true)?;
+                        array.push(spread_for_loop);
+                        if !self.next_is(vec![scanner::TokenType::RightSquareBracket]) {
+                            self.consume_if(scanner::TokenType::Comma)?;
+                        }
+                        continue;
+                    }
+                }
+            }
             let expression = self.expression()?;
             array.push(expression);
             if !self.next_is(vec![scanner::TokenType::RightSquareBracket]) {
