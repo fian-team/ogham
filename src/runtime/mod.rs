@@ -353,12 +353,22 @@ impl Runtime {
             Statement::Conditional(cond_stmt) => {
                 // Mark that branching has occurred
                 self.has_branched = true;
-                let condition = self.evaluate_expression(&cond_stmt.get_condition())?;
-                if let Value::Boolean(true) = condition {
-                    self.execute_block(&cond_stmt.get_block())
-                } else {
-                    Ok(Value::Void)
+                // Check all branches (if and else if)
+                let mut matched = false;
+                for (condition, block) in cond_stmt.get_branches() {
+                    let condition_value = self.evaluate_expression(condition)?;
+                    if let Value::Boolean(true) = condition_value {
+                        matched = true;
+                        return self.execute_block(block);
+                    }
                 }
+                // Execute else block if no branch matched
+                if !matched {
+                    if let Some(else_block) = cond_stmt.get_else_block() {
+                        return self.execute_block(else_block);
+                    }
+                }
+                Ok(Value::Void)
             }
             Statement::Log(log_stmt) => {
                 let _value = self.evaluate_expression(&log_stmt.get_value())?;
@@ -627,8 +637,8 @@ impl Runtime {
             (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
             (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a + *b as f64)),
             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
-            (Value::String(a), b) => Ok(Value::String(format!("{}{:?}", a, b))),
-            (a, Value::String(b)) => Ok(Value::String(format!("{:?}{}", a, b))),
+            (Value::String(a), b) => Ok(Value::String(format!("{}{}", a, b))),
+            (a, Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
             _ => Err(VMError::TypeMismatch(format!(
                 "Cannot add {:?} and {:?}",
                 left, right

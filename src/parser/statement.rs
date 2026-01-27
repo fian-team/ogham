@@ -1,4 +1,4 @@
-use super::{super::parser::*, block::*, expression::*, function::*, identifier::*};
+use super::{block::*, expression::*, function::*, identifier::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Statement {
@@ -38,16 +38,29 @@ impl Statement {
         Statement::Event(EventStatement::new(identifier, value))
     }
 
-    pub fn new_conditional(condition: Expression, block: Block) -> Statement {
-        Statement::Conditional(ConditionalStatement::new(condition, block))
+    pub fn new_conditional(
+        branches: Vec<(Expression, Block)>,
+        else_block: Option<Block>,
+    ) -> Statement {
+        Statement::Conditional(ConditionalStatement::new(branches, else_block))
     }
 
     pub fn new_log(value: Expression) -> Statement {
         Statement::Log(LogStatement::new(value))
     }
 
-    pub fn new_for_loop(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> Statement {
-        Statement::ForLoop(ForLoopStatement::new(variable, range_start, range_end, body))
+    pub fn new_for_loop(
+        variable: Identifier,
+        range_start: Expression,
+        range_end: Expression,
+        body: Block,
+    ) -> Statement {
+        Statement::ForLoop(ForLoopStatement::new(
+            variable,
+            range_start,
+            range_end,
+            body,
+        ))
     }
 }
 
@@ -163,21 +176,27 @@ impl EventStatement {
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct ConditionalStatement {
-    condition: Expression,
-    block: Block,
+    branches: Vec<(Expression, Block)>,
+    else_block: Option<Block>,
 }
 
 impl ConditionalStatement {
-    pub fn new(condition: Expression, block: Block) -> ConditionalStatement {
-        ConditionalStatement { condition, block }
+    pub fn new(
+        branches: Vec<(Expression, Block)>,
+        else_block: Option<Block>,
+    ) -> ConditionalStatement {
+        ConditionalStatement {
+            branches,
+            else_block,
+        }
     }
 
-    pub fn get_condition(&self) -> Expression {
-        self.condition.clone()
+    pub fn get_branches(&self) -> &Vec<(Expression, Block)> {
+        &self.branches
     }
 
-    pub fn get_block(&self) -> Block {
-        self.block.clone()
+    pub fn get_else_block(&self) -> &Option<Block> {
+        &self.else_block
     }
 }
 
@@ -203,7 +222,12 @@ pub struct ForLoopStatement {
 }
 
 impl ForLoopStatement {
-    pub fn new(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> ForLoopStatement {
+    pub fn new(
+        variable: Identifier,
+        range_start: Expression,
+        range_end: Expression,
+        body: Block,
+    ) -> ForLoopStatement {
         ForLoopStatement {
             variable,
             range_start,

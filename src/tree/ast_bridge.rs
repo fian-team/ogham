@@ -298,8 +298,8 @@ fn create_text_widget(
 
     // Build text style (also carries minimal width/height sizing for Text widgets).
     let mut style_builder = TextStyle::builder();
-    let mut width_override: Option<Size> = None;
-    let mut height_override: Option<Size> = None;
+    let mut width_override: Option<Size> = Some(Size::Grow(1.0));
+    let mut height_override: Option<Size> = Some(Size::Shrink);
 
     if let Some(style_map) = style_props {
         for (key, value) in style_map {

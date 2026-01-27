@@ -263,15 +263,48 @@ impl Parser {
     }
 
     pub fn parse_conditional(&mut self) -> Result<Statement, SyntaxError> {
+        // Parse: if expression { block }
         self.consume_if(scanner::TokenType::If)?;
-        self.consume_if(scanner::TokenType::LeftParenthesis)?;
-        self.consume_if(scanner::TokenType::RightParenthesis)?;
+        let condition = self.expression()?;
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let block = self.parse_block()?;
-        return Ok(Statement::new_conditional(
-            Expression::Literal(Literal::Boolean(true)),
-            block,
-        ));
+        self.consume_if(scanner::TokenType::RightBracket)?;
+
+        let mut branches = vec![(condition, block)];
+        let mut else_block = None;
+
+        // Parse optional else if branches
+        while self.next_is(vec![scanner::TokenType::Else]) {
+            // Check if next token after Else is If
+            if self.current + 1 < self.input.len() {
+                if let scanner::TokenType::If = self.input[self.current + 1].token_type {
+                    // Parse: else if expression { block }
+                    self.consume_if(scanner::TokenType::Else)?;
+                    self.consume_if(scanner::TokenType::If)?;
+                    let else_if_condition = self.expression()?;
+                    self.consume_if(scanner::TokenType::LeftBracket)?;
+                    let else_if_block = self.parse_block()?;
+                    self.consume_if(scanner::TokenType::RightBracket)?;
+                    branches.push((else_if_condition, else_if_block));
+                } else {
+                    // Parse: else { block }
+                    self.consume_if(scanner::TokenType::Else)?;
+                    self.consume_if(scanner::TokenType::LeftBracket)?;
+                    else_block = Some(self.parse_block()?);
+                    self.consume_if(scanner::TokenType::RightBracket)?;
+                    break;
+                }
+            } else {
+                // Parse: else { block }
+                self.consume_if(scanner::TokenType::Else)?;
+                self.consume_if(scanner::TokenType::LeftBracket)?;
+                else_block = Some(self.parse_block()?);
+                self.consume_if(scanner::TokenType::RightBracket)?;
+                break;
+            }
+        }
+
+        Ok(Statement::new_conditional(branches, else_block))
     }
 
     pub fn parse_return(&mut self) -> Result<Statement, SyntaxError> {

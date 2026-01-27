@@ -4,7 +4,7 @@ let button_colors = {
   background: { r: 255, g: 255, b: 255, a: 170 },
 };
 
-let button = fn (label: String) {
+let counter_button = fn () {
   state counter = 0;
   Flex {
     mouse_down: fn () {
@@ -28,7 +28,41 @@ let button = fn (label: String) {
     },
     children: [
       Text {
-        text: label + " " + counter,
+        text: counter,
+        style: {
+          width: "grow",
+          height: "shrink",
+          align: "center",
+          size: 18,
+          color: button_colors.content,
+        }
+      },
+    ],
+  }
+};
+
+let button = fn (label: String, on_click: function) {
+  Flex {
+    mouse_down: on_click,
+    style: {
+      width: 250,
+      height: 44,
+      direction: "row",
+      main_alignment: "start",
+      cross_alignment: "center",
+      background_color: button_colors.background,
+      border: {
+        width: 2,
+        color: button_colors.border,
+        style: "solid",
+      },
+      padding: { top: 10, right: 12, bottom: 10, left: 12 },
+      margin: { top: 6, right: 0, bottom: 6, left: 0 },
+      corner_radius: 10,
+    },
+    children: [
+      Text {
+        text: label,
         style: {
           width: "grow",
           height: "shrink",
@@ -49,9 +83,9 @@ let main = fn () {
       height: "grow",
       main_alignment: "center",
       cross_alignment: "center",
-      direction: "column",
+      direction: "row",
       padding: 24,
-      gap: 12,
+      gap: 16,
       background_color: {
         r: 30,
         g: 30,
@@ -60,10 +94,47 @@ let main = fn () {
       },
     },
     children: [
-      button("Add counter"),
-      button("Remove counter"),
-      ...for (i in 0..counter_count) {
-        button("Counter " + i),
+      Flex {
+        style: {
+          width: "grow",
+          height: "shrink",
+          direction: "column",
+          main_alignment: "center",
+          cross_alignment: "end",
+          gap: 12,
+        },
+        children: [
+          Text {
+            text: "Showing " + counter_count + " counters.",
+            style: {
+              size: 18,
+              color: { r: 255, g: 255, b: 255, a: 255 },
+              width: "grow",
+              align: "right",
+            },
+          },
+          button("Add counter", fn () {
+            counter_count = counter_count + 1;
+          }),
+          button("Remove counter", fn () {
+            if counter_count > 0 {
+              counter_count = counter_count - 1;
+            }
+          }),
+        ],
+      },
+      Flex {
+        style: {
+          width: "grow",
+          height: "shrink",
+          direction: "column",
+          main_alignment: "start",
+          cross_alignment: "start",
+          gap: 4,
+        },
+        children: for (i in 0..counter_count) {
+          counter_button()
+        },
       },
     ],
   }

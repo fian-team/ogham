@@ -326,6 +326,17 @@ impl Scanner {
 
         // Check for decimal point
         if !self.is_at_end() && self.peek() == Some('.') {
+            // Check if the next character is also '.' (which would be a range token '..')
+            // If so, don't consume the '.' and return an integer token instead
+            if self.current + 1 < self.input.len() && self.input[self.current + 1] == '.' {
+                // This is a range token, not a decimal point
+                let value_as_string = self.input[self.start..self.current]
+                    .into_iter()
+                    .collect::<String>()
+                    .clone();
+                let value: i32 = value_as_string.parse().unwrap();
+                return self.create_token(TokenType::Integer(value));
+            }
             self.consume(); // consume the '.'
                             // Consume digits after decimal point
             while !self.is_at_end() && self.peek().unwrap().is_numeric() {
