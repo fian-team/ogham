@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::parser::{Block, Call, Expression, ForLoopExpression, Function, Literal, Operator, Parser, Statement};
+use crate::parser::{Block, Call, Expression, ForLoopExpression, Function, Literal, MatchExpression, Operator, Parser, Statement};
 use crate::runtime::closure::Closure;
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::environment::Environment;
@@ -482,7 +482,35 @@ impl Runtime {
             Expression::SpreadForLoop(for_loop) => {
                 self.evaluate_for_loop_expression(for_loop, true)
             }
+            Expression::Match(m) => self.evaluate_match_expression(m),
         }
+    }
+
+    fn evaluate_match_expression(&mut self, m: &MatchExpression) -> Result<Value, VMError> {
+        self.has_branched = true;
+        let scrutinee = self.evaluate_expression(&m.scrutinee)?;
+
+        for (pattern_expr, block) in &m.arms {
+            let matches = match pattern_expr {
+                Expression::Literal(Literal::Identifier(ident)) if ident.get() == "_" => true,
+                _ => {
+                    let pattern_value = self.evaluate_expression(pattern_expr)?;
+                    scrutinee == pattern_value
+                }
+            };
+            if matches {
+                return match self.execute_block(block) {
+                    Ok(Value::Void) => Ok(Value::Void),
+                    Err(VMError::Return(value)) => Ok(value),
+                    Err(e) => Err(e),
+                    Ok(value) => Ok(value),
+                };
+            }
+        }
+
+        Err(VMError::InvalidOperation(
+            "match non-exhaustive: no arm matched".to_string(),
+        ))
     }
 
     fn evaluate_for_loop_expression(&mut self, for_loop: &ForLoopExpression, _is_spread: bool) -> Result<Value, VMError> {

@@ -135,7 +135,10 @@ impl Scanner {
             ';' => self.create_token(TokenType::Semicolon),
             ',' => self.create_token(TokenType::Comma),
             '=' => {
-                if self.match_next('=') {
+                if self.match_next('>') {
+                    self.consume(); // consume the '>'
+                    self.create_token(TokenType::FatArrow)
+                } else if self.match_next('=') {
                     self.consume(); // consume the second '='
                     self.create_token(TokenType::EqualEqual)
                 } else {
@@ -380,20 +383,20 @@ impl Scanner {
             .collect::<String>()
             .clone();
 
-        let keyword_or_identifier = &self.input[self.start..self.current];
-
-        match keyword_or_identifier {
-            ['l', 'e', 't'] => self.create_token(TokenType::Let),
-            ['s', 't', 'a', 't', 'e'] => self.create_token(TokenType::State),
-            ['i', 'f'] => self.create_token(TokenType::If),
-            ['e', 'l', 's', 'e'] => self.create_token(TokenType::Else),
-            ['r', 'e', 't', 'u', 'r', 'n'] => self.create_token(TokenType::Return),
-            ['l', 'o', 'g'] => self.create_token(TokenType::Log),
-            ['f', 'n'] => self.create_token(TokenType::Fn),
-            ['f', 'o', 'r'] => self.create_token(TokenType::For),
-            ['i', 'n'] => self.create_token(TokenType::In),
-            ['t', 'r', 'u', 'e'] => self.create_token(TokenType::Boolean(true)),
-            ['f', 'a', 'l', 's', 'e'] => self.create_token(TokenType::Boolean(false)),
+        // Use string comparison for keywords (more reliable than slice pattern matching)
+        match value.as_str() {
+            "let" => self.create_token(TokenType::Let),
+            "state" => self.create_token(TokenType::State),
+            "if" => self.create_token(TokenType::If),
+            "else" => self.create_token(TokenType::Else),
+            "return" => self.create_token(TokenType::Return),
+            "log" => self.create_token(TokenType::Log),
+            "fn" => self.create_token(TokenType::Fn),
+            "for" => self.create_token(TokenType::For),
+            "in" => self.create_token(TokenType::In),
+            "match" => self.create_token(TokenType::Match),
+            "true" => self.create_token(TokenType::Boolean(true)),
+            "false" => self.create_token(TokenType::Boolean(false)),
             _ => self.create_token(TokenType::Identifier(value)),
         }
     }

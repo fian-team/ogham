@@ -24,6 +24,10 @@ pub struct Parser {
     input: Vec<scanner::Token>,
     current: usize,
     module: Function,
+    /// This is used to handle the case where an identifier is followed by a `{` token, which
+    /// can be parsed as either part of a match expression or a widget expression.
+    /// When parsing a match expression, we do not want to accidentally parse the scrutinee as a widget.
+    parsing_match_scrutinee: bool,
 }
 
 impl Parser {
@@ -32,6 +36,7 @@ impl Parser {
             input,
             current: 0,
             module: Function::new(),
+            parsing_match_scrutinee: false,
         }
     }
 
@@ -396,12 +401,17 @@ impl Parser {
                 self.current += 1;
                 let expr = self.expression()?;
                 self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping { value: Box::new(expr) })
+                Expression::Grouping(Grouping {
+                    value: Box::new(expr),
+                })
             }
             _ => {
                 let current_token = self.current().unwrap();
                 return Err(SyntaxError {
-                    message: format!("Expected range start expression, got {:?}", current_token.token_type),
+                    message: format!(
+                        "Expected range start expression, got {:?}",
+                        current_token.token_type
+                    ),
                     line: current_token.line,
                     column: current_token.column,
                 });
@@ -426,12 +436,17 @@ impl Parser {
                 self.current += 1;
                 let expr = self.expression()?;
                 self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping { value: Box::new(expr) })
+                Expression::Grouping(Grouping {
+                    value: Box::new(expr),
+                })
             }
             _ => {
                 let current_token = self.current().unwrap();
                 return Err(SyntaxError {
-                    message: format!("Expected range end expression, got {:?}", current_token.token_type),
+                    message: format!(
+                        "Expected range end expression, got {:?}",
+                        current_token.token_type
+                    ),
                     line: current_token.line,
                     column: current_token.column,
                 });
@@ -441,7 +456,12 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let body = self.parse_block()?;
         self.consume_if(scanner::TokenType::RightBracket)?;
-        return Ok(Statement::new_for_loop(variable, range_start, range_end, body));
+        return Ok(Statement::new_for_loop(
+            variable,
+            range_start,
+            range_end,
+            body,
+        ));
     }
 
     fn parse_for_loop_expression(&mut self, is_spread: bool) -> Result<Expression, SyntaxError> {
@@ -471,12 +491,17 @@ impl Parser {
                 self.current += 1;
                 let expr = self.expression()?;
                 self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping { value: Box::new(expr) })
+                Expression::Grouping(Grouping {
+                    value: Box::new(expr),
+                })
             }
             _ => {
                 let current_token = self.current().unwrap();
                 return Err(SyntaxError {
-                    message: format!("Expected range start expression, got {:?}", current_token.token_type),
+                    message: format!(
+                        "Expected range start expression, got {:?}",
+                        current_token.token_type
+                    ),
                     line: current_token.line,
                     column: current_token.column,
                 });
@@ -501,12 +526,17 @@ impl Parser {
                 self.current += 1;
                 let expr = self.expression()?;
                 self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping { value: Box::new(expr) })
+                Expression::Grouping(Grouping {
+                    value: Box::new(expr),
+                })
             }
             _ => {
                 let current_token = self.current().unwrap();
                 return Err(SyntaxError {
-                    message: format!("Expected range end expression, got {:?}", current_token.token_type),
+                    message: format!(
+                        "Expected range end expression, got {:?}",
+                        current_token.token_type
+                    ),
                     line: current_token.line,
                     column: current_token.column,
                 });
@@ -517,10 +547,115 @@ impl Parser {
         let body = self.parse_block()?;
         self.consume_if(scanner::TokenType::RightBracket)?;
         if is_spread {
-            Ok(Expression::new_spread_for_loop(variable, range_start, range_end, body))
+            Ok(Expression::new_spread_for_loop(
+                variable,
+                range_start,
+                range_end,
+                body,
+            ))
         } else {
-            Ok(Expression::new_for_loop(variable, range_start, range_end, body))
+            Ok(Expression::new_for_loop(
+                variable,
+                range_start,
+                range_end,
+                body,
+            ))
         }
+    }
+
+    /// Parse a match pattern (primary-only: literal or identifier including _).
+    fn parse_match_pattern(&mut self) -> Result<Expression, SyntaxError> {
+        let current_token = self.current().ok_or_else(|| SyntaxError {
+            message: "Unexpected end of input while parsing match pattern".to_owned(),
+            line: 0,
+            column: 0,
+        })?;
+        let expr = match &current_token.token_type {
+            scanner::TokenType::Integer(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Integer(*value))
+            }
+            scanner::TokenType::Float(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Float(*value))
+            }
+            scanner::TokenType::Boolean(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Boolean(*value))
+            }
+            scanner::TokenType::String(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::String(value.clone()))
+            }
+            scanner::TokenType::Identifier(value) => {
+                self.current += 1;
+                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
+            }
+            _ => {
+                return Err(SyntaxError {
+                    message: format!(
+                        "Expected match pattern (literal or identifier), got {:?}",
+                        current_token.token_type
+                    ),
+                    line: current_token.line,
+                    column: current_token.column,
+                });
+            }
+        };
+        Ok(expr)
+    }
+
+    fn parse_match_expression(&mut self) -> Result<Expression, SyntaxError> {
+        // Only accept Match token to begin the expression
+        let current = self.current().ok_or_else(|| SyntaxError {
+            message: "Expected 'match'".to_owned(),
+            line: 0,
+            column: 0,
+        })?;
+        match &current.token_type {
+            scanner::TokenType::Match => {
+                self.consume();
+            }
+            _ => {
+                return Err(SyntaxError {
+                    message: "Expected 'match'".to_owned(),
+                    line: current.line,
+                    column: current.column,
+                });
+            }
+        }
+        self.parsing_match_scrutinee = true;
+        let scrutinee = self.expression();
+        self.parsing_match_scrutinee = false;
+        let scrutinee = scrutinee?;
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+
+        let mut arms = Vec::new();
+        while !self.next_is(vec![scanner::TokenType::RightBracket]) {
+            let pattern = self.parse_match_pattern()?;
+            self.consume_if(scanner::TokenType::FatArrow)?;
+
+            let body = if self.next_is(vec![scanner::TokenType::LeftBracket]) {
+                self.consume_if(scanner::TokenType::LeftBracket)?;
+                let block = self.parse_block()?;
+                self.consume_if(scanner::TokenType::RightBracket)?;
+                block
+            } else {
+                let expr = self.expression()?;
+                let mut block = Block::new();
+                block.statement_list.push(Statement::new_return(Some(expr)));
+                block
+            };
+
+            arms.push((pattern, body));
+
+            if self.next_is(vec![scanner::TokenType::Comma]) {
+                self.consume_if(scanner::TokenType::Comma)?;
+            }
+        }
+
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        Ok(Expression::new_match(scrutinee, arms))
     }
 
     pub fn expression(&mut self) -> Result<Expression, SyntaxError> {
@@ -625,10 +760,12 @@ impl Parser {
                 self.current += 1;
                 let identifier = Identifier::new(&value);
                 let is_call = self.next_is(vec![scanner::TokenType::LeftParenthesis]);
+                let is_widget = self.next_is(vec![scanner::TokenType::LeftBracket]);
                 if is_call {
                     let call = self.parse_call(identifier)?;
                     Expression::Literal(Literal::Call(call))
-                } else if self.next_is(vec![scanner::TokenType::LeftBracket]) {
+                } else if is_widget && !self.parsing_match_scrutinee {
+                    // When parsing match scrutinee, `id {` is identifier + match arms, not a widget
                     let widget = self.parse_widget(identifier)?;
                     Expression::Widget(widget)
                 } else {
@@ -647,6 +784,7 @@ impl Parser {
                 let function = self.parse_function()?;
                 Expression::Literal(Literal::Function(function))
             }
+            scanner::TokenType::Match => return self.parse_match_expression(),
             scanner::TokenType::For => {
                 let for_loop = self.parse_for_loop_expression(false)?;
                 for_loop

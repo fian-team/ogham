@@ -11,6 +11,7 @@ pub enum Expression {
     Range(RangeExpression), // 0..5
     ForLoop(ForLoopExpression), // for (i in 0..5) { ... }
     SpreadForLoop(ForLoopExpression), // ...for (i in 0..5) { ... }
+    Match(MatchExpression), // match expr { pat => body, ... }
 }
 
 impl Expression {
@@ -41,6 +42,10 @@ impl Expression {
 
     pub fn new_spread_for_loop(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> Expression {
         Expression::SpreadForLoop(ForLoopExpression::new(variable, range_start, range_end, body))
+    }
+
+    pub fn new_match(scrutinee: Expression, arms: Vec<(Expression, Block)>) -> Expression {
+        Expression::Match(MatchExpression::new(scrutinee, arms))
     }
 }
 
@@ -124,6 +129,21 @@ impl ForLoopExpression {
             range_start: Box::new(range_start),
             range_end: Box::new(range_end),
             body,
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct MatchExpression {
+    pub scrutinee: Box<Expression>,
+    pub arms: Vec<(Expression, Block)>,
+}
+
+impl MatchExpression {
+    pub fn new(scrutinee: Expression, arms: Vec<(Expression, Block)>) -> MatchExpression {
+        MatchExpression {
+            scrutinee: Box::new(scrutinee),
+            arms,
         }
     }
 }

@@ -42,6 +42,9 @@ pub enum TokenType {
     Fn,
     For,
     In,
+    Match,
+    // Match arms
+    FatArrow, // =>
     // String delimiters
     Quote,
     // Literals
