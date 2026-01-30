@@ -86,12 +86,12 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Result<Function, SyntaxError> {
-        let block = self.parse_block()?;
+        let block = self.parse_block(true)?;
         self.module.body = block;
         Ok(self.module.clone())
     }
 
-    pub fn parse_block(&mut self) -> Result<Block, SyntaxError> {
+    pub fn parse_block(&mut self, allow_import: bool) -> Result<Block, SyntaxError> {
         let mut block = Block::new();
         while self.current < self.input.len() {
             if let scanner::TokenType::EOF = self.input[self.current].token_type.clone() {
@@ -101,15 +101,26 @@ impl Parser {
             if let scanner::TokenType::RightBracket = self.input[self.current].token_type.clone() {
                 break;
             }
-            let statement = self.parse_statement()?;
+            let statement = self.parse_statement(allow_import)?;
             block.statement_list.push(statement);
         }
         Ok(block)
     }
 
-    pub fn parse_statement(&mut self) -> Result<Statement, SyntaxError> {
+    pub fn parse_statement(&mut self, allow_import: bool) -> Result<Statement, SyntaxError> {
         let current_token = &self.input[self.current];
         match current_token.token_type.clone() {
+            scanner::TokenType::Import => {
+                if !allow_import {
+                    let t = current_token.clone();
+                    return Err(SyntaxError {
+                        message: "import is only allowed at module top level".to_owned(),
+                        line: t.line,
+                        column: t.column,
+                    });
+                }
+                self.parse_import()
+            }
             scanner::TokenType::If => self.parse_conditional(),
             scanner::TokenType::Return => self.parse_return(),
             scanner::TokenType::Let => self.parse_let(),
@@ -123,6 +134,69 @@ impl Parser {
                 self.parse_expression_statement()
             }
         }
+    }
+
+    fn parse_import(&mut self) -> Result<Statement, SyntaxError> {
+        self.consume_if(scanner::TokenType::Import)?;
+        let (names, path) = if self.next_is(vec![scanner::TokenType::LeftBracket]) {
+            self.consume_if(scanner::TokenType::LeftBracket)?;
+            let mut ids = Vec::new();
+            loop {
+                if self.next_is(vec![scanner::TokenType::RightBracket]) {
+                    self.consume_if(scanner::TokenType::RightBracket)?;
+                    break;
+                }
+                let id = self.consume_if_identifier()?.get();
+                ids.push(id);
+                if self.next_is(vec![scanner::TokenType::RightBracket]) {
+                    self.consume_if(scanner::TokenType::RightBracket)?;
+                    break;
+                }
+                self.consume_if(scanner::TokenType::Comma)?;
+            }
+            self.consume_if(scanner::TokenType::From)?;
+            let path_token = self.current().ok_or_else(|| SyntaxError {
+                message: "Expected string path after 'from'".to_owned(),
+                line: 0,
+                column: 0,
+            })?;
+            let path = match &path_token.token_type {
+                scanner::TokenType::String(s) => {
+                    self.consume();
+                    s.clone()
+                }
+                _ => {
+                    return Err(SyntaxError {
+                        message: "Expected string path after 'from'".to_owned(),
+                        line: path_token.line,
+                        column: path_token.column,
+                    });
+                }
+            };
+            (Some(ids), path)
+        } else {
+            let path_token = self.current().ok_or_else(|| SyntaxError {
+                message: "Expected string path or '{' after 'import'".to_owned(),
+                line: 0,
+                column: 0,
+            })?;
+            let path = match &path_token.token_type {
+                scanner::TokenType::String(s) => {
+                    self.consume();
+                    s.clone()
+                }
+                _ => {
+                    return Err(SyntaxError {
+                        message: "Expected string path or '{' after 'import'".to_owned(),
+                        line: path_token.line,
+                        column: path_token.column,
+                    });
+                }
+            };
+            (None, path)
+        };
+        self.consume_if(scanner::TokenType::Semicolon)?;
+        Ok(Statement::new_import(names, path))
     }
 
     fn consume_if(&mut self, token: scanner::TokenType) -> Result<(), SyntaxError> {
@@ -272,7 +346,7 @@ impl Parser {
         self.consume_if(scanner::TokenType::If)?;
         let condition = self.expression()?;
         self.consume_if(scanner::TokenType::LeftBracket)?;
-        let block = self.parse_block()?;
+        let block = self.parse_block(false)?;
         self.consume_if(scanner::TokenType::RightBracket)?;
 
         let mut branches = vec![(condition, block)];
@@ -288,14 +362,14 @@ impl Parser {
                     self.consume_if(scanner::TokenType::If)?;
                     let else_if_condition = self.expression()?;
                     self.consume_if(scanner::TokenType::LeftBracket)?;
-                    let else_if_block = self.parse_block()?;
+                    let else_if_block = self.parse_block(false)?;
                     self.consume_if(scanner::TokenType::RightBracket)?;
                     branches.push((else_if_condition, else_if_block));
                 } else {
                     // Parse: else { block }
                     self.consume_if(scanner::TokenType::Else)?;
                     self.consume_if(scanner::TokenType::LeftBracket)?;
-                    else_block = Some(self.parse_block()?);
+                    else_block = Some(self.parse_block(false)?);
                     self.consume_if(scanner::TokenType::RightBracket)?;
                     break;
                 }
@@ -303,7 +377,7 @@ impl Parser {
                 // Parse: else { block }
                 self.consume_if(scanner::TokenType::Else)?;
                 self.consume_if(scanner::TokenType::LeftBracket)?;
-                else_block = Some(self.parse_block()?);
+                else_block = Some(self.parse_block(false)?);
                 self.consume_if(scanner::TokenType::RightBracket)?;
                 break;
             }
@@ -454,7 +528,7 @@ impl Parser {
         };
         self.consume_if(scanner::TokenType::RightParenthesis)?;
         self.consume_if(scanner::TokenType::LeftBracket)?;
-        let body = self.parse_block()?;
+        let body = self.parse_block(false)?;
         self.consume_if(scanner::TokenType::RightBracket)?;
         return Ok(Statement::new_for_loop(
             variable,
@@ -544,7 +618,7 @@ impl Parser {
         };
         self.consume_if(scanner::TokenType::RightParenthesis)?;
         self.consume_if(scanner::TokenType::LeftBracket)?;
-        let body = self.parse_block()?;
+        let body = self.parse_block(false)?;
         self.consume_if(scanner::TokenType::RightBracket)?;
         if is_spread {
             Ok(Expression::new_spread_for_loop(
@@ -637,7 +711,7 @@ impl Parser {
 
             let body = if self.next_is(vec![scanner::TokenType::LeftBracket]) {
                 self.consume_if(scanner::TokenType::LeftBracket)?;
-                let block = self.parse_block()?;
+                let block = self.parse_block(false)?;
                 self.consume_if(scanner::TokenType::RightBracket)?;
                 block
             } else {
@@ -867,7 +941,7 @@ impl Parser {
                 self.consume_if(scanner::TokenType::RightBracket)?;
                 return Ok(function);
             }
-            let statement = self.parse_statement()?;
+            let statement = self.parse_statement(false)?;
             function.body.statement_list.push(statement);
         }
         let current_token = if let Some(token) = self.current() {

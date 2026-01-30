@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::{parser::SyntaxError, runtime::Value, tree::ast_bridge};
 
 /// Runtime error types for execution errors
@@ -7,6 +9,9 @@ pub enum VMError {
     TypeMismatch(String),
     InvalidOperation(String),
     Return(Value),
+    ImportCycle(Vec<PathBuf>),
+    ImportError(String),
+    ImportConflict(String),
 }
 
 /// Aggregated error type for all runtime execution stages.

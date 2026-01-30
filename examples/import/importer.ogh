@@ -1,0 +1,5 @@
+import "imported.ogh";
+
+let main = fn () {
+  button("Hello, world!")
+};

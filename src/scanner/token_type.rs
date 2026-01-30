@@ -43,6 +43,8 @@ pub enum TokenType {
     For,
     In,
     Match,
+    Import,
+    From,
     // Match arms
     FatArrow, // =>
     // String delimiters

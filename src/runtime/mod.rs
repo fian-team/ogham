@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::parser::{Block, Call, Expression, ForLoopExpression, Function, Literal, MatchExpression, Operator, Parser, Statement};
+use crate::parser::{
+    Block, Call, Expression, ForLoopExpression, Function, ImportStatement, Literal,
+    MatchExpression, Operator, Parser, Statement,
+};
 use crate::runtime::closure::Closure;
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::environment::Environment;
@@ -27,10 +30,14 @@ pub struct Runtime {
     module: Option<Function>,
     // State management
     component_state: HashMap<String, Value>, // Key format: "{call_stack_path}:{variable_name}"
-    call_stack: Vec<String>,                // Current execution path
-    active_state_paths: HashSet<String>,    // Paths that declared state in current render
-    has_branched: bool,                     // Track if branching has occurred in current function
-    call_counters: HashMap<String, usize>,  // Track call counts per function to generate unique paths
+    call_stack: Vec<String>,                 // Current execution path
+    active_state_paths: HashSet<String>,     // Paths that declared state in current render
+    has_branched: bool,                      // Track if branching has occurred in current function
+    call_counters: HashMap<String, usize>, // Track call counts per function to generate unique paths
+    // Import resolution
+    project_root: Option<PathBuf>,
+    import_loading_stack: Vec<PathBuf>,
+    import_loaded: HashSet<PathBuf>,
 }
 
 impl Runtime {
@@ -46,7 +53,18 @@ impl Runtime {
             active_state_paths: HashSet::new(),
             has_branched: false,
             call_counters: HashMap::new(),
+            project_root: None,
+            import_loading_stack: Vec::new(),
+            import_loaded: HashSet::new(),
         }
+    }
+
+    pub fn set_project_root(&mut self, path: PathBuf) {
+        self.project_root = Some(path);
+    }
+
+    pub fn project_root(&self) -> Option<&PathBuf> {
+        self.project_root.as_ref()
     }
 
     pub fn inject_host_state(&mut self, name: String, value: Value) {
@@ -124,6 +142,9 @@ impl Runtime {
         self.call_stack.clear();
         // Reset call counters for new render
         self.call_counters.clear();
+        // Clear import state so each run re-imports and can detect cycles
+        self.import_loading_stack.clear();
+        self.import_loaded.clear();
         // Execute the module body to populate the environment
         self.execute_block(&module.body)?;
         // Look for a 'main' variable that is a function
@@ -161,7 +182,7 @@ impl Runtime {
     fn get_state_value(&self, variable_name: &str) -> Option<Value> {
         // Search up the call stack, from most specific to least specific
         let mut search_path = self.call_stack.clone();
-        
+
         // First try with full path
         loop {
             let path_str = if search_path.is_empty() {
@@ -174,28 +195,28 @@ impl Runtime {
             } else {
                 format!("{}:{}", path_str, variable_name)
             };
-            
+
             if let Some(value) = self.component_state.get(&key) {
                 return Some(value.clone());
             }
-            
+
             // If we've exhausted the path, break
             if search_path.is_empty() {
                 break;
             }
-            
+
             // Try with shorter path (pop one level)
             search_path.pop();
         }
-        
+
         None
     }
-    
+
     /// Check if a variable is a state variable, searching up the call stack
     fn is_state_variable(&self, variable_name: &str) -> bool {
         self.get_state_value(variable_name).is_some()
     }
-    
+
     /// Set state value for a variable at the current call stack path
     /// This will update the state at the most specific path where it exists,
     /// or create it at the current path if it doesn't exist
@@ -203,7 +224,7 @@ impl Runtime {
         // First, try to find existing state up the call stack
         let mut search_path = self.call_stack.clone();
         let mut found = false;
-        
+
         loop {
             let path_str = if search_path.is_empty() {
                 "".to_string()
@@ -215,30 +236,29 @@ impl Runtime {
             } else {
                 format!("{}:{}", path_str, variable_name)
             };
-            
+
             if self.component_state.contains_key(&key) {
                 // Found existing state, update it
                 self.component_state.insert(key, value.clone());
                 found = true;
                 break;
             }
-            
+
             // If we've exhausted the path, break
             if search_path.is_empty() {
                 break;
             }
-            
+
             // Try with shorter path (pop one level)
             search_path.pop();
         }
-        
+
         // If not found, create at current path
         if !found {
             let key = self.get_state_key(variable_name);
             self.component_state.insert(key, value);
         }
     }
-
 
     /// Cleanup state for components that are no longer mounted
     fn cleanup_unmounted_state(&mut self) {
@@ -298,7 +318,7 @@ impl Runtime {
 
                 let name = state_stmt.get_identifier_value();
                 let call_stack_path = self.get_call_stack_path();
-                
+
                 // Add this path to active state paths
                 if !call_stack_path.is_empty() {
                     self.active_state_paths.insert(call_stack_path.clone());
@@ -312,7 +332,8 @@ impl Runtime {
                 } else {
                     // State doesn't exist at current path, initialize with provided value
                     let initial_value = self.evaluate_expression(&state_stmt.get_value())?;
-                    self.component_state.insert(state_key, initial_value.clone());
+                    self.component_state
+                        .insert(state_key, initial_value.clone());
                     initial_value
                 };
 
@@ -378,48 +399,138 @@ impl Runtime {
                 // Events are not executed by the runtime
                 Ok(Value::Void)
             }
+            Statement::Import(import_stmt) => self.execute_import(import_stmt),
             Statement::ForLoop(for_loop) => {
                 // Mark that branching has occurred
                 self.has_branched = true;
                 let range_start = self.evaluate_expression(&for_loop.get_range_start())?;
                 let range_end = self.evaluate_expression(&for_loop.get_range_end())?;
-                
+
                 let start = match range_start {
                     Value::Integer(i) => i,
-                    _ => return Err(VMError::TypeMismatch(
-                        "Range start must be an integer".to_string()
-                    )),
+                    _ => {
+                        return Err(VMError::TypeMismatch(
+                            "Range start must be an integer".to_string(),
+                        ))
+                    }
                 };
-                
+
                 let end = match range_end {
                     Value::Integer(i) => i,
-                    _ => return Err(VMError::TypeMismatch(
-                        "Range end must be an integer".to_string()
-                    )),
+                    _ => {
+                        return Err(VMError::TypeMismatch(
+                            "Range end must be an integer".to_string(),
+                        ))
+                    }
                 };
-                
+
                 let variable_name = for_loop.get_variable().get();
                 let body = for_loop.get_body();
-                
+
                 // Create a new scope for the loop
                 let parent_env = self.environment.clone();
-                
+
                 // Iterate from start to end (exclusive)
                 for i in start..end {
                     // Create new environment for this iteration
                     self.environment = Environment::new_with_parent(parent_env.clone());
                     // Set loop variable
-                    self.environment.define(variable_name.clone(), Value::Integer(i));
+                    self.environment
+                        .define(variable_name.clone(), Value::Integer(i));
                     // Execute body
                     self.execute_block(&body)?;
                 }
-                
+
                 // Restore parent environment
                 self.environment = parent_env;
-                
+
                 Ok(Value::Void)
             }
         }
+    }
+
+    fn execute_import(&mut self, import_stmt: &ImportStatement) -> Result<Value, VMError> {
+        let project_root = self.project_root.as_ref().ok_or_else(|| {
+            VMError::ImportError("project root not set; cannot resolve import path".to_string())
+        })?;
+
+        let path_str = import_stmt.get_path();
+        let mut resolved = project_root.join(path_str);
+        if resolved.extension().is_none() {
+            resolved.set_extension("ogh");
+        }
+
+        let source = fs::read_to_string(&resolved).map_err(|e| {
+            VMError::ImportError(format!("failed to read {}: {}", resolved.display(), e))
+        })?;
+
+        let key = resolved.canonicalize().unwrap_or(resolved.clone());
+
+        if self.import_loading_stack.contains(&key) {
+            let mut cycle = self.import_loading_stack.clone();
+            cycle.push(key.clone());
+            return Err(VMError::ImportCycle(cycle));
+        }
+        if self.import_loaded.contains(&key) {
+            return Ok(Value::Void);
+        }
+
+        self.import_loading_stack.push(key.clone());
+
+        let mut scanner = Scanner::new(source);
+        let tokens = scanner.scan();
+        let mut parser = Parser::new(tokens);
+        let imported_module = parser.parse().map_err(|e| {
+            VMError::ImportError(format!(
+                "parse error in {} at {}:{}: {}",
+                resolved.display(),
+                e.line,
+                e.column,
+                e.message
+            ))
+        })?;
+
+        let temp_env = Environment::new();
+        let saved_env = std::mem::replace(&mut self.environment, temp_env);
+        let block_result = self.execute_block(&imported_module.body);
+        let temp_env = std::mem::replace(&mut self.environment, saved_env);
+
+        if let Err(e) = block_result {
+            match e {
+                VMError::Return(_) => { /* imported module had return; ignore */ }
+                other => {
+                    self.import_loading_stack.pop();
+                    return Err(other);
+                }
+            }
+        }
+
+        let names_to_copy: Option<Vec<String>> = import_stmt.get_names().clone();
+        if let Some(ref names) = names_to_copy {
+            for name in names {
+                if temp_env.get(name).is_none() {
+                    self.import_loading_stack.pop();
+                    return Err(VMError::ImportError(format!(
+                        "export '{}' not found in {}",
+                        name,
+                        resolved.display()
+                    )));
+                }
+            }
+        }
+
+        if let Err(conflict_name) =
+            self.environment
+                .copy_from(&temp_env, names_to_copy.as_deref(), true)
+        {
+            self.import_loading_stack.pop();
+            return Err(VMError::ImportConflict(conflict_name));
+        }
+
+        self.import_loading_stack.pop();
+        self.import_loaded.insert(key);
+
+        Ok(Value::Void)
     }
 
     pub fn evaluate_expression(&mut self, expression: &Expression) -> Result<Value, VMError> {
@@ -476,9 +587,7 @@ impl Runtime {
                 // In practice, ranges are extracted before evaluation.
                 Ok(start)
             }
-            Expression::ForLoop(for_loop) => {
-                self.evaluate_for_loop_expression(for_loop, false)
-            }
+            Expression::ForLoop(for_loop) => self.evaluate_for_loop_expression(for_loop, false),
             Expression::SpreadForLoop(for_loop) => {
                 self.evaluate_for_loop_expression(for_loop, true)
             }
@@ -513,37 +622,46 @@ impl Runtime {
         ))
     }
 
-    fn evaluate_for_loop_expression(&mut self, for_loop: &ForLoopExpression, _is_spread: bool) -> Result<Value, VMError> {
+    fn evaluate_for_loop_expression(
+        &mut self,
+        for_loop: &ForLoopExpression,
+        _is_spread: bool,
+    ) -> Result<Value, VMError> {
         let range_start = self.evaluate_expression(&for_loop.range_start)?;
         let range_end = self.evaluate_expression(&for_loop.range_end)?;
-        
+
         let start = match range_start {
             Value::Integer(i) => i,
-            _ => return Err(VMError::TypeMismatch(
-                "Range start must be an integer".to_string()
-            )),
+            _ => {
+                return Err(VMError::TypeMismatch(
+                    "Range start must be an integer".to_string(),
+                ))
+            }
         };
-        
+
         let end = match range_end {
             Value::Integer(i) => i,
-            _ => return Err(VMError::TypeMismatch(
-                "Range end must be an integer".to_string()
-            )),
+            _ => {
+                return Err(VMError::TypeMismatch(
+                    "Range end must be an integer".to_string(),
+                ))
+            }
         };
-        
+
         let variable_name = for_loop.variable.get();
         let body = &for_loop.body;
-        
+
         // Create a new scope for the loop
         let parent_env = self.environment.clone();
         let mut results = Vec::new();
-        
+
         // Iterate from start to end (exclusive)
         for i in start..end {
             // Create new environment for this iteration
             self.environment = Environment::new_with_parent(parent_env.clone());
             // Set loop variable
-            self.environment.define(variable_name.clone(), Value::Integer(i));
+            self.environment
+                .define(variable_name.clone(), Value::Integer(i));
             // Execute body and collect return values
             // execute_block propagates VMError::Return, which we need to catch
             match self.execute_block(body) {
@@ -566,10 +684,10 @@ impl Runtime {
                 }
             }
         }
-        
+
         // Restore parent environment
         self.environment = parent_env;
-        
+
         Ok(Value::Array(results))
     }
 
@@ -615,7 +733,8 @@ impl Runtime {
                     match expr {
                         Expression::SpreadForLoop(for_loop) => {
                             // Evaluate the for loop and spread its results
-                            let for_loop_results = self.evaluate_for_loop_expression(for_loop, true)?;
+                            let for_loop_results =
+                                self.evaluate_for_loop_expression(for_loop, true)?;
                             if let Value::Array(results) = for_loop_results {
                                 // Spread the results into the parent array
                                 value_array.extend(results);
@@ -848,11 +967,11 @@ impl Runtime {
         let old_env = std::mem::replace(&mut self.environment, Environment::new());
         let old_has_branched = self.has_branched;
         let old_call_stack = self.call_stack.clone();
-        
+
         // For closures, we need to restore the captured path and then push the function name
         // This allows closures to access state from their lexical scope
         self.call_stack = closure.captured_path.clone();
-        
+
         // Generate unique identifier for this function call
         // Use the current call stack path + function name as a key to track call count
         let call_site_key = if self.call_stack.is_empty() {
@@ -860,12 +979,12 @@ impl Runtime {
         } else {
             format!("{}/{}", self.call_stack.join("/"), function_name)
         };
-        
+
         // Get or increment call counter for this call site
         let call_index = self.call_counters.entry(call_site_key.clone()).or_insert(0);
         *call_index += 1;
         let current_call_index = *call_index;
-        
+
         // Push function name with index to call stack for this call
         // This ensures each call to the same function gets a unique path
         let unique_function_id = format!("{}@{}", function_name, current_call_index);
@@ -924,8 +1043,18 @@ pub fn from_file<P: AsRef<Path>>(
     path: P,
     config: Option<RuntimeConfig>,
 ) -> Result<Runtime, RuntimeError> {
-    let source = fs::read_to_string(path)?;
-    from_source(&source, config)
+    let path_buf = path.as_ref().to_path_buf();
+    let source = fs::read_to_string(&path_buf)?;
+    let mut runtime = from_source(&source, config)?;
+    if runtime.project_root().is_none() {
+        runtime.set_project_root(
+            path_buf
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from(".")),
+        );
+    }
+    Ok(runtime)
 }
 
 pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtime, RuntimeError> {
@@ -940,7 +1069,7 @@ pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtim
     // Step 3: Execute in Runtime (kept alive for UI event handlers)
     let mut runtime = Runtime::new();
 
-    // Inject host state if provided
+    // Inject host state and config if provided
     if let Some(config) = config.as_ref() {
         if let Some(ref state) = config.host_state.as_ref() {
             for (name, value) in state.iter() {
@@ -951,6 +1080,10 @@ pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtim
         // Register per-event handlers (for `event("name", ...)`).
         for (name, handler) in config.event_handlers.iter() {
             runtime.register_event_handler_arc(name.clone(), handler.clone());
+        }
+
+        if let Some(ref project_root) = config.project_root {
+            runtime.set_project_root(project_root.clone());
         }
     }
 

@@ -113,7 +113,7 @@ impl Scanner {
                 if let Some(next_char) = self.peek() {
                     if next_char == '.' {
                         self.consume(); // consume the second '.'
-                        // Check if next character is also '.' (for ... spread operator)
+                                        // Check if next character is also '.' (for ... spread operator)
                         if let Some(third_char) = self.peek() {
                             if third_char == '.' {
                                 self.consume(); // consume the third '.'
@@ -178,10 +178,7 @@ impl Scanner {
                 if c.is_alphabetic() {
                     return self.consume_keyword_or_identifier();
                 }
-                self.create_token(TokenType::Error(format!(
-                    "Unexpected character {:?}",
-                    c
-                )))
+                self.create_token(TokenType::Error(format!("Unexpected character {:?}", c)))
             }
         }
     }
@@ -395,6 +392,8 @@ impl Scanner {
             "for" => self.create_token(TokenType::For),
             "in" => self.create_token(TokenType::In),
             "match" => self.create_token(TokenType::Match),
+            "import" => self.create_token(TokenType::Import),
+            "from" => self.create_token(TokenType::From),
             "true" => self.create_token(TokenType::Boolean(true)),
             "false" => self.create_token(TokenType::Boolean(false)),
             _ => self.create_token(TokenType::Identifier(value)),

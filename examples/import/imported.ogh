@@ -1,0 +1,18 @@
+let button = fn (label: String) {
+  Flex {
+    style: {
+      width: 250,
+      height: 44,
+      direction: "row",
+      main_alignment: "start",
+      cross_alignment: "center",
+      background_color: { r: 255, g: 255, b: 255, a: 170 },
+      border: { width: 2, color: { r: 134, g: 134, b: 145, a: 255 }, style: "solid" },
+    },
+    children: [
+      Text {
+        text: label,
+      },
+    ],
+  }
+};

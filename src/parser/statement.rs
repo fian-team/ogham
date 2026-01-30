@@ -11,6 +11,7 @@ pub enum Statement {
     Conditional(ConditionalStatement),
     Log(LogStatement),
     ForLoop(ForLoopStatement),
+    Import(ImportStatement),
 }
 
 impl Statement {
@@ -61,6 +62,10 @@ impl Statement {
             range_end,
             body,
         ))
+    }
+
+    pub fn new_import(names: Option<Vec<String>>, path: String) -> Statement {
+        Statement::Import(ImportStatement::new(names, path))
     }
 }
 
@@ -250,5 +255,26 @@ impl ForLoopStatement {
 
     pub fn get_body(&self) -> Block {
         self.body.clone()
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct ImportStatement {
+    /// Some(names) for named import, None for "import all"
+    names: Option<Vec<String>>,
+    path: String,
+}
+
+impl ImportStatement {
+    pub fn new(names: Option<Vec<String>>, path: String) -> ImportStatement {
+        ImportStatement { names, path }
+    }
+
+    pub fn get_names(&self) -> &Option<Vec<String>> {
+        &self.names
+    }
+
+    pub fn get_path(&self) -> &str {
+        &self.path
     }
 }
