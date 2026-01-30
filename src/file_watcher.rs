@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::mpsc,
 };
@@ -10,19 +11,43 @@ use crate::runtime::error::RuntimeError;
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
     receiver: mpsc::Receiver<Result<NotifyEvent, notify::Error>>,
-    watched_path: PathBuf,
+    /// Canonical paths of all files we care about (main file + every imported file).
+    watched_paths: HashSet<PathBuf>,
 }
 
 impl FileWatcher {
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, RuntimeError> {
-        let path_buf = PathBuf::from(path.as_ref());
+    /// Watch all given paths; any change to any of them will trigger a rerender.
+    /// Paths are canonicalized and must exist.
+    pub fn new<P, I>(paths: I) -> Result<Self, RuntimeError>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = P>,
+    {
+        let mut watched_paths = HashSet::new();
+        let mut parents_to_watch: HashSet<PathBuf> = HashSet::new();
 
-        // Verify the file exists
-        if !path_buf.exists() {
-            return Err(RuntimeError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("File not found: {}", path_buf.display()),
-            )));
+        for path in paths {
+            let path_buf = PathBuf::from(path.as_ref());
+
+            if !path_buf.exists() {
+                return Err(RuntimeError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", path_buf.display()),
+                )));
+            }
+
+            let canonical = path_buf.canonicalize().map_err(|e| {
+                RuntimeError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to canonicalize {}: {}", path_buf.display(), e),
+                ))
+            })?;
+            watched_paths.insert(canonical.clone());
+
+            if let Some(parent) = canonical.parent() {
+                let parent_buf = parent.to_path_buf();
+                parents_to_watch.insert(parent_buf);
+            }
         }
 
         let (tx, rx) = mpsc::channel();
@@ -33,10 +58,9 @@ impl FileWatcher {
             ))
         })?;
 
-        // Watch the parent directory (non-recursive) to detect changes to the file
-        if let Some(parent) = path_buf.parent() {
+        for parent in parents_to_watch {
             watcher
-                .watch(parent, RecursiveMode::NonRecursive)
+                .watch(&parent, RecursiveMode::NonRecursive)
                 .map_err(|e| {
                     RuntimeError::IoError(std::io::Error::new(
                         std::io::ErrorKind::Other,
@@ -48,20 +72,22 @@ impl FileWatcher {
         Ok(Self {
             _watcher: watcher,
             receiver: rx,
-            watched_path: path_buf,
+            watched_paths,
         })
     }
 
     pub fn check_for_changes(&self) -> bool {
-        // Try to receive all pending events
         let mut file_changed = false;
 
         while let Ok(Ok(event)) = self.receiver.try_recv() {
             match event.kind {
                 EventKind::Modify(_) | EventKind::Create(_) => {
-                    // Check if the changed file matches our watched file
-                    if event.paths.iter().any(|p| p == &self.watched_path) {
-                        file_changed = true;
+                    for p in &event.paths {
+                        let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+                        if self.watched_paths.contains(&canonical) {
+                            file_changed = true;
+                            break;
+                        }
                     }
                 }
                 _ => {}
@@ -71,7 +97,7 @@ impl FileWatcher {
         file_changed
     }
 
-    pub fn path(&self) -> &Path {
-        &self.watched_path
+    pub fn paths(&self) -> &HashSet<PathBuf> {
+        &self.watched_paths
     }
 }

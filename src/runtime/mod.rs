@@ -38,6 +38,9 @@ pub struct Runtime {
     project_root: Option<PathBuf>,
     import_loading_stack: Vec<PathBuf>,
     import_loaded: HashSet<PathBuf>,
+    /// Cached environment per resolved path so re-imports (e.g. view_two importing button)
+    /// can merge that module's exports into the current scope without re-executing.
+    import_cache: HashMap<PathBuf, Environment>,
 }
 
 impl Runtime {
@@ -56,6 +59,7 @@ impl Runtime {
             project_root: None,
             import_loading_stack: Vec::new(),
             import_loaded: HashSet::new(),
+            import_cache: HashMap::new(),
         }
     }
 
@@ -114,6 +118,13 @@ impl Runtime {
         self.module.as_ref()
     }
 
+    /// Returns the canonical paths of all modules that were imported during the last
+    /// execute_module/rerender. Used by the file watcher to watch every file that
+    /// affects the current UI.
+    pub fn get_imported_paths(&self) -> Vec<PathBuf> {
+        self.import_loaded.iter().cloned().collect()
+    }
+
     pub fn rerender(&mut self) -> Result<Value, VMError> {
         // Clone the module to avoid borrow checker issues
         let module = self.module.clone().ok_or_else(|| {
@@ -145,6 +156,7 @@ impl Runtime {
         // Clear import state so each run re-imports and can detect cycles
         self.import_loading_stack.clear();
         self.import_loaded.clear();
+        self.import_cache.clear();
         // Execute the module body to populate the environment
         self.execute_block(&module.body)?;
         // Look for a 'main' variable that is a function
@@ -472,6 +484,28 @@ impl Runtime {
             return Err(VMError::ImportCycle(cycle));
         }
         if self.import_loaded.contains(&key) {
+            // Module already loaded (e.g. button.ogh by view_one). Merge its exports
+            // into the current scope so this module can use them.
+            if let Some(cached_env) = self.import_cache.get(&key) {
+                let names_to_copy_opt: Option<Vec<String>> = import_stmt.get_names().clone();
+                if let Some(ref names) = names_to_copy_opt {
+                    for name in names {
+                        if cached_env.get(name).is_none() {
+                            return Err(VMError::ImportError(format!(
+                                "export '{}' not found in {}",
+                                name,
+                                resolved.display()
+                            )));
+                        }
+                    }
+                }
+                if let Err(conflict_name) =
+                    self.environment
+                        .copy_from(cached_env, names_to_copy_opt.as_deref(), true)
+                {
+                    return Err(VMError::ImportConflict(conflict_name));
+                }
+            }
             return Ok(Value::Void);
         }
 
@@ -519,9 +553,15 @@ impl Runtime {
             }
         }
 
+        // Cache this module's env so later re-imports (e.g. view_two importing button)
+        // can merge its exports into their scope without re-executing.
+        self.import_cache.insert(key.clone(), temp_env.clone());
+
+        // Use check_conflict = false so re-exported names (e.g. button from multiple
+        // view files that each import button.ogh) overwrite instead of conflicting.
         if let Err(conflict_name) =
             self.environment
-                .copy_from(&temp_env, names_to_copy.as_deref(), true)
+                .copy_from(&temp_env, names_to_copy.as_deref(), false)
         {
             self.import_loading_stack.pop();
             return Err(VMError::ImportConflict(conflict_name));

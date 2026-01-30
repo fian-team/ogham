@@ -1,0 +1,27 @@
+import "./button.ogh";
+
+let view_three = fn (set_view: function) {
+  Flex {
+    style: {
+      width: "grow",
+      height: "grow",
+      direction: "column",
+      main_alignment: "center",
+      cross_alignment: "center",
+      gap: 16,
+    },
+    children: [
+      Text {
+        text: "View Three",
+        style: {
+          size: 18,
+          color: { r: 255, g: 255, b: 255, a: 255 },
+          align: "center",
+        },
+      },
+      button("Back", fn () {
+        set_view("one");
+      }),
+    ],
+  }
+};

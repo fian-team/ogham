@@ -1,0 +1,40 @@
+
+let button_colors = {
+  content: { r: 33, g: 30, b: 25, a: 255 },
+  border: { r: 134, g: 134, b: 145, a: 255 },
+  background: { r: 255, g: 255, b: 255, a: 170 },
+};
+
+let button = fn (label: String, on_click: function) {
+  Flex {
+    mouse_down: on_click,
+    style: {
+      width: 250,
+      height: 44,
+      direction: "row",
+      main_alignment: "start",
+      cross_alignment: "center",
+      background_color: button_colors.background,
+      border: {
+        width: 2,
+        color: button_colors.border,
+        style: "solid",
+      },
+      padding: { top: 10, right: 12, bottom: 10, left: 12 },
+      margin: { top: 6, right: 0, bottom: 6, left: 0 },
+      corner_radius: 10,
+    },
+    children: [
+      Text {
+        text: label,
+        style: {
+          width: "grow",
+          height: "shrink",
+          align: "left",
+          size: 18,
+          color: button_colors.content,
+        }
+      },
+    ],
+  }
+};

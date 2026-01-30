@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 mod file_watcher;
@@ -16,14 +17,16 @@ pub struct Ogham {
 }
 
 impl Ogham {
-    /// Create an Ogham instance from a file path with file watching enabled
+    /// Create an Ogham instance from a file path with file watching enabled.
+    /// Watches the main file and every imported file so that changes in any of them trigger a rerender.
     pub fn watch(
         path: String,
         config: runtime::config::RuntimeConfig,
     ) -> Result<Self, runtime::error::RuntimeError> {
-        let watcher = file_watcher::FileWatcher::new(path.clone())?;
         let runtime = Arc::new(Mutex::new(runtime::from_file(&path, Some(config.clone()))?));
         let ui = Self::create_ui_from_runtime(&runtime)?;
+        let watch_paths = Self::paths_to_watch(&path, &runtime);
+        let watcher = file_watcher::FileWatcher::new(watch_paths)?;
         Ok(Self {
             watcher: Some(watcher),
             runtime,
@@ -92,12 +95,20 @@ impl Ogham {
         }
     }
 
-    /// Load and watch a new file
+    /// Load and watch a new file (and all its imports)
     pub fn load_file(&mut self, path: String) -> Result<(), runtime::error::RuntimeError> {
         self.reload_file(&path)?;
         self.path = Some(path.clone());
-        self.watcher = Some(file_watcher::FileWatcher::new(path)?);
+        let watch_paths = Self::paths_to_watch(&path, &self.runtime);
+        self.watcher = Some(file_watcher::FileWatcher::new(watch_paths)?);
         Ok(())
+    }
+
+    /// Build the list of paths to watch: main file plus every imported module.
+    fn paths_to_watch(main_path: &str, runtime: &Arc<Mutex<runtime::Runtime>>) -> Vec<PathBuf> {
+        let mut paths = vec![PathBuf::from(main_path)];
+        paths.extend(runtime.lock().unwrap().get_imported_paths());
+        paths
     }
 
     /// Reload a specific file (internal helper)

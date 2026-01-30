@@ -1,0 +1,22 @@
+import "./button.ogh";
+
+let view_one = fn (set_view: function) {
+  Flex {
+    style: {
+      width: "grow",
+      height: "grow",
+      direction: "column",
+      main_alignment: "center",
+      cross_alignment: "center",
+      gap: 16,
+    },
+    children: [
+      button("View Two", fn () {
+        set_view("two");
+      }),
+      button("View Three", fn () {
+        set_view("three");
+      }),
+    ],
+  }
+};

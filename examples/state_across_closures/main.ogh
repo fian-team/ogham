@@ -1,0 +1,34 @@
+import "./view_one.ogh";
+import "./view_two.ogh";
+import "./view_three.ogh";
+
+let main = fn () {
+  state view = "one";
+  let set_view = fn (new_view: String) {
+    view = new_view;
+  };
+  Flex {
+    style: {
+      width: "grow",
+      height: "grow",
+      main_alignment: "center",
+      cross_alignment: "center",
+      direction: "column",
+      padding: 24,
+      gap: 16,
+      background_color: {
+        r: 30,
+        g: 30,
+        b: 30,
+        a: 255,
+      },
+    },
+    children: [
+      match view {
+        "one" => view_one(set_view),
+        "two" => view_two(set_view),
+        "three" => view_three(set_view),
+      }
+    ],
+  }
+};
