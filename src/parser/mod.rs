@@ -66,7 +66,7 @@ impl Parser {
         let token_type = token.token_type;
         self.current += 1;
         match token_type {
-            scanner::TokenType::Equal => Ok(Operator::Equals),
+            scanner::TokenType::EqualEqual => Ok(Operator::Equals),
             scanner::TokenType::GreaterThan => Ok(Operator::GreaterThan),
             scanner::TokenType::GreaterThanOrEqualTo => Ok(Operator::GreaterThanOrEqualTo),
             scanner::TokenType::LessThan => Ok(Operator::LessThan),
@@ -740,7 +740,7 @@ impl Parser {
     pub fn equality(&mut self) -> Result<Expression, SyntaxError> {
         let mut expression = self.comparison()?;
         while self.next_is(vec![
-            scanner::TokenType::Equal,
+            scanner::TokenType::EqualEqual,
             scanner::TokenType::NotEqual,
         ]) {
             let operator = self.get_current_as_operator()?;
@@ -1050,6 +1050,7 @@ impl Parser {
             scanner::TokenType::Plus => "+".to_owned(),
             scanner::TokenType::Minus => "-".to_owned(),
             scanner::TokenType::Equal => "=".to_owned(),
+            scanner::TokenType::EqualEqual => "==".to_owned(),
             _ => String::new(),
         }
     }

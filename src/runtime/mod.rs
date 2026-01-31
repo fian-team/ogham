@@ -836,8 +836,8 @@ impl Runtime {
             Operator::Minus => self.subtract(left, right),
             Operator::Multiply => self.multiply(left, right),
             Operator::Divide => self.divide(left, right),
-            Operator::Equals => Ok(Value::Boolean(left == right)),
-            Operator::NotEquals => Ok(Value::Boolean(left != right)),
+            Operator::Equals => self.compare_equals(left, right),
+            Operator::NotEquals => self.compare_not_equals(left, right),
             Operator::GreaterThan => self.compare_greater_than(left, right),
             Operator::GreaterThanOrEqualTo => self.compare_greater_than_or_equal(left, right),
             Operator::LessThan => self.compare_less_than(left, right),
@@ -846,6 +846,26 @@ impl Runtime {
                 "Not operator is not a binary operator".to_string(),
             )),
         }
+    }
+
+    fn compare_equals(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
+        if std::mem::discriminant(left) != std::mem::discriminant(right) {
+            return Err(VMError::TypeMismatch(format!(
+                "Cannot compare values of different types with ==: {:?} and {:?}",
+                left, right
+            )));
+        }
+        Ok(Value::Boolean(left == right))
+    }
+
+    fn compare_not_equals(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
+        if std::mem::discriminant(left) != std::mem::discriminant(right) {
+            return Err(VMError::TypeMismatch(format!(
+                "Cannot compare values of different types with !=: {:?} and {:?}",
+                left, right
+            )));
+        }
+        Ok(Value::Boolean(left != right))
     }
 
     fn add(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
