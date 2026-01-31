@@ -1,4 +1,4 @@
-use super::{block::*, identifier::*, literal::*, operator::*, widget::*};
+use super::{block::*, call::*, identifier::*, literal::*, operator::*, widget::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expression {
@@ -8,6 +8,8 @@ pub enum Expression {
     Grouping(Grouping), // (5 + 3)
     Widget(Widget),     // WidgetIdentifier { key: value }
     MemberAccess(MemberAccess), // foo.bar
+    Call(Call),         // foo() or array.length()
+    IndexAccess(IndexAccess), // array[index]
     Range(RangeExpression), // 0..5
     ForLoop(ForLoopExpression), // for (i in 0..5) { ... }
     SpreadForLoop(ForLoopExpression), // ...for (i in 0..5) { ... }
@@ -32,6 +34,14 @@ impl Expression {
         Expression::MemberAccess(MemberAccess::new(object, property))
     }
 
+    pub fn new_call(callee: Expression, arguments: Vec<Expression>) -> Expression {
+        Expression::Call(Call::new(callee, arguments))
+    }
+
+    pub fn new_index_access(object: Expression, index: Expression) -> Expression {
+        Expression::IndexAccess(IndexAccess::new(object, index))
+    }
+
     pub fn new_range(start: Expression, end: Expression) -> Expression {
         Expression::Range(RangeExpression::new(start, end))
     }
@@ -46,6 +56,21 @@ impl Expression {
 
     pub fn new_match(scrutinee: Expression, arms: Vec<(Expression, Block)>) -> Expression {
         Expression::Match(MatchExpression::new(scrutinee, arms))
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct IndexAccess {
+    pub object: Box<Expression>,
+    pub index: Box<Expression>,
+}
+
+impl IndexAccess {
+    pub fn new(object: Expression, index: Expression) -> Self {
+        Self {
+            object: Box::new(object),
+            index: Box::new(index),
+        }
     }
 }
 

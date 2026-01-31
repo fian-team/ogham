@@ -1,0 +1,8 @@
+let main = fn () {
+  let array = [1, 2, 3, 4, 5];
+  let last_index = array.length() - 1;
+  let value = array[last_index];
+  Text {
+    text: value,
+  }
+};

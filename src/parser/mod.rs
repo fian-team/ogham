@@ -312,8 +312,9 @@ impl Parser {
 
         match next_token_type {
             Some(scanner::TokenType::LeftParenthesis) => {
-                let call = self.parse_call(identifier)?;
-                self.expression_to_statement(Expression::Literal(Literal::Call(call)))
+                let expr = Expression::Literal(Literal::Identifier(identifier));
+                let full_expr = self.parse_postfix(expr)?;
+                self.expression_to_statement(full_expr)
             }
             Some(scanner::TokenType::LeftBracket) => {
                 // Widget expression
@@ -833,12 +834,8 @@ impl Parser {
             scanner::TokenType::Identifier(value) => {
                 self.current += 1;
                 let identifier = Identifier::new(&value);
-                let is_call = self.next_is(vec![scanner::TokenType::LeftParenthesis]);
                 let is_widget = self.next_is(vec![scanner::TokenType::LeftBracket]);
-                if is_call {
-                    let call = self.parse_call(identifier)?;
-                    Expression::Literal(Literal::Call(call))
-                } else if is_widget && !self.parsing_match_scrutinee {
+                if is_widget && !self.parsing_match_scrutinee {
                     // When parsing match scrutinee, `id {` is identifier + match arms, not a widget
                     let widget = self.parse_widget(identifier)?;
                     Expression::Widget(widget)
@@ -894,15 +891,27 @@ impl Parser {
             }
         };
 
-        self.parse_member_access(expr)
+        self.parse_postfix(expr)
     }
 
-    /// Parse chained member accesses (e.g. `colors.bg.r`) with high precedence.
-    fn parse_member_access(&mut self, mut expr: Expression) -> Result<Expression, SyntaxError> {
-        while self.next_is(vec![scanner::TokenType::Dot]) {
-            self.consume_if(scanner::TokenType::Dot)?;
-            let property = self.consume_if_identifier()?;
-            expr = Expression::new_member_access(expr, property);
+    /// Parse postfix: member access (.prop), call (args), index ([expr]).
+    fn parse_postfix(&mut self, mut expr: Expression) -> Result<Expression, SyntaxError> {
+        loop {
+            if self.next_is(vec![scanner::TokenType::Dot]) {
+                self.consume_if(scanner::TokenType::Dot)?;
+                let property = self.consume_if_identifier()?;
+                expr = Expression::new_member_access(expr, property);
+            } else if self.next_is(vec![scanner::TokenType::LeftParenthesis]) {
+                let call = self.parse_call_with_callee(expr)?;
+                expr = Expression::Call(call);
+            } else if self.next_is(vec![scanner::TokenType::LeftSquareBracket]) {
+                self.consume_if(scanner::TokenType::LeftSquareBracket)?;
+                let index = self.expression()?;
+                self.consume_if(scanner::TokenType::RightSquareBracket)?;
+                expr = Expression::new_index_access(expr, index);
+            } else {
+                break;
+            }
         }
         Ok(expr)
     }
@@ -957,18 +966,19 @@ impl Parser {
         });
     }
 
-    pub fn parse_call(&mut self, identifier: Identifier) -> Result<Call, SyntaxError> {
-        let mut call = Call::new(identifier, vec![]);
+    /// Parse call arguments after the opening `(`; callee is already known.
+    fn parse_call_with_callee(&mut self, callee: Expression) -> Result<Call, SyntaxError> {
         self.consume_if(scanner::TokenType::LeftParenthesis)?;
+        let mut arguments = Vec::new();
         while !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
             let argument = self.expression()?;
-            call.arguments.push(argument);
+            arguments.push(argument);
             if !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
                 self.consume_if(scanner::TokenType::Comma)?;
             }
         }
         self.consume_if(scanner::TokenType::RightParenthesis)?;
-        Ok(call)
+        Ok(Call::new(callee, arguments))
     }
 
     pub fn parse_map(&mut self) -> Result<Map, SyntaxError> {

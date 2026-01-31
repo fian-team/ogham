@@ -1,15 +1,15 @@
-use super::{expression::*, identifier::*};
+use super::expression::*;
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct Call {
-    pub identifier: Identifier,
+    pub callee: Box<Expression>,
     pub arguments: Vec<Expression>,
 }
 
 impl Call {
-    pub fn new(identifier: Identifier, arguments: Vec<Expression>) -> Call {
+    pub fn new(callee: Expression, arguments: Vec<Expression>) -> Call {
         Call {
-            identifier,
+            callee: Box::new(callee),
             arguments,
         }
     }

@@ -1,4 +1,4 @@
-use super::{array::*, call::*, function::*, identifier::*, map::*};
+use super::{array::*, function::*, identifier::*, map::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Literal {
@@ -6,7 +6,6 @@ pub enum Literal {
     Float(f64),
     Boolean(bool),
     Identifier(Identifier),
-    Call(Call),
     Function(Function),
     String(String),
     Map(Map),
@@ -20,10 +19,6 @@ impl Literal {
 
     pub fn new_identifier(value: Identifier) -> Literal {
         Literal::Identifier(value)
-    }
-
-    pub fn new_call(value: Call) -> Literal {
-        Literal::Call(value)
     }
 
     pub fn new_function(value: Function) -> Literal {

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::parser::MemberAccess;
 use crate::parser::{
     Block, Call, Expression, ForLoopExpression, Function, ImportStatement, Literal,
     MatchExpression, Operator, Parser, Statement,
@@ -605,6 +606,37 @@ impl Runtime {
                     ))),
                 }
             }
+            Expression::Call(call) => self.execute_call(call),
+            Expression::IndexAccess(access) => {
+                let object = self.evaluate_expression(&access.object)?;
+                let index_val = self.evaluate_expression(&access.index)?;
+                match (&object, &index_val) {
+                    (Value::Array(arr), Value::Integer(i)) => {
+                        if *i < 0 {
+                            return Err(VMError::InvalidOperation(
+                                "Array index must be non-negative".to_string(),
+                            ));
+                        }
+                        let idx = *i as usize;
+                        if idx >= arr.len() {
+                            return Err(VMError::InvalidOperation(format!(
+                                "Index {} out of bounds for array of length {}",
+                                idx,
+                                arr.len()
+                            )));
+                        }
+                        Ok(arr[idx].clone())
+                    }
+                    (Value::Array(_), other) => Err(VMError::TypeMismatch(format!(
+                        "Array index must be an integer, got {:?}",
+                        other
+                    ))),
+                    (other, _) => Err(VMError::TypeMismatch(format!(
+                        "Cannot index {:?}; only arrays support index access",
+                        other
+                    ))),
+                }
+            }
             Expression::Widget(widget) => {
                 // Evaluate widget properties now (while variables are still in scope) so
                 // widget values do not depend on later environment lookups.
@@ -750,7 +782,6 @@ impl Runtime {
                     Err(VMError::UndefinedVariable(name))
                 }
             }
-            Literal::Call(call) => self.execute_call(call),
             Literal::Function(func) => {
                 // Capture the current environment and call stack path when creating the closure
                 Ok(Value::Closure(Closure {
@@ -955,35 +986,59 @@ impl Runtime {
             args.push(self.evaluate_expression(arg_expr)?);
         }
 
-        // Look up the function
-        let func_name = call.identifier.get();
-        if func_name == "event" {
-            if args.is_empty() {
+        // Special-case: array.length() — only method call, not property
+        if let Expression::MemberAccess(MemberAccess { object, property }) = &*call.callee {
+            if property.get() == "length" {
+                let obj_val = self.evaluate_expression(object)?;
+                if let Value::Array(arr) = obj_val {
+                    if args.is_empty() {
+                        return Ok(Value::Integer(arr.len() as i32));
+                    }
+                    return Err(VMError::InvalidOperation(
+                        "length() takes no arguments".to_string(),
+                    ));
+                }
                 return Err(VMError::InvalidOperation(
-                    "event() requires at least an event name".to_string(),
+                    "length() can only be called on an array".to_string(),
                 ));
             }
-            let event_name = match &args[0] {
-                Value::String(s) => s.clone(),
-                other => {
-                    return Err(VMError::TypeMismatch(format!(
-                        "event() requires a string event name as the first argument, got {:?}",
-                        other
-                    )));
-                }
-            };
-
-            // Only dispatch to the host if the event name was registered.
-            let _handled = self.emit_event(&event_name, &args[1..]);
-            return Ok(Value::Void);
         }
-        if let Some(Value::Closure(closure)) = self.environment.get(&func_name) {
+
+        // Built-in event() when callee is identifier "event"
+        if let Expression::Literal(Literal::Identifier(ident)) = &*call.callee {
+            if ident.get() == "event" {
+                if args.is_empty() {
+                    return Err(VMError::InvalidOperation(
+                        "event() requires at least an event name".to_string(),
+                    ));
+                }
+                let event_name = match &args[0] {
+                    Value::String(s) => s.clone(),
+                    other => {
+                        return Err(VMError::TypeMismatch(format!(
+                            "event() requires a string event name as the first argument, got {:?}",
+                            other
+                        )));
+                    }
+                };
+                let _handled = self.emit_event(&event_name, &args[1..]);
+                return Ok(Value::Void);
+            }
+        }
+
+        // Resolve callee and call closure
+        let callee_val = self.evaluate_expression(&call.callee)?;
+        let func_name = if let Expression::Literal(Literal::Identifier(ident)) = &*call.callee {
+            ident.get()
+        } else {
+            "fn".to_string()
+        };
+        if let Value::Closure(closure) = callee_val {
             self.call_closure(&closure, &args, &func_name)
         } else {
-            Err(VMError::UndefinedVariable(format!(
-                "Function '{}' not found",
-                func_name
-            )))
+            Err(VMError::TypeMismatch(
+                "Only functions can be called".to_string(),
+            ))
         }
     }
 
@@ -1133,4 +1188,26 @@ pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtim
     // let value = runtime.execute_module(&module)?;
 
     Ok(runtime)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_access_length_and_index() {
+        let source = r#"
+let main = fn () {
+  let array = [1, 2, 3, 4, 5];
+  let last_index = array.length() - 1;
+  let value = array[last_index];
+  value
+};
+"#;
+        let mut runtime = from_source(source, None).expect("parse and create runtime");
+        let module = runtime.get_module().expect("module").clone();
+        let result = runtime.execute_module(&module).expect("execute");
+        // main() returns the last element: 5
+        assert_eq!(result, Value::Integer(5));
+    }
 }
