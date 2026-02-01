@@ -59,6 +59,11 @@ fn create_flex_widget(
 ) -> Result<WidgetRef, BridgeError> {
     let mut flex_widget = FlexWidget::new();
 
+    // block_interactions: when false, clicks are only "handled" if a child or listener handled them
+    if let Some(Value::Boolean(b)) = parser_widget.properties.get("block_interactions") {
+        flex_widget.block_interactions = *b;
+    }
+
     // Build style from properties
     let mut style_builder = FlexStyle::builder();
 

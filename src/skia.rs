@@ -283,10 +283,18 @@ impl Surface for SkiaEnv {
 
     fn draw_box(&mut self, widget: &FlexWidget, image_cache: &mut ImageCache) {
         if let Some(layout) = &widget.layout {
-            let box_x = self.scale_coord(layout.x);
-            let box_y = self.scale_coord(layout.y);
-            let box_width = self.scale_dim(layout.width);
-            let box_height = self.scale_dim(layout.height);
+            // Inset by margin so background and borders are drawn in the border box only (margin stays transparent)
+            let border_box_x = layout.x + widget.style.margin.get_left();
+            let border_box_y = layout.y + widget.style.margin.get_top();
+            let border_box_width =
+                layout.width - widget.style.margin.get_left() - widget.style.margin.get_right();
+            let border_box_height =
+                layout.height - widget.style.margin.get_top() - widget.style.margin.get_bottom();
+
+            let box_x = self.scale_coord(border_box_x);
+            let box_y = self.scale_coord(border_box_y);
+            let box_width = self.scale_dim(border_box_width);
+            let box_height = self.scale_dim(border_box_height);
 
             // Draw background image if specified
             if let Some(background_image_path) = &widget.style.background_image {
