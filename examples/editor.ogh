@@ -1,0 +1,211 @@
+import "./button.ogh";
+
+let panel_style = {
+  r: 30,
+  g: 30,
+  b: 30,
+  a: 230,
+};
+
+let selected_layer_bg = {
+  r: 60,
+  g: 60,
+  b: 60,
+  a: 255,
+};
+
+let layer_row_bg = {
+  r: 45,
+  g: 45,
+  b: 45,
+  a: 255,
+};
+
+let tool_button = fn (label: string, tool_name: string) {
+  let is_active = selected_tool == tool_name;
+  Flex {
+    mouse_down: fn () {
+      event("tool_selected", tool_name);
+    },
+    style: {
+      width: 44,
+      height: 44,
+      direction: "row",
+      main_alignment: "center",
+      cross_alignment: "center",
+      background_color: match is_active {
+        true => selected_layer_bg,
+        false => layer_row_bg,
+      },
+      border: {
+        width: 1,
+        color: panel_style,
+        style: "solid",
+      },
+      padding: { top: 8, right: 8, bottom: 8, left: 8 },
+      margin: { top: 2, right: 2, bottom: 2, left: 2 },
+      corner_radius: 8,
+    },
+    children: [
+      Text {
+        text: label,
+        style: {
+          size: 12,
+          color: { r: 255, g: 255, b: 255, a: 255 },
+        }
+      }
+    ],
+  }
+};
+
+let layer_row = fn (id: integer, name: string) {
+  let is_selected = selected_layer_id == id;
+  Flex {
+    style: {
+      width: "grow",
+      height: "shrink",
+      direction: "row",
+      main_alignment: "space_between",
+      cross_alignment: "center",
+      background_color: match is_selected {
+        true => selected_layer_bg,
+        false => layer_row_bg,
+      },
+      padding: { top: 8, right: 8, bottom: 8, left: 8 },
+      margin: { top: 2, right: 0, bottom: 2, left: 0 },
+      corner_radius: 6,
+    },
+    children: [
+      Flex {
+        mouse_down: fn () {
+          event("select_layer", id);
+        },
+        style: {
+          width: "grow",
+          height: "shrink",
+          direction: "row",
+          main_alignment: "start",
+          cross_alignment: "center",
+        },
+        children: [
+          Text {
+            text: name,
+            style: {
+              width: "grow",
+              height: "shrink",
+              size: 14,
+              color: { r: 255, g: 255, b: 255, a: 255 },
+            }
+          }
+        ],
+      },
+      Flex {
+        mouse_down: fn () {
+          event("delete_layer", id);
+        },
+        style: {
+          width: "shrink",
+          height: "shrink",
+          padding: { top: 4, right: 8, bottom: 4, left: 8 },
+          background_color: { r: 120, g: 60, b: 60, a: 255 },
+          corner_radius: 4,
+        },
+        children: [
+          Text {
+            text: "Delete",
+            style: {
+              size: 12,
+              color: { r: 255, g: 255, b: 255, a: 255 },
+            }
+          }
+        ],
+      }
+    ],
+  }
+};
+
+let main = fn () {
+  Flex {
+    style: {
+      width: "grow",
+      height: "grow",
+      direction: "row",
+      main_alignment: "start",
+      cross_alignment: "start",
+      background_color: { r: 0, g: 0, b: 0, a: 0 },
+    },
+    children: [
+      Flex {
+        style: {
+          width: "shrink",
+          height: "grow",
+          direction: "column",
+          padding: 12,
+          gap: 8,
+          background_color: panel_style,
+          border: {
+            width: 0,
+            color: { r: 50, g: 50, b: 50, a: 255 },
+            style: "solid",
+          },
+          corner_radius: 0,
+        },
+        children: [
+          Text {
+            text: "Layers",
+            style: {
+              size: 16,
+              color: { r: 255, g: 255, b: 255, a: 255 },
+            }
+          },
+          button("Add layer", fn () {
+            event("add_layer");
+          }),
+          Flex {
+            style: {
+              width: "grow",
+              height: "shrink",
+              direction: "column",
+              gap: 0,
+            },
+            children: for (i in 0..layers.length()) {
+              layer_row(layers[i].id, layers[i].name)
+            },
+          },
+          Text {
+            text: "Tools",
+            style: {
+              size: 16,
+              color: { r: 255, g: 255, b: 255, a: 255 },
+            }
+          },
+          Flex {
+            style: {
+              width: "grow",
+              height: "shrink",
+              direction: "row",
+              gap: 0,
+              main_alignment: "start",
+              cross_alignment: "center",
+            },
+            children: [
+              tool_button("Select", "select"),
+              tool_button("Point", "create_point"),
+              tool_button("Line", "create_line"),
+              tool_button("Shape", "create_shape"),
+              tool_button("Stitch", "stitch"),
+              tool_button("Razor", "razor"),
+            ],
+          },
+        ],
+      },
+      Flex {
+        style: {
+          width: "grow",
+          height: "grow",
+        },
+        children: [],
+      }
+    ],
+  }
+};

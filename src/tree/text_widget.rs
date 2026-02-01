@@ -145,6 +145,11 @@ impl Widget for TextWidget {
             None
         };
 
+        // Skia populates max_intrinsic_width during layout(); without this, max_intrinsic_width() returns 0.
+        if let Some(ref mut p) = measured_paragraph {
+            p.layout(f32::INFINITY);
+        }
+
         // First compute the width this widget is allowed to use.
         let width = match self.style.width {
             Size::Fixed(w) => w,
@@ -180,10 +185,16 @@ impl Widget for TextWidget {
                     let paragraph = measured_paragraph
                         .as_mut()
                         .expect("paragraph must exist when measuring");
-                    // Height depends on layout width due to wrapping; ensure we lay out with the
-                    // width computed above.
-                    let layout_width = width.max(0.0);
-                    paragraph.layout(layout_width);
+                    // Height depends on layout width due to wrapping. We already laid out with
+                    // INFINITY above, which gives a single line. Only re-layout when we're
+                    // constrained by the parent (width < intrinsic); otherwise max_intrinsic_width
+                    // can be slightly under the true one-line width and layout(width) would wrap the
+                    // last character.
+                    let intrinsic = paragraph.max_intrinsic_width();
+                    if width < intrinsic - 0.5 {
+                        let layout_width = width.max(0.0);
+                        paragraph.layout(layout_width);
+                    }
                     paragraph.height()
                 } else {
                     0.0

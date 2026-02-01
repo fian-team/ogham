@@ -175,7 +175,7 @@ impl Scanner {
                 if c.is_numeric() {
                     return self.consume_number();
                 }
-                if c.is_alphabetic() {
+                if c.is_alphabetic() || c == '_' {
                     return self.consume_keyword_or_identifier();
                 }
                 self.create_token(TokenType::Error(format!("Unexpected character {:?}", c)))

@@ -456,77 +456,10 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftParenthesis)?;
         let variable = self.consume_if_identifier()?;
         self.consume_if(scanner::TokenType::In)?;
-        // Parse range explicitly: start..end
-        // Use primary() directly to parse the start value, but skip member access parsing
-        // since we don't want to consume the Range token
-        let range_start = match &self.input[self.current].token_type {
-            scanner::TokenType::Integer(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Integer(*value))
-            }
-            scanner::TokenType::Float(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Float(*value))
-            }
-            scanner::TokenType::Identifier(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
-            }
-            scanner::TokenType::LeftParenthesis => {
-                self.current += 1;
-                let expr = self.expression()?;
-                self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping {
-                    value: Box::new(expr),
-                })
-            }
-            _ => {
-                let current_token = self.current().unwrap();
-                return Err(SyntaxError {
-                    message: format!(
-                        "Expected range start expression, got {:?}",
-                        current_token.token_type
-                    ),
-                    line: current_token.line,
-                    column: current_token.column,
-                });
-            }
-        };
+        // Parse range explicitly: start..end (factor stops before .. so we don't consume it here)
+        let range_start = self.factor()?;
         self.consume_if(scanner::TokenType::Range)?;
-        // Parse end value similarly
-        let range_end = match &self.input[self.current].token_type {
-            scanner::TokenType::Integer(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Integer(*value))
-            }
-            scanner::TokenType::Float(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Float(*value))
-            }
-            scanner::TokenType::Identifier(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
-            }
-            scanner::TokenType::LeftParenthesis => {
-                self.current += 1;
-                let expr = self.expression()?;
-                self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping {
-                    value: Box::new(expr),
-                })
-            }
-            _ => {
-                let current_token = self.current().unwrap();
-                return Err(SyntaxError {
-                    message: format!(
-                        "Expected range end expression, got {:?}",
-                        current_token.token_type
-                    ),
-                    line: current_token.line,
-                    column: current_token.column,
-                });
-            }
-        };
+        let range_end = self.factor()?;
         self.consume_if(scanner::TokenType::RightParenthesis)?;
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let body = self.parse_block(false)?;
@@ -547,76 +480,10 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftParenthesis)?;
         let variable = self.consume_if_identifier()?;
         self.consume_if(scanner::TokenType::In)?;
-        // Parse range explicitly: start..end
-        // Parse start value directly without going through primary() to avoid member access parsing
-        let range_start = match &self.input[self.current].token_type {
-            scanner::TokenType::Integer(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Integer(*value))
-            }
-            scanner::TokenType::Float(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Float(*value))
-            }
-            scanner::TokenType::Identifier(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
-            }
-            scanner::TokenType::LeftParenthesis => {
-                self.current += 1;
-                let expr = self.expression()?;
-                self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping {
-                    value: Box::new(expr),
-                })
-            }
-            _ => {
-                let current_token = self.current().unwrap();
-                return Err(SyntaxError {
-                    message: format!(
-                        "Expected range start expression, got {:?}",
-                        current_token.token_type
-                    ),
-                    line: current_token.line,
-                    column: current_token.column,
-                });
-            }
-        };
+        // Parse range explicitly: start..end (factor stops before .. so we don't consume it here)
+        let range_start = self.factor()?;
         self.consume_if(scanner::TokenType::Range)?;
-        // Parse end value similarly
-        let range_end = match &self.input[self.current].token_type {
-            scanner::TokenType::Integer(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Integer(*value))
-            }
-            scanner::TokenType::Float(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Float(*value))
-            }
-            scanner::TokenType::Identifier(value) => {
-                self.current += 1;
-                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
-            }
-            scanner::TokenType::LeftParenthesis => {
-                self.current += 1;
-                let expr = self.expression()?;
-                self.consume_if(scanner::TokenType::RightParenthesis)?;
-                Expression::Grouping(Grouping {
-                    value: Box::new(expr),
-                })
-            }
-            _ => {
-                let current_token = self.current().unwrap();
-                return Err(SyntaxError {
-                    message: format!(
-                        "Expected range end expression, got {:?}",
-                        current_token.token_type
-                    ),
-                    line: current_token.line,
-                    column: current_token.column,
-                });
-            }
-        };
+        let range_end = self.factor()?;
         self.consume_if(scanner::TokenType::RightParenthesis)?;
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let body = self.parse_block(false)?;

@@ -682,7 +682,14 @@ impl SkiaEnv {
             paragraph_builder.push_style(&self.text_style);
             paragraph_builder.add_text(widget.text.clone());
             let mut paragraph = paragraph_builder.build();
-            paragraph.layout(self.scale_dim(layout.width));
+            let scaled_width = self.scale_dim(layout.width);
+            paragraph.layout(f32::INFINITY);
+            let intrinsic = paragraph.max_intrinsic_width();
+            // If layout width is effectively unconstrained, keep single-line layout to avoid
+            // last-character wrap (max_intrinsic_width can be slightly under the true width).
+            if scaled_width < intrinsic - 0.5 {
+                paragraph.layout(scaled_width);
+            }
             let scaled_x = self.scale_coord(layout.x);
             let scaled_y = self.scale_coord(layout.y);
             paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
