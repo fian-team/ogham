@@ -870,9 +870,9 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftSquareBracket)?;
         let mut array = Array::new();
         while !self.next_is(vec![scanner::TokenType::RightSquareBracket]) {
-            // Check for spread for loop
+            // Check for spread for loop or spread expression
             if self.next_is(vec![scanner::TokenType::Spread]) {
-                // Check if next token is For
+                // Check if next token is For -> spread for loop
                 if self.current + 1 < self.input.len() {
                     if let scanner::TokenType::For = self.input[self.current + 1].token_type {
                         let spread_for_loop = self.parse_for_loop_expression(true)?;
@@ -883,6 +883,14 @@ impl Parser {
                         continue;
                     }
                 }
+                // Spread expression: ...expr
+                self.consume_if(scanner::TokenType::Spread)?;
+                let inner = self.expression()?;
+                array.push(Expression::new_spread(inner));
+                if !self.next_is(vec![scanner::TokenType::RightSquareBracket]) {
+                    self.consume_if(scanner::TokenType::Comma)?;
+                }
+                continue;
             }
             let expression = self.expression()?;
             array.push(expression);

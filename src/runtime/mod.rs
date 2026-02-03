@@ -107,6 +107,10 @@ impl Runtime {
         self.needs_rerender
     }
 
+    pub fn request_rerender(&mut self) {
+        self.needs_rerender = true;
+    }
+
     pub fn clear_rerender_flag(&mut self) {
         self.needs_rerender = false;
     }
@@ -663,6 +667,9 @@ impl Runtime {
             Expression::SpreadForLoop(for_loop) => {
                 self.evaluate_for_loop_expression(for_loop, true)
             }
+            Expression::Spread(_) => Err(VMError::InvalidOperation(
+                "Spread is only allowed inside array literals".to_string(),
+            )),
             Expression::Match(m) => self.evaluate_match_expression(m),
         }
     }
@@ -812,6 +819,17 @@ impl Runtime {
                             } else {
                                 // Shouldn't happen, but handle gracefully
                                 value_array.push(for_loop_results);
+                            }
+                        }
+                        Expression::Spread(inner) => {
+                            let spread_value = self.evaluate_expression(inner)?;
+                            if let Value::Array(results) = spread_value {
+                                value_array.extend(results);
+                            } else {
+                                return Err(VMError::TypeMismatch(format!(
+                                    "Spread in array expects an array, got {:?}",
+                                    spread_value
+                                )));
                             }
                         }
                         _ => {

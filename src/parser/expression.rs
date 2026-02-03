@@ -2,18 +2,19 @@ use super::{block::*, call::*, identifier::*, literal::*, operator::*, widget::*
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expression {
-    Literal(Literal),   // 5 1 3 true "Hello world!"
-    Unary(Unary),       // -5 !true
-    Binary(Binary),     // 5 + 3, 8 * 1
-    Grouping(Grouping), // (5 + 3)
-    Widget(Widget),     // WidgetIdentifier { key: value }
-    MemberAccess(MemberAccess), // foo.bar
-    Call(Call),         // foo() or array.length()
-    IndexAccess(IndexAccess), // array[index]
-    Range(RangeExpression), // 0..5
-    ForLoop(ForLoopExpression), // for (i in 0..5) { ... }
+    Literal(Literal),                 // 5 1 3 true "Hello world!"
+    Unary(Unary),                     // -5 !true
+    Binary(Binary),                   // 5 + 3, 8 * 1
+    Grouping(Grouping),               // (5 + 3)
+    Widget(Widget),                   // WidgetIdentifier { key: value }
+    MemberAccess(MemberAccess),       // foo.bar
+    Call(Call),                       // foo() or array.length()
+    IndexAccess(IndexAccess),         // array[index]
+    Range(RangeExpression),           // 0..5
+    ForLoop(ForLoopExpression),       // for (i in 0..5) { ... }
     SpreadForLoop(ForLoopExpression), // ...for (i in 0..5) { ... }
-    Match(MatchExpression), // match expr { pat => body, ... }
+    Spread(Box<Expression>),          // ...expr (e.g. in array literals)
+    Match(MatchExpression),           // match expr { pat => body, ... }
 }
 
 impl Expression {
@@ -46,12 +47,36 @@ impl Expression {
         Expression::Range(RangeExpression::new(start, end))
     }
 
-    pub fn new_for_loop(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> Expression {
-        Expression::ForLoop(ForLoopExpression::new(variable, range_start, range_end, body))
+    pub fn new_for_loop(
+        variable: Identifier,
+        range_start: Expression,
+        range_end: Expression,
+        body: Block,
+    ) -> Expression {
+        Expression::ForLoop(ForLoopExpression::new(
+            variable,
+            range_start,
+            range_end,
+            body,
+        ))
     }
 
-    pub fn new_spread_for_loop(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> Expression {
-        Expression::SpreadForLoop(ForLoopExpression::new(variable, range_start, range_end, body))
+    pub fn new_spread_for_loop(
+        variable: Identifier,
+        range_start: Expression,
+        range_end: Expression,
+        body: Block,
+    ) -> Expression {
+        Expression::SpreadForLoop(ForLoopExpression::new(
+            variable,
+            range_start,
+            range_end,
+            body,
+        ))
+    }
+
+    pub fn new_spread(expr: Expression) -> Expression {
+        Expression::Spread(Box::new(expr))
     }
 
     pub fn new_match(scrutinee: Expression, arms: Vec<(Expression, Block)>) -> Expression {
@@ -148,7 +173,12 @@ pub struct ForLoopExpression {
 }
 
 impl ForLoopExpression {
-    pub fn new(variable: Identifier, range_start: Expression, range_end: Expression, body: Block) -> ForLoopExpression {
+    pub fn new(
+        variable: Identifier,
+        range_start: Expression,
+        range_end: Expression,
+        body: Block,
+    ) -> ForLoopExpression {
         ForLoopExpression {
             variable,
             range_start: Box::new(range_start),
