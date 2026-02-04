@@ -92,6 +92,11 @@ impl Client {
         self.ogham.get_ui().is_dirty()
     }
 
+    /// True when the UI needs to be updated (tree dirty or runtime state changed).
+    pub fn needs_ui_update(&self) -> bool {
+        self.ogham.get_ui().is_dirty() || self.ogham.get_runtime().lock().unwrap().needs_rerender()
+    }
+
     /// Update UI if dirty, then layout with the given dimensions
     pub fn update_ui_layout(&mut self, width: f32, height: f32) {
         let dirty = self.is_dirty();
@@ -168,6 +173,10 @@ impl ClientUI for Client {
 
     fn is_ui_dirty(&self) -> bool {
         self.is_ui_dirty()
+    }
+
+    fn needs_ui_update(&self) -> bool {
+        self.needs_ui_update()
     }
 
     fn update_ui_layout(&mut self, width: f32, height: f32) {

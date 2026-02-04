@@ -123,15 +123,13 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 };
 
                 // Check if UI needs update after handling the event
-                if handled && self.client.is_ui_dirty() {
+                if handled && self.client.needs_ui_update() {
                     let logical_size: LogicalSize<f64> = self
                         .window
                         .inner_size()
                         .to_logical(self.window.scale_factor());
-                    self.client.update_ui_layout(
-                        logical_size.width as f32,
-                        logical_size.height as f32,
-                    );
+                    self.client
+                        .update_ui_layout(logical_size.width as f32, logical_size.height as f32);
                 }
 
                 handled
@@ -217,7 +215,7 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                         ui_handled |= self.client.handle_ui_event(&keypress_event);
                     }
 
-                    if self.client.is_ui_dirty() {
+                    if self.client.needs_ui_update() {
                         let logical_size: LogicalSize<f64> = self
                             .window
                             .inner_size()
@@ -377,6 +375,8 @@ pub trait ClientUpdate {
 pub trait ClientUI {
     fn handle_ui_event(&mut self, event: &Event) -> bool;
     fn is_ui_dirty(&self) -> bool;
+    /// True when the UI tree is dirty or the runtime needs a rerender (e.g. state changed).
+    fn needs_ui_update(&self) -> bool;
     fn update_ui_layout(&mut self, width: f32, height: f32);
     fn get_ui_mut(&mut self) -> &mut UI;
     fn render(&mut self, surface: &mut SkiaSurface);
