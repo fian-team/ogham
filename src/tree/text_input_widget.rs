@@ -14,6 +14,7 @@ pub struct TextInputWidget {
     pub cursor_position: usize,
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
     pub style: FlexStyle,
+    pub text_style: TextStyle,
     pub layout: Option<Rect>,
 }
 
@@ -24,6 +25,7 @@ impl TextInputWidget {
             cursor_position: 0,
             event_listeners: HashMap::new(),
             style: FlexStyle::default(),
+            text_style: TextStyle::default(),
             layout: None,
         }
     }
@@ -34,6 +36,7 @@ impl TextInputWidget {
             cursor_position: 0,
             event_listeners: HashMap::new(),
             style,
+            text_style: TextStyle::default(),
             layout: None,
         }
     }
@@ -45,6 +48,7 @@ impl TextInputWidget {
             cursor_position,
             event_listeners: HashMap::new(),
             style: FlexStyle::default(),
+            text_style: TextStyle::default(),
             layout: None,
         }
     }
@@ -98,14 +102,21 @@ impl Widget for TextInputWidget {
         let mut new_widget = new_widget.lock().unwrap();
         if let Some(new_text_input_widget) = new_widget.downcast_mut::<TextInputWidget>() {
             self.style = new_text_input_widget.style.clone();
+            self.text_style = new_text_input_widget.text_style.clone();
             self.layout = new_text_input_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
             std::mem::swap(
                 &mut self.event_listeners,
                 &mut new_text_input_widget.event_listeners,
             );
-            self.value = new_text_input_widget.value.clone();
-            self.cursor_position = new_text_input_widget.cursor_position;
+            let new_value = new_text_input_widget.value.clone();
+            let value_unchanged = new_value == self.value;
+            self.value = new_value;
+            self.cursor_position = if value_unchanged {
+                self.cursor_position.min(self.value.len())
+            } else {
+                self.value.len()
+            };
             true
         } else {
             false

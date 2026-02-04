@@ -731,7 +731,7 @@ impl SkiaEnv {
             );
 
             // Pre-calculate all scaled values to avoid borrowing conflicts
-            let text_size = self.scale_font_size(widget.style.text_size.unwrap_or(16.0));
+            let text_size = self.scale_font_size(widget.text_style.size);
             let padding_left = self.scale_dim(widget.style.padding.get_left());
             let padding_right = self.scale_dim(widget.style.padding.get_right());
             let padding_top = self.scale_dim(widget.style.padding.get_top());
@@ -746,10 +746,7 @@ impl SkiaEnv {
 
             // Draw the text content
             self.paint.set_style(PaintStyle::Fill);
-            let text_color = widget
-                .style
-                .text_color
-                .unwrap_or(crate::tree::style::Color::new(0, 0, 0, 255));
+            let text_color = widget.text_style.color;
             self.paint.set_color(Color::from_argb(
                 text_color.a,
                 text_color.r,
@@ -760,12 +757,22 @@ impl SkiaEnv {
 
             self.text_style.set_font_size(text_size);
             self.text_style.set_font_style(FontStyle::new(
-                Weight::NORMAL,
+                match widget.text_style.weight {
+                    crate::tree::style::FontWeight::Normal => Weight::NORMAL,
+                    crate::tree::style::FontWeight::SemiBold => Weight::SEMI_BOLD,
+                    crate::tree::style::FontWeight::Bold => Weight::BOLD,
+                    crate::tree::style::FontWeight::Light => Weight::LIGHT,
+                },
                 Width::NORMAL,
                 Slant::Upright,
             ));
 
-            self.paragraph_style.set_text_align(SkiaTextAlign::Left);
+            self.paragraph_style
+                .set_text_align(match widget.text_style.align {
+                    crate::tree::style::TextAlign::Left => SkiaTextAlign::Left,
+                    crate::tree::style::TextAlign::Center => SkiaTextAlign::Center,
+                    crate::tree::style::TextAlign::Right => SkiaTextAlign::Right,
+                });
             let mut paragraph_builder =
                 ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
             paragraph_builder.push_style(&self.text_style);
