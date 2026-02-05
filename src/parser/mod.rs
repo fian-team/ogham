@@ -851,16 +851,28 @@ impl Parser {
     pub fn parse_map(&mut self) -> Result<Map, SyntaxError> {
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let mut map = Map::new();
-        while self.input[self.current].token_type != scanner::TokenType::RightBracket {
+        while self.current < self.input.len()
+            && self.input[self.current].token_type != scanner::TokenType::RightBracket
+        {
             let identifier = self.consume_if_identifier()?;
             self.consume_if(scanner::TokenType::Colon)?;
             let expression = self.expression()?;
             // Comma is optional before the closing bracket:
             // { a: 1 } and { a: 1, } are both valid.
-            if self.input[self.current].token_type != scanner::TokenType::RightBracket {
+            if self.current < self.input.len()
+                && self.input[self.current].token_type != scanner::TokenType::RightBracket
+            {
                 self.consume_if(scanner::TokenType::Comma)?;
             }
             map.set(identifier, expression);
+        }
+        if self.current >= self.input.len() {
+            let last = self.input.last().unwrap();
+            return Err(SyntaxError {
+                message: "Unterminated map literal".to_owned(),
+                line: last.line,
+                column: last.column,
+            });
         }
         self.consume_if(scanner::TokenType::RightBracket)?;
         return Ok(map);
@@ -905,14 +917,26 @@ impl Parser {
     pub fn parse_widget(&mut self, identifier: Identifier) -> Result<Widget, SyntaxError> {
         let mut widget = Widget::new(identifier);
         self.consume_if(scanner::TokenType::LeftBracket)?;
-        while self.input[self.current].token_type != scanner::TokenType::RightBracket {
+        while self.current < self.input.len()
+            && self.input[self.current].token_type != scanner::TokenType::RightBracket
+        {
             let key = self.consume_if_identifier()?;
             self.consume_if(scanner::TokenType::Colon)?;
             let value = self.expression()?;
             widget.set(key, value);
-            if self.input[self.current].token_type != scanner::TokenType::RightBracket {
+            if self.current < self.input.len()
+                && self.input[self.current].token_type != scanner::TokenType::RightBracket
+            {
                 self.consume_if(scanner::TokenType::Comma)?;
             }
+        }
+        if self.current >= self.input.len() {
+            let last = self.input.last().unwrap();
+            return Err(SyntaxError {
+                message: "Unterminated widget literal".to_owned(),
+                line: last.line,
+                column: last.column,
+            });
         }
         self.consume_if(scanner::TokenType::RightBracket)?;
         return Ok(widget);
