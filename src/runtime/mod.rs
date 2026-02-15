@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::parser::MemberAccess;
@@ -9,32 +10,40 @@ use crate::parser::{
     MatchExpression, Operator, Parser, Statement,
 };
 use crate::runtime::closure::Closure;
+use crate::runtime::compiler::Compiler;
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::environment::Environment;
 use crate::runtime::error::{RuntimeError, VMError};
+use crate::runtime::opcode::FunctionProto;
 use crate::runtime::value::Value;
+use crate::runtime::vm::VM;
 use crate::runtime::widget::RuntimeWidget;
 use crate::scanner::Scanner;
 
 pub mod closure;
+pub mod compiler;
 pub mod config;
 pub mod environment;
 pub mod error;
+pub mod opcode;
 pub mod value;
+pub mod vm;
 pub mod widget;
 
 pub struct Runtime {
-    environment: Environment,
+    pub(crate) environment: Environment,
     host_state: HashMap<String, Value>,
     event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> bool + Send + Sync>>,
     needs_rerender: bool,
     module: Option<Function>,
+    /// Compiled bytecode for the module (cached so rerenders skip compilation).
+    compiled_module: Option<FunctionProto>,
     // State management
-    component_state: HashMap<String, Value>, // Key format: "{call_stack_path}:{variable_name}"
-    call_stack: Vec<String>,                 // Current execution path
-    active_state_paths: HashSet<String>,     // Paths that declared state in current render
-    has_branched: bool,                      // Track if branching has occurred in current function
-    call_counters: HashMap<String, usize>, // Track call counts per function to generate unique paths
+    pub(crate) component_state: HashMap<String, Value>, // Key format: "{call_stack_path}:{variable_name}"
+    pub(crate) call_stack: Vec<String>,                 // Current execution path
+    pub(crate) active_state_paths: HashSet<String>,     // Paths that declared state in current render
+    pub(crate) has_branched: bool, // Track if branching has occurred in current function
+    pub(crate) call_counters: HashMap<String, usize>, // Track call counts per function to generate unique paths
     // Import resolution
     project_root: Option<PathBuf>,
     import_loading_stack: Vec<PathBuf>,
@@ -52,6 +61,7 @@ impl Runtime {
             event_handlers: HashMap::new(),
             needs_rerender: false,
             module: None,
+            compiled_module: None,
             component_state: HashMap::new(),
             call_stack: Vec::new(),
             active_state_paths: HashSet::new(),
@@ -117,6 +127,8 @@ impl Runtime {
 
     pub fn set_module(&mut self, module: Function) {
         self.module = Some(module);
+        // Invalidate cached bytecode so the next execution recompiles.
+        self.compiled_module = None;
     }
 
     pub fn get_module(&self) -> Option<&Function> {
@@ -145,39 +157,63 @@ impl Runtime {
         self.call_stack.clear();
         // Reset call counters for new render
         self.call_counters.clear();
+        // Reuse compiled module (already cached from first execute_module).
         let result = self.execute_module(&module);
         // Cleanup state for unmounted components
         self.cleanup_unmounted_state();
         result
     }
 
+    /// Invalidate the cached bytecode so the next execute_module recompiles.
+    pub fn invalidate_compiled_module(&mut self) {
+        self.compiled_module = None;
+    }
+
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
-        // Clear active state paths for new render
+        // Try bytecode path first: compile the module and run it in the VM.
         self.active_state_paths.clear();
-        // Clear call stack
         self.call_stack.clear();
-        // Reset call counters for new render
         self.call_counters.clear();
-        // Clear import state so each run re-imports and can detect cycles
         self.import_loading_stack.clear();
         self.import_loaded.clear();
         self.import_cache.clear();
-        // Execute the module body to populate the environment
+
+        // Compile (or use cached compilation).
+        let proto = if let Some(ref cached) = self.compiled_module {
+            cached.clone()
+        } else {
+            let proto = Compiler::compile_module(module)?;
+            self.compiled_module = Some(proto.clone());
+            proto
+        };
+
+        let mut vm = VM::new();
+        let result = vm.run(&proto, self);
+        self.cleanup_unmounted_state();
+        result
+    }
+
+    /// Execute a module using the original tree-walk interpreter (kept as
+    /// a fallback for debugging / gradual migration).
+    pub fn execute_module_treewalker(&mut self, module: &Function) -> Result<Value, VMError> {
+        self.active_state_paths.clear();
+        self.call_stack.clear();
+        self.call_counters.clear();
+        self.import_loading_stack.clear();
+        self.import_loaded.clear();
+        self.import_cache.clear();
         self.execute_block(&module.body)?;
-        // Look for a 'main' variable that is a function
         let result = if let Some(Value::Closure(main_closure)) = self.environment.get("main") {
-            // Call the main function
             self.call_closure(&main_closure, &[], "main")
         } else {
             Ok(Value::Void)
         };
-        // Cleanup state for unmounted components
         self.cleanup_unmounted_state();
         result
     }
 
     /// Get the current call stack path as a string
-    fn get_call_stack_path(&self) -> String {
+    pub(crate) fn get_call_stack_path(&self) -> String {
         if self.call_stack.is_empty() {
             "".to_string()
         } else {
@@ -186,7 +222,7 @@ impl Runtime {
     }
 
     /// Generate a state key from the current call stack path and variable name
-    fn get_state_key(&self, variable_name: &str) -> String {
+    pub(crate) fn get_state_key(&self, variable_name: &str) -> String {
         let path = self.get_call_stack_path();
         if path.is_empty() {
             format!(":{}", variable_name)
@@ -196,7 +232,7 @@ impl Runtime {
     }
 
     /// Get state value for a variable, searching up the call stack
-    fn get_state_value(&self, variable_name: &str) -> Option<Value> {
+    pub(crate) fn get_state_value(&self, variable_name: &str) -> Option<Value> {
         // Search up the call stack, from most specific to least specific
         let mut search_path = self.call_stack.clone();
 
@@ -237,7 +273,7 @@ impl Runtime {
     /// Set state value for a variable at the current call stack path
     /// This will update the state at the most specific path where it exists,
     /// or create it at the current path if it doesn't exist
-    fn set_state_value(&mut self, variable_name: &str, value: Value) {
+    pub(crate) fn set_state_value(&mut self, variable_name: &str, value: Value) {
         // First, try to find existing state up the call stack
         let mut search_path = self.call_stack.clone();
         let mut found = false;
@@ -466,7 +502,7 @@ impl Runtime {
         }
     }
 
-    fn execute_import(&mut self, import_stmt: &ImportStatement) -> Result<Value, VMError> {
+    pub(crate) fn execute_import(&mut self, import_stmt: &ImportStatement) -> Result<Value, VMError> {
         let project_root = self.project_root.as_ref().ok_or_else(|| {
             VMError::ImportError("project root not set; cannot resolve import path".to_string())
         })?;
@@ -1071,12 +1107,12 @@ impl Runtime {
         } else {
             "fn".to_string()
         };
-        if let Value::Closure(closure) = callee_val {
-            self.call_closure(&closure, &args, &func_name)
-        } else {
-            Err(VMError::TypeMismatch(
+        match callee_val {
+            Value::Closure(closure) => self.call_closure(&closure, &args, &func_name),
+            Value::BytecodeClosure(closure) => self.call_bytecode_closure(&closure, &args),
+            _ => Err(VMError::TypeMismatch(
                 "Only functions can be called".to_string(),
-            ))
+            )),
         }
     }
 
@@ -1163,6 +1199,34 @@ impl Runtime {
             captured_path: self.call_stack.clone(),
         };
         self.call_closure(&closure, args, function_name)
+    }
+
+    /// Call a bytecode closure (produced by the bytecode compiler).
+    /// Used by the widget tree's event handlers.
+    pub fn call_bytecode_closure(
+        &mut self,
+        closure: &Rc<opcode::VMClosure>,
+        args: &[Value],
+    ) -> Result<Value, VMError> {
+        let mut vm = VM::new();
+        vm.call_closure(closure, args, self)
+    }
+
+    /// Dispatch a closure call – handles both AST closures and bytecode
+    /// closures transparently.
+    pub fn call_value(
+        &mut self,
+        value: &Value,
+        args: &[Value],
+        function_name: &str,
+    ) -> Result<Value, VMError> {
+        match value {
+            Value::Closure(closure) => self.call_closure(closure, args, function_name),
+            Value::BytecodeClosure(closure) => self.call_bytecode_closure(closure, args),
+            _ => Err(VMError::TypeMismatch(
+                "Only functions can be called".to_string(),
+            )),
+        }
     }
 }
 

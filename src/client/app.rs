@@ -318,7 +318,7 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
             }
             WindowEvent::ModifiersChanged(new_modifiers) => self.modifiers = new_modifiers,
             WindowEvent::RedrawRequested => {
-                // draw_frame = true;
+                draw_frame = true;
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // Update DPI scale factor when moving between displays

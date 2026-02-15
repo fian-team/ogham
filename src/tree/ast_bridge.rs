@@ -3,6 +3,7 @@ use crate::tree::{
     flex_widget::FlexWidget, style::*, svg_widget::SvgWidget, text_input_widget::TextInputWidget,
     text_widget::TextWidget, WidgetRef,
 };
+use crate::tree::event::Event;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +18,85 @@ pub enum BridgeError {
 impl From<VMError> for BridgeError {
     fn from(err: VMError) -> Self {
         BridgeError::VMError(err)
+    }
+}
+
+/// Create a boxed event-listener closure from a `Value` that is either an
+/// AST `Closure` or a bytecode `BytecodeClosure`. Returns `None` if the
+/// value is not a callable.
+fn make_event_listener(
+    value: &Value,
+    runtime: &Arc<Mutex<Runtime>>,
+    event_name: &str,
+) -> Option<Box<dyn Fn(&Event)>> {
+    match value {
+        Value::Closure(closure) => {
+            let rt = runtime.clone();
+            let closure = closure.clone();
+            let ename = event_name.to_string();
+            Some(Box::new(move |_event: &Event| {
+                let result = rt.lock().unwrap().call_closure(
+                    &closure,
+                    &[],
+                    &format!("event_handler_{}", ename),
+                );
+                if let Err(err) = result {
+                    eprintln!("[ogham] {} handler error: {:?}", ename, err);
+                }
+            }))
+        }
+        Value::BytecodeClosure(closure) => {
+            let rt = runtime.clone();
+            let closure = closure.clone();
+            let ename = event_name.to_string();
+            Some(Box::new(move |_event: &Event| {
+                let result = rt.lock().unwrap().call_bytecode_closure(&closure, &[]);
+                if let Err(err) = result {
+                    eprintln!("[ogham] {} handler error: {:?}", ename, err);
+                }
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// Like `make_event_listener` but for handlers that receive a single `Value`
+/// argument (e.g. `on_change`).
+fn make_event_listener_with_arg(
+    value: &Value,
+    runtime: &Arc<Mutex<Runtime>>,
+    event_name: &str,
+) -> Option<Box<dyn Fn(&Event)>> {
+    match value {
+        Value::Closure(closure) => {
+            let rt = runtime.clone();
+            let closure = closure.clone();
+            let ename = event_name.to_string();
+            Some(Box::new(move |event: &Event| {
+                let arg = Value::String(event.value.clone().unwrap_or_default());
+                let result = rt.lock().unwrap().call_closure(
+                    &closure,
+                    &[arg],
+                    &format!("event_handler_{}", ename),
+                );
+                if let Err(err) = result {
+                    eprintln!("[ogham] {} handler error: {:?}", ename, err);
+                }
+            }))
+        }
+        Value::BytecodeClosure(closure) => {
+            let rt = runtime.clone();
+            let closure = closure.clone();
+            let ename = event_name.to_string();
+            Some(Box::new(move |event: &Event| {
+                let arg = Value::String(event.value.clone().unwrap_or_default());
+                let result = rt.lock().unwrap().call_bytecode_closure(&closure, &[arg]);
+                if let Err(err) = result {
+                    eprintln!("[ogham] {} handler error: {:?}", ename, err);
+                }
+            }))
+        }
+        _ => None,
     }
 }
 
@@ -71,32 +151,17 @@ fn create_flex_widget(
 
     // Event handlers (e.g. `mouse_down: fn () { ... }`)
     if let Some(value) = parser_widget.properties.get("mouse_down") {
-        match value {
-            Value::Closure(closure) => {
-                let runtime_for_handler = runtime.clone();
-                let closure = closure.clone();
-                let event_name = "mouse_down".to_string();
-                flex_widget
-                    .event_listeners
-                    .entry(event_name.clone())
-                    .or_default()
-                    .push(Box::new(move |_event| {
-                        let result = runtime_for_handler.lock().unwrap().call_closure(
-                            &closure,
-                            &[],
-                            &format!("event_handler_{}", event_name),
-                        );
-                        if let Err(err) = result {
-                            eprintln!("[ogham] {} handler error: {:?}", event_name, err);
-                        }
-                    }));
-            }
-            other => {
-                return Err(BridgeError::InvalidPropertyType(
-                    "mouse_down".to_string(),
-                    format!("Expected Closure, got {:?}", other),
-                ));
-            }
+        if let Some(listener) = make_event_listener(value, runtime, "mouse_down") {
+            flex_widget
+                .event_listeners
+                .entry("mouse_down".to_string())
+                .or_default()
+                .push(listener);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                "mouse_down".to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
         }
     }
 
@@ -405,98 +470,47 @@ fn create_text_input_widget(
 
     // Event handlers (e.g. `on_change: fn (value) { ... }`, `mouse_down: fn () { ... }`)
     if let Some(value) = parser_widget.properties.get("on_change") {
-        match value {
-            Value::Closure(closure) => {
-                let runtime_for_handler = runtime.clone();
-                let closure = closure.clone();
-                let event_name = "on_change".to_string();
-                text_input
-                    .event_listeners
-                    .entry(event_name.clone())
-                    .or_default()
-                    .push(Box::new(move |event| {
-                        // Pass the new value to the closure
-                        let args = if let Some(value_str) = &event.value {
-                            vec![Value::String(value_str.clone())]
-                        } else {
-                            vec![]
-                        };
-                        let result = runtime_for_handler.lock().unwrap().call_closure(
-                            &closure,
-                            &args,
-                            &format!("event_handler_{}", event_name),
-                        );
-                        if let Err(err) = result {
-                            eprintln!("[ogham] {} handler error: {:?}", event_name, err);
-                        }
-                    }));
-            }
-            other => {
-                return Err(BridgeError::InvalidPropertyType(
-                    "on_change".to_string(),
-                    format!("Expected Closure, got {:?}", other),
-                ));
-            }
+        if let Some(listener) = make_event_listener_with_arg(value, runtime, "on_change") {
+            text_input
+                .event_listeners
+                .entry("on_change".to_string())
+                .or_default()
+                .push(listener);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                "on_change".to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
         }
     }
 
     if let Some(value) = parser_widget.properties.get("mouse_down") {
-        match value {
-            Value::Closure(closure) => {
-                let runtime_for_handler = runtime.clone();
-                let closure = closure.clone();
-                let event_name = "mouse_down".to_string();
-                text_input
-                    .event_listeners
-                    .entry(event_name.clone())
-                    .or_default()
-                    .push(Box::new(move |_event| {
-                        let result = runtime_for_handler.lock().unwrap().call_closure(
-                            &closure,
-                            &[],
-                            &format!("event_handler_{}", event_name),
-                        );
-                        if let Err(err) = result {
-                            eprintln!("[ogham] {} handler error: {:?}", event_name, err);
-                        }
-                    }));
-            }
-            other => {
-                return Err(BridgeError::InvalidPropertyType(
-                    "mouse_down".to_string(),
-                    format!("Expected Closure, got {:?}", other),
-                ));
-            }
+        if let Some(listener) = make_event_listener(value, runtime, "mouse_down") {
+            text_input
+                .event_listeners
+                .entry("mouse_down".to_string())
+                .or_default()
+                .push(listener);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                "mouse_down".to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
         }
     }
 
     if let Some(value) = parser_widget.properties.get("mouse_up") {
-        match value {
-            Value::Closure(closure) => {
-                let runtime_for_handler = runtime.clone();
-                let closure = closure.clone();
-                let event_name = "mouse_up".to_string();
-                text_input
-                    .event_listeners
-                    .entry(event_name.clone())
-                    .or_default()
-                    .push(Box::new(move |_event| {
-                        let result = runtime_for_handler.lock().unwrap().call_closure(
-                            &closure,
-                            &[],
-                            &format!("event_handler_{}", event_name),
-                        );
-                        if let Err(err) = result {
-                            eprintln!("[ogham] {} handler error: {:?}", event_name, err);
-                        }
-                    }));
-            }
-            other => {
-                return Err(BridgeError::InvalidPropertyType(
-                    "mouse_up".to_string(),
-                    format!("Expected Closure, got {:?}", other),
-                ));
-            }
+        if let Some(listener) = make_event_listener(value, runtime, "mouse_up") {
+            text_input
+                .event_listeners
+                .entry("mouse_up".to_string())
+                .or_default()
+                .push(listener);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                "mouse_up".to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
         }
     }
 

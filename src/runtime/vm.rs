@@ -1,0 +1,992 @@
+// ---------------------------------------------------------------------------
+// Bytecode VM – stack-based executor for compiled Ogham bytecode.
+// ---------------------------------------------------------------------------
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::parser::Identifier;
+use crate::runtime::compiler::deserialize_import_meta;
+use crate::runtime::error::VMError;
+use crate::runtime::opcode::{FunctionProto, OpCode, Upvalue, UpvalueDescriptor, VMClosure};
+use crate::runtime::value::Value;
+use crate::runtime::widget::RuntimeWidget;
+use crate::runtime::Runtime;
+
+// ---------------------------------------------------------------------------
+// Safety limits
+// ---------------------------------------------------------------------------
+
+const MAX_STACK_SIZE: usize = 10_000;
+const MAX_ITERATIONS: u64 = 1_000_000;
+const MAX_CALL_DEPTH: usize = 1_000;
+
+// ---------------------------------------------------------------------------
+// CallFrame – one per active function invocation.
+// ---------------------------------------------------------------------------
+
+struct CallFrame {
+    closure: Rc<VMClosure>,
+    /// Instruction pointer – index into `closure.proto.chunk.code`.
+    ip: usize,
+    /// Where this frame's locals begin on the value stack.
+    slot_offset: usize,
+    /// Saved runtime call stack – restored when this frame returns.
+    saved_call_stack: Option<Vec<String>>,
+    /// Saved `has_branched` flag – restored when this frame returns.
+    saved_has_branched: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// VM
+// ---------------------------------------------------------------------------
+
+pub struct VM {
+    stack: Vec<Value>,
+    frames: Vec<CallFrame>,
+    /// Open upvalues keyed by the stack index they point to. Kept sorted by
+    /// index so we can close them efficiently when a scope exits.
+    open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    /// Iteration counter for detecting infinite loops.
+    iteration_count: u64,
+}
+
+impl VM {
+    pub fn new() -> Self {
+        Self {
+            stack: Vec::with_capacity(256),
+            frames: Vec::with_capacity(64),
+            open_upvalues: Vec::new(),
+            iteration_count: 0,
+        }
+    }
+
+    // -- Stack helpers ------------------------------------------------------
+
+    fn push(&mut self, value: Value) -> Result<(), VMError> {
+        if self.stack.len() >= MAX_STACK_SIZE {
+            return Err(VMError::StackOverflow);
+        }
+        self.stack.push(value);
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Result<Value, VMError> {
+        self.stack.pop().ok_or(VMError::StackUnderflow)
+    }
+
+    fn peek(&self, distance: usize) -> &Value {
+        &self.stack[self.stack.len() - 1 - distance]
+    }
+
+    // -- Frame helpers ------------------------------------------------------
+
+    fn current_frame(&self) -> &CallFrame {
+        self.frames.last().expect("no call frame")
+    }
+
+    fn current_frame_mut(&mut self) -> &mut CallFrame {
+        self.frames.last_mut().expect("no call frame")
+    }
+
+    fn read_instruction(&mut self) -> Result<OpCode, VMError> {
+        let frame = self.current_frame_mut();
+        if frame.ip >= frame.closure.proto.chunk.code.len() {
+            return Err(VMError::InvalidOperation("Instruction pointer out of bounds".to_string()));
+        }
+        let op = frame.closure.proto.chunk.code[frame.ip].clone();
+        frame.ip += 1;
+        Ok(op)
+    }
+
+    fn read_constant(&self, idx: u16) -> &Value {
+        &self.current_frame().closure.proto.chunk.constants[idx as usize]
+    }
+
+    // -- Upvalue helpers ----------------------------------------------------
+
+    fn capture_upvalue(&mut self, stack_index: usize) -> Rc<RefCell<Upvalue>> {
+        // Check if we already have an open upvalue for this slot.
+        for uv in &self.open_upvalues {
+            if let Upvalue::Open(idx) = *uv.borrow() {
+                if idx == stack_index {
+                    return uv.clone();
+                }
+            }
+        }
+        let uv = Rc::new(RefCell::new(Upvalue::Open(stack_index)));
+        self.open_upvalues.push(uv.clone());
+        uv
+    }
+
+    /// Close all open upvalues whose stack index is >= `last`.
+    fn close_upvalues(&mut self, last: usize) {
+        let mut i = 0;
+        while i < self.open_upvalues.len() {
+            let should_close = {
+                let uv = self.open_upvalues[i].borrow();
+                match *uv {
+                    Upvalue::Open(idx) => idx >= last,
+                    Upvalue::Closed(_) => false,
+                }
+            };
+            if should_close {
+                let stack_idx = match *self.open_upvalues[i].borrow() {
+                    Upvalue::Open(idx) => idx,
+                    _ => unreachable!(),
+                };
+                let value = self.stack[stack_idx].clone();
+                *self.open_upvalues[i].borrow_mut() = Upvalue::Closed(value);
+                self.open_upvalues.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    // -- Read/write upvalue values ------------------------------------------
+
+    fn get_upvalue(&self, uv: &Rc<RefCell<Upvalue>>) -> Value {
+        match &*uv.borrow() {
+            Upvalue::Open(idx) => self.stack[*idx].clone(),
+            Upvalue::Closed(val) => val.clone(),
+        }
+    }
+
+    fn set_upvalue(&mut self, uv: &Rc<RefCell<Upvalue>>, value: Value) {
+        let mut uv_ref = uv.borrow_mut();
+        match &mut *uv_ref {
+            Upvalue::Open(idx) => {
+                self.stack[*idx] = value;
+            }
+            Upvalue::Closed(ref mut val) => {
+                *val = value;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Main execution loop
+    // -----------------------------------------------------------------------
+
+    /// Run a compiled `FunctionProto` in the context of the given `Runtime`.
+    /// Returns the final value produced by the module/function.
+    pub fn run(&mut self, proto: &FunctionProto, runtime: &mut Runtime) -> Result<Value, VMError> {
+        // Set up the top-level closure and call frame.
+        // NOTE: Unlike regular function calls, we do NOT push the module closure
+        // onto the stack, because the module's local variables should start at
+        // stack[0], not stack[1].
+        let closure = Rc::new(VMClosure {
+            proto: Rc::new(proto.clone()),
+            upvalues: Vec::new(),
+            captured_path: Vec::new(),
+        });
+        self.frames.push(CallFrame {
+            closure,
+            ip: 0,
+            slot_offset: 0,
+            saved_call_stack: None,
+            saved_has_branched: None,
+        });
+
+        self.execute(runtime)
+    }
+
+    /// Run a `VMClosure` that was stored as an event handler or callback.
+    /// Used when the widget tree fires an event and the handler is a bytecode
+    /// closure.
+    pub fn call_closure(
+        &mut self,
+        closure: &Rc<VMClosure>,
+        args: &[Value],
+        runtime: &mut Runtime,
+    ) -> Result<Value, VMError> {
+        // Push the closure, then the arguments.
+        self.push(Value::BytecodeClosure(closure.clone()))?;
+        for arg in args {
+            self.push(arg.clone())?;
+        }
+        self.call_vm_closure(closure, args.len() as u8)?;
+        self.execute(runtime)
+    }
+
+    // -- Internal call setup ------------------------------------------------
+
+    fn call_vm_closure(&mut self, closure: &Rc<VMClosure>, arg_count: u8) -> Result<(), VMError> {
+        if arg_count != closure.proto.arity {
+            return Err(VMError::InvalidOperation(format!(
+                "Expected {} arguments, got {}",
+                closure.proto.arity, arg_count
+            )));
+        }
+        if self.frames.len() >= MAX_CALL_DEPTH {
+            return Err(VMError::CallStackOverflow);
+        }
+        let slot_offset = self.stack.len() - arg_count as usize - 1;
+        self.frames.push(CallFrame {
+            closure: closure.clone(),
+            ip: 0,
+            saved_call_stack: None,
+            saved_has_branched: None,
+            slot_offset,
+        });
+        // Reset iteration counter on function calls
+        self.iteration_count = 0;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Core instruction dispatch
+    // -----------------------------------------------------------------------
+
+    fn execute(&mut self, runtime: &mut Runtime) -> Result<Value, VMError> {
+        loop {
+            let instruction = self.read_instruction()?;
+
+            match instruction {
+                // -- Constants -----------------------------------------------
+                OpCode::Constant(idx) => {
+                    let val = self.read_constant(idx).clone();
+                    self.push(val)?;
+                }
+                OpCode::True => self.push(Value::Boolean(true))?,
+                OpCode::False => self.push(Value::Boolean(false))?,
+                OpCode::Void => self.push(Value::Void)?,
+
+                // -- Stack ---------------------------------------------------
+                OpCode::Pop => {
+                    self.pop()?;
+                }
+
+                // -- Locals --------------------------------------------------
+                OpCode::GetLocal(slot) => {
+                    let idx = self.current_frame().slot_offset + slot as usize;
+                    let val = self.stack[idx].clone();
+                    self.push(val)?;
+                }
+                OpCode::SetLocal(slot) => {
+                    let idx = self.current_frame().slot_offset + slot as usize;
+                    let val = self.peek(0).clone();
+                    self.stack[idx] = val;
+                    // SetLocal does NOT pop – the value remains on the stack
+                    // for the case where assignment is part of an expression.
+                    // The statement compilation emits Pop if needed.
+                    self.pop()?; // Actually, assignments are statements, so pop.
+                }
+
+                // -- Upvalues ------------------------------------------------
+                OpCode::GetUpvalue(idx) => {
+                    let uv = self.current_frame().closure.upvalues[idx as usize].clone();
+                    let val = self.get_upvalue(&uv);
+                    self.push(val)?;
+                }
+                OpCode::SetUpvalue(idx) => {
+                    let val = self.pop()?;
+                    let uv = self.current_frame().closure.upvalues[idx as usize].clone();
+                    self.set_upvalue(&uv, val);
+                }
+
+                // -- State ---------------------------------------------------
+                OpCode::GetState(name_idx) => {
+                    let name = match self.read_constant(name_idx) {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "GetState: expected string constant for variable name".to_string(),
+                            ))
+                        }
+                    };
+                    // Lookup order: state → host state. If neither, it's
+                    // an undefined variable.
+                    if let Some(val) = runtime.get_state_value(&name) {
+                        self.push(val)?;
+                    } else if let Some(val) = runtime.get_host_state(&name) {
+                        self.push(val)?;
+                    } else {
+                        return Err(VMError::UndefinedVariable(name));
+                    }
+                }
+                OpCode::DeclareState(name_idx) => {
+                    let name = match self.read_constant(name_idx) {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "DeclareState: expected string constant".to_string(),
+                            ))
+                        }
+                    };
+                    // The initializer value is on top of the stack.
+                    let init_value = self.pop()?;
+
+                    // Check if state already exists at the current call-stack
+                    // path. If so, use the persisted value; otherwise
+                    // initialise.
+                    let state_key = runtime.get_state_key(&name);
+                    let value = if let Some(existing) = runtime.component_state.get(&state_key) {
+                        existing.clone()
+                    } else {
+                        runtime
+                            .component_state
+                            .insert(state_key.clone(), init_value.clone());
+                        init_value
+                    };
+
+                    // Record active path.
+                    let path = runtime.get_call_stack_path();
+                    if !path.is_empty() {
+                        runtime.active_state_paths.insert(path);
+                    }
+
+                    // Push the value as a local.
+                    self.push(value)?;
+                }
+                OpCode::SetState(name_idx) => {
+                    let name = match self.read_constant(name_idx) {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "SetState: expected string constant".to_string(),
+                            ))
+                        }
+                    };
+                    let value = self.peek(0).clone();
+                    runtime.set_state_value(&name, value);
+                    runtime.request_rerender();
+                }
+
+                // -- Host state ----------------------------------------------
+                OpCode::GetHostState(name_idx) => {
+                    let name = match self.read_constant(name_idx) {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "GetHostState: expected string constant".to_string(),
+                            ))
+                        }
+                    };
+                    if let Some(val) = runtime.get_host_state(&name) {
+                        self.push(val)?;
+                    } else {
+                        return Err(VMError::UndefinedVariable(name));
+                    }
+                }
+
+                // -- Arithmetic ----------------------------------------------
+                OpCode::Add => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(arith_add(&a, &b)?)?;
+                }
+                OpCode::Sub => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(arith_sub(&a, &b)?)?;
+                }
+                OpCode::Mul => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(arith_mul(&a, &b)?)?;
+                }
+                OpCode::Div => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(arith_div(&a, &b)?)?;
+                }
+                OpCode::Negate => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Integer(i) => self.push(Value::Integer(-i))?,
+                        Value::Float(f) => self.push(Value::Float(-f))?,
+                        _ => return Err(VMError::TypeMismatch(format!("Cannot negate {:?}", val))),
+                    }
+                }
+
+                // -- Comparison ----------------------------------------------
+                OpCode::Eq => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    if std::mem::discriminant(&a) != std::mem::discriminant(&b) {
+                        return Err(VMError::TypeMismatch(format!(
+                            "Cannot compare values of different types with ==: {:?} and {:?}",
+                            a, b
+                        )));
+                    }
+                    self.push(Value::Boolean(a == b))?;
+                }
+                OpCode::Ne => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    if std::mem::discriminant(&a) != std::mem::discriminant(&b) {
+                        return Err(VMError::TypeMismatch(format!(
+                            "Cannot compare values of different types with !=: {:?} and {:?}",
+                            a, b
+                        )));
+                    }
+                    self.push(Value::Boolean(a != b))?;
+                }
+                OpCode::Gt => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(Value::Boolean(cmp_gt(&a, &b)?))?;
+                }
+                OpCode::Ge => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(Value::Boolean(cmp_ge(&a, &b)?))?;
+                }
+                OpCode::Lt => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(Value::Boolean(cmp_lt(&a, &b)?))?;
+                }
+                OpCode::Le => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(Value::Boolean(cmp_le(&a, &b)?))?;
+                }
+                OpCode::Not => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Boolean(b) => self.push(Value::Boolean(!b))?,
+                        _ => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "Cannot negate (!) {:?}",
+                                val
+                            )))
+                        }
+                    }
+                }
+
+                // -- Control flow --------------------------------------------
+                OpCode::Jump(offset) => {
+                    let frame = self.current_frame_mut();
+                    frame.ip = (frame.ip as i64 + offset as i64) as usize;
+                }
+                OpCode::JumpIfFalse(offset) => {
+                    let cond = self.pop()?;
+                    if let Value::Boolean(false) = cond {
+                        let frame = self.current_frame_mut();
+                        frame.ip = (frame.ip as i64 + offset as i64) as usize;
+                    }
+                }
+                OpCode::Loop(offset) => {
+                    let frame = self.current_frame_mut();
+                    if offset as usize > frame.ip {
+                        return Err(VMError::InvalidOperation("Loop offset underflow".to_string()));
+                    }
+                    frame.ip -= offset as usize;
+                    
+                    // Increment iteration counter for infinite loop detection
+                    self.iteration_count += 1;
+                    if self.iteration_count > MAX_ITERATIONS {
+                        return Err(VMError::ExecutionLimitExceeded("Maximum iterations exceeded".to_string()));
+                    }
+                }
+                OpCode::Return => {
+                    let result = self.pop()?;
+                    let frame_offset = self.current_frame().slot_offset;
+                    // Restore runtime call-stack state saved by Call.
+                    let saved_cs = self.current_frame().saved_call_stack.clone();
+                    let saved_hb = self.current_frame().saved_has_branched;
+                    self.close_upvalues(frame_offset);
+                    self.frames.pop();
+                    if let Some(cs) = saved_cs {
+                        runtime.call_stack = cs;
+                    }
+                    if let Some(hb) = saved_hb {
+                        runtime.has_branched = hb;
+                    }
+                    if self.frames.is_empty() {
+                        return Ok(result);
+                    }
+                    // Discard the callee and args from the stack.
+                    self.stack.truncate(frame_offset);
+                    self.push(result)?;
+                }
+
+                // -- Closures ------------------------------------------------
+                OpCode::Closure(proto_idx) => {
+                    let proto = {
+                        let frame_closure = &self.current_frame().closure;
+                        Rc::new(frame_closure.proto.protos[proto_idx as usize].clone())
+                    };
+                    // Capture upvalues as described by the proto.
+                    let mut upvalues = Vec::with_capacity(proto.upvalue_count as usize);
+                    for desc in &proto.upvalues {
+                        let uv = match desc {
+                            UpvalueDescriptor::Local(slot) => {
+                                let abs_slot = self.current_frame().slot_offset + *slot as usize;
+                                self.capture_upvalue(abs_slot)
+                            }
+                            UpvalueDescriptor::Upvalue(idx) => {
+                                self.current_frame().closure.upvalues[*idx as usize].clone()
+                            }
+                        };
+                        upvalues.push(uv);
+                    }
+                    let captured_path = runtime.call_stack.clone();
+                    let vm_closure = Rc::new(VMClosure {
+                        proto,
+                        upvalues,
+                        captured_path,
+                    });
+                    self.push(Value::BytecodeClosure(vm_closure))?;
+                }
+                OpCode::Call(arg_count) => {
+                    let callee_idx = self.stack.len() - 1 - arg_count as usize;
+                    let callee = self.stack[callee_idx].clone();
+
+                    match callee {
+                        Value::BytecodeClosure(closure) => {
+                            // Save and set up the call stack path in the
+                            // runtime for state management.
+                            let old_call_stack = runtime.call_stack.clone();
+                            let old_has_branched = runtime.has_branched;
+                            runtime.call_stack = closure.captured_path.clone();
+
+                            // Generate unique call identifier.
+                            let func_name = &closure.proto.name;
+                            let call_site_key = if runtime.call_stack.is_empty() {
+                                func_name.clone()
+                            } else {
+                                format!("{}/{}", runtime.call_stack.join("/"), func_name)
+                            };
+                            let call_index =
+                                runtime.call_counters.entry(call_site_key).or_insert(0);
+                            *call_index += 1;
+                            let current_idx = *call_index;
+                            let unique_id = format!("{}@{}", func_name, current_idx);
+                            runtime.call_stack.push(unique_id);
+                            runtime.has_branched = false;
+
+                            self.call_vm_closure(&closure, arg_count)?;
+
+                            // Store restore info on the new frame so
+                            // Return can restore the call stack.
+                            let new_frame = self.frames.last_mut().unwrap();
+                            new_frame.saved_call_stack = Some(old_call_stack);
+                            new_frame.saved_has_branched = Some(old_has_branched);
+                        }
+                        Value::Closure(closure) => {
+                            // Fall back to tree-walk for AST closures.
+                            let args: Vec<Value> = (0..arg_count)
+                                .map(|_| self.pop())
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into_iter()
+                                .rev()
+                                .collect();
+                            self.pop()?; // pop the closure value
+                            let result = runtime.call_closure(&closure, &args, "fn")?;
+                            self.push(result)?;
+                        }
+                        _ => {
+                            return Err(VMError::TypeMismatch(
+                                "Only functions can be called".to_string(),
+                            ));
+                        }
+                    }
+                }
+
+                // -- Collections ---------------------------------------------
+                OpCode::Array(count) => {
+                    let mut arr = Vec::with_capacity(count as usize);
+                    // Elements were pushed in order, so the first element is
+                    // deepest on the stack.
+                    let start = self.stack.len() - count as usize;
+                    for i in start..self.stack.len() {
+                        arr.push(self.stack[i].clone());
+                    }
+                    self.stack.truncate(start);
+                    self.push(Value::Array(arr))?;
+                }
+                OpCode::Map(count) => {
+                    let mut map = HashMap::new();
+                    // Each pair is (key_string_constant, value) – 2*count items.
+                    let pair_count = count as usize;
+                    let start = self.stack.len() - pair_count * 2;
+                    let mut i = start;
+                    while i < self.stack.len() {
+                        let key = match &self.stack[i] {
+                            Value::String(s) => s.clone(),
+                            _ => {
+                                return Err(VMError::InvalidOperation(
+                                    "Map key must be a string".to_string(),
+                                ))
+                            }
+                        };
+                        let value = self.stack[i + 1].clone();
+                        map.insert(key, value);
+                        i += 2;
+                    }
+                    self.stack.truncate(start);
+                    self.push(Value::Map(map))?;
+                }
+                OpCode::GetIndex => {
+                    let index_val = self.pop()?;
+                    let object = self.pop()?;
+                    match (&object, &index_val) {
+                        (Value::Array(arr), Value::Integer(i)) => {
+                            if *i < 0 {
+                                return Err(VMError::InvalidOperation(
+                                    "Array index must be non-negative".to_string(),
+                                ));
+                            }
+                            let idx = *i as usize;
+                            if idx >= arr.len() {
+                                return Err(VMError::InvalidOperation(format!(
+                                    "Index {} out of bounds for array of length {}",
+                                    idx,
+                                    arr.len()
+                                )));
+                            }
+                            self.push(arr[idx].clone())?;
+                        }
+                        _ => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "Cannot index {:?} with {:?}",
+                                object, index_val
+                            )));
+                        }
+                    }
+                }
+                OpCode::GetProperty(name_idx) => {
+                    let name = match self.read_constant(name_idx) {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "GetProperty: expected string constant".to_string(),
+                            ))
+                        }
+                    };
+                    let object = self.pop()?;
+                    match object {
+                        Value::Map(map) => {
+                            let val = map.get(&name).cloned().ok_or_else(|| {
+                                VMError::InvalidOperation(format!("Map has no property '{}'", name))
+                            })?;
+                            self.push(val)?;
+                        }
+                        Value::Widget(widget) => {
+                            let val = widget.properties.get(&name).cloned().ok_or_else(|| {
+                                VMError::InvalidOperation(format!(
+                                    "Widget has no property '{}'",
+                                    name
+                                ))
+                            })?;
+                            self.push(val)?;
+                        }
+                        _ => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "Cannot access property '{}' on {:?}",
+                                name, object
+                            )));
+                        }
+                    }
+                }
+
+                // -- Widgets -------------------------------------------------
+                OpCode::Widget {
+                    identifier_constant,
+                    property_count,
+                } => {
+                    let ident_name = match self.read_constant(identifier_constant) {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "Widget: expected string constant for identifier".to_string(),
+                            ))
+                        }
+                    };
+                    let mut props = HashMap::new();
+                    let pc = property_count as usize;
+                    // Stack has pc pairs of (key_string, value).
+                    let start = self.stack.len() - pc * 2;
+                    let mut i = start;
+                    while i < self.stack.len() {
+                        let key = match &self.stack[i] {
+                            Value::String(s) => s.clone(),
+                            _ => {
+                                return Err(VMError::InvalidOperation(
+                                    "Widget property key must be a string".to_string(),
+                                ))
+                            }
+                        };
+                        let value = self.stack[i + 1].clone();
+                        props.insert(key, value);
+                        i += 2;
+                    }
+                    self.stack.truncate(start);
+                    self.push(Value::Widget(RuntimeWidget {
+                        identifier: Identifier::new(&ident_name),
+                        properties: props,
+                    }))?;
+                }
+
+                // -- Built-ins -----------------------------------------------
+                OpCode::ArrayLength => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Array(arr) => {
+                            self.push(Value::Integer(arr.len() as i32))?;
+                        }
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "length() can only be called on an array".to_string(),
+                            ));
+                        }
+                    }
+                }
+                OpCode::EmitEvent(arg_count) => {
+                    let ac = arg_count as usize;
+                    // First arg is the event name; rest are extra args.
+                    let start = self.stack.len() - ac;
+                    let all_args: Vec<Value> = self.stack[start..].to_vec();
+                    self.stack.truncate(start);
+
+                    if all_args.is_empty() {
+                        return Err(VMError::InvalidOperation(
+                            "event() requires at least an event name".to_string(),
+                        ));
+                    }
+                    let event_name = match &all_args[0] {
+                        Value::String(s) => s.clone(),
+                        other => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "event() first arg must be string, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    runtime.emit_event(&event_name, &all_args[1..]);
+                    self.push(Value::Void)?;
+                }
+                OpCode::Log => {
+                    let _val = self.pop()?;
+                    // Log is a no-op in the current tree-walk interpreter too.
+                    self.push(Value::Void)?;
+                }
+
+                // -- Branching flag ------------------------------------------
+                OpCode::MarkBranched => {
+                    runtime.has_branched = true;
+                }
+
+                // -- Import --------------------------------------------------
+                OpCode::Import(meta_idx) => {
+                    let meta_str = match self.read_constant(meta_idx) {
+                        Value::String(s) => s.clone(),
+                        _ => {
+                            return Err(VMError::InvalidOperation(
+                                "Import: expected string constant".to_string(),
+                            ))
+                        }
+                    };
+                    let meta = deserialize_import_meta(&meta_str).ok_or_else(|| {
+                        VMError::ImportError(format!("Invalid import metadata: {}", meta_str))
+                    })?;
+
+                    // Delegate to the existing Runtime import machinery.
+                    // This scans + parses + tree-walk-executes the imported
+                    // file and merges exported names into the runtime's
+                    // Environment.
+                    let import_stmt =
+                        crate::parser::ImportStatement::new(meta.names.clone(), meta.path.clone());
+                    runtime.execute_import(&import_stmt)?;
+
+                    // After import, the exported names are in
+                    // runtime.environment. Inject them as host state so
+                    // the VM can find them via GetState (which falls
+                    // through to host state).
+                    let env_vars = runtime.environment.top_level_variables().clone();
+                    for (name, value) in env_vars {
+                        runtime.inject_host_state(name, value);
+                    }
+                }
+
+                // -- For-loop expression helpers -----------------------------
+                OpCode::BeginForExpr => {
+                    self.push(Value::Array(Vec::new()))?;
+                }
+                OpCode::AppendForExpr => {
+                    let value = self.pop()?;
+                    // The collector array is below the value.
+                    // But there may be loop locals between the value and the
+                    // collector. We need to find the collector.
+                    // Actually, the collector is right below due to how we
+                    // structured the compilation: after end_scope pops loop
+                    // locals, the collector should be just below.
+                    let stack_top = self.stack.len();
+                    // Find the last Array on the stack (the collector).
+                    let mut found = false;
+                    for i in (0..stack_top).rev() {
+                        if let Value::Array(_) = &self.stack[i] {
+                            // Append to this array.
+                            match &value {
+                                // If the value is an array and this was a
+                                // spread, extend. We detect spread by
+                                // checking if it's an array (from SpreadForLoop
+                                // or Spread).
+                                // For simplicity, always push as a single
+                                // element. The compiler can emit individual
+                                // appends for spreads.
+                                _ => {
+                                    if let Value::Array(ref mut arr) = self.stack[i] {
+                                        // Check if this should be spread
+                                        // (value is Array from a spread context).
+                                        // The compiler should have handled this,
+                                        // so we just push the value as-is unless
+                                        // it's an array from a spread for-loop.
+                                        arr.push(value.clone());
+                                    }
+                                }
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Err(VMError::InvalidOperation(
+                            "AppendForExpr: no collector array found".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic helpers
+// ---------------------------------------------------------------------------
+
+fn arith_add(a: &Value, b: &Value) -> Result<Value, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
+        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a + *b as f64)),
+        (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
+        (Value::String(a), b) => Ok(Value::String(format!("{}{}", a, b))),
+        (a, Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot add {:?} and {:?}",
+            a, b
+        ))),
+    }
+}
+
+fn arith_sub(a: &Value, b: &Value) -> Result<Value, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 - b)),
+        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a - *b as f64)),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot subtract {:?} from {:?}",
+            b, a
+        ))),
+    }
+}
+
+fn arith_mul(a: &Value, b: &Value) -> Result<Value, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 * b)),
+        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a * *b as f64)),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot multiply {:?} and {:?}",
+            a, b
+        ))),
+    }
+}
+
+fn arith_div(a: &Value, b: &Value) -> Result<Value, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => {
+            if *b == 0 {
+                return Err(VMError::InvalidOperation("Division by zero".to_string()));
+            }
+            Ok(Value::Float(*a as f64 / *b as f64))
+        }
+        (Value::Float(a), Value::Float(b)) => {
+            if *b == 0.0 {
+                return Err(VMError::InvalidOperation("Division by zero".to_string()));
+            }
+            Ok(Value::Float(a / b))
+        }
+        (Value::Integer(a), Value::Float(b)) => {
+            if *b == 0.0 {
+                return Err(VMError::InvalidOperation("Division by zero".to_string()));
+            }
+            Ok(Value::Float(*a as f64 / b))
+        }
+        (Value::Float(a), Value::Integer(b)) => {
+            if *b == 0 {
+                return Err(VMError::InvalidOperation("Division by zero".to_string()));
+            }
+            Ok(Value::Float(a / *b as f64))
+        }
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot divide {:?} by {:?}",
+            a, b
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Comparison helpers
+// ---------------------------------------------------------------------------
+
+fn cmp_gt(a: &Value, b: &Value) -> Result<bool, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => Ok(a > b),
+        (Value::Float(a), Value::Float(b)) => Ok(a > b),
+        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) > *b),
+        (Value::Float(a), Value::Integer(b)) => Ok(*a > (*b as f64)),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot compare {:?} > {:?}",
+            a, b
+        ))),
+    }
+}
+
+fn cmp_ge(a: &Value, b: &Value) -> Result<bool, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => Ok(a >= b),
+        (Value::Float(a), Value::Float(b)) => Ok(a >= b),
+        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) >= *b),
+        (Value::Float(a), Value::Integer(b)) => Ok(*a >= (*b as f64)),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot compare {:?} >= {:?}",
+            a, b
+        ))),
+    }
+}
+
+fn cmp_lt(a: &Value, b: &Value) -> Result<bool, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => Ok(a < b),
+        (Value::Float(a), Value::Float(b)) => Ok(a < b),
+        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) < *b),
+        (Value::Float(a), Value::Integer(b)) => Ok(*a < (*b as f64)),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot compare {:?} < {:?}",
+            a, b
+        ))),
+    }
+}
+
+fn cmp_le(a: &Value, b: &Value) -> Result<bool, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => Ok(a <= b),
+        (Value::Float(a), Value::Float(b)) => Ok(a <= b),
+        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) <= *b),
+        (Value::Float(a), Value::Integer(b)) => Ok(*a <= (*b as f64)),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot compare {:?} <= {:?}",
+            a, b
+        ))),
+    }
+}

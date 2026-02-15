@@ -12,6 +12,10 @@ pub enum VMError {
     ImportCycle(Vec<PathBuf>),
     ImportError(String),
     ImportConflict(String),
+    StackOverflow,
+    StackUnderflow,
+    ExecutionLimitExceeded(String),
+    CallStackOverflow,
 }
 
 /// Aggregated error type for all runtime execution stages.
