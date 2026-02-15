@@ -19,6 +19,11 @@ pub enum OpCode {
 
     // -- Stack --------------------------------------------------------------
     Pop,
+    /// Close any open upvalue pointing to the top-of-stack slot, then pop.
+    /// Emitted by the compiler when a captured local goes out of scope.
+    CloseUpvalue,
+    /// Duplicate the value on top of the stack.
+    Dup,
 
     // -- Local variables (by stack-slot index) ------------------------------
     GetLocal(u8),
@@ -117,6 +122,9 @@ pub enum OpCode {
     BeginForExpr,
     /// Append the top-of-stack value to the results array that sits below it.
     AppendForExpr,
+    /// Spread-append: pop top-of-stack value. If it is an Array, extend the
+    /// collector with its elements; otherwise push it as a single element.
+    SpreadForExpr,
 }
 
 // ---------------------------------------------------------------------------

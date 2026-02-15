@@ -21,6 +21,8 @@ struct Local {
     is_captured: bool,
     /// Whether this is a state variable (declared with `state`).
     is_state: bool,
+    /// Actual stack position relative to the frame base.
+    slot: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -36,6 +38,8 @@ pub struct Compiler {
     enclosing: Option<Box<Compiler>>,
     /// Current source line (for error reporting in emitted bytecode).
     current_line: usize,
+    /// Tracks actual number of values on the stack relative to frame base.
+    stack_depth: usize,
 }
 
 impl Compiler {
@@ -49,6 +53,7 @@ impl Compiler {
             scope_depth: 0,
             enclosing: None,
             current_line: 0,
+            stack_depth: 0,
         }
     }
 
@@ -62,6 +67,7 @@ impl Compiler {
             scope_depth: 0,
             enclosing: Some(Box::new(self)),
             current_line: 0,
+            stack_depth: 0,
         }
     }
 
@@ -84,8 +90,55 @@ impl Compiler {
     }
 
     fn emit(&mut self, op: OpCode) -> usize {
+        let effect = Self::stack_effect(&op);
         let line = self.current_line;
-        self.chunk().emit(op, line)
+        let idx = self.chunk().emit(op, line);
+        self.stack_depth = (self.stack_depth as i32 + effect) as usize;
+        idx
+    }
+
+    /// Returns the net stack effect of an opcode (positive = pushes, negative = pops).
+    fn stack_effect(op: &OpCode) -> i32 {
+        match op {
+            // Push one value
+            OpCode::Constant(_) | OpCode::True | OpCode::False | OpCode::Void
+            | OpCode::GetLocal(_) | OpCode::GetUpvalue(_) | OpCode::GetState(_)
+            | OpCode::GetHostState(_) | OpCode::Dup | OpCode::BeginForExpr
+            | OpCode::Closure(_) => 1,
+
+            // Pop one value
+            OpCode::Pop | OpCode::CloseUpvalue | OpCode::SetLocal(_)
+            | OpCode::SetUpvalue(_) | OpCode::AppendForExpr | OpCode::SpreadForExpr
+            | OpCode::JumpIfFalse(_) => -1,
+
+            // Pop 1, push 1 (net 0)
+            OpCode::Negate | OpCode::Not | OpCode::ArrayLength
+            | OpCode::GetProperty(_) | OpCode::Log | OpCode::DeclareState(_) => 0,
+
+            // Peek only (net 0)
+            OpCode::SetState(_) | OpCode::MarkBranched | OpCode::Import(_) => 0,
+
+            // No stack effect
+            OpCode::Jump(_) | OpCode::Loop(_) | OpCode::Return => 0,
+
+            // Pop 2, push 1 (net -1)
+            OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
+            | OpCode::Eq | OpCode::Ne | OpCode::Gt | OpCode::Ge | OpCode::Lt | OpCode::Le
+            | OpCode::GetIndex => -1,
+
+            // Pop 2n key-value pairs, push 1
+            OpCode::Map(n) => -(2 * *n as i32 - 1),
+            OpCode::Widget { property_count, .. } => -(2 * *property_count as i32 - 1),
+
+            // Pop n, push 1
+            OpCode::Array(n) => -(*n as i32 - 1),
+
+            // Pop callee + n args, push 1 result
+            OpCode::Call(n) => -(*n as i32),
+
+            // Pop n args (including name), push Void
+            OpCode::EmitEvent(n) => -(*n as i32 - 1),
+        }
     }
 
     fn emit_constant(&mut self, value: Value) -> u16 {
@@ -126,8 +179,10 @@ impl Compiler {
             // component_state map. But we still remove them from the compiler's
             // locals list so the slots are freed.
             if self.locals.last().unwrap().is_captured {
-                // The VM will close the upvalue.
-                self.emit(OpCode::Pop); // placeholder – VM handles closing
+                // Close the upvalue before popping the local off the stack,
+                // so that any closure still holding a reference to it gets
+                // the value snapshot rather than a dangling stack index.
+                self.emit(OpCode::CloseUpvalue);
             } else {
                 self.emit(OpCode::Pop);
             }
@@ -135,26 +190,66 @@ impl Compiler {
         }
     }
 
+    /// Record a local for a value that was already pushed onto the stack by
+    /// compiled code (e.g. `let` initializers, for-loop bounds). The slot is
+    /// `stack_depth - 1` because `emit` already incremented `stack_depth`.
     fn add_local(&mut self, name: String, is_state: bool) -> u8 {
-        let slot = self.locals.len() as u8;
+        let slot = (self.stack_depth - 1) as u8;
         self.locals.push(Local {
             name,
             depth: self.scope_depth,
             is_captured: false,
             is_state,
+            slot,
+        });
+        slot
+    }
+
+    /// Record a local for a value that is pre-existing on the stack (e.g.
+    /// the callee placeholder and function parameters). Unlike `add_local`,
+    /// this also increments `stack_depth` because no `emit` call placed the
+    /// value.
+    fn add_param_local(&mut self, name: String) -> u8 {
+        let slot = self.stack_depth as u8;
+        self.stack_depth += 1;
+        self.locals.push(Local {
+            name,
+            depth: self.scope_depth,
+            is_captured: false,
+            is_state: false,
+            slot,
         });
         slot
     }
 
     /// Resolve an identifier as a local in the *current* function.
-    /// Returns the slot index if found.
+    /// Returns the **stack slot** (not the array index) if found.
     fn resolve_local(&self, name: &str) -> Option<u8> {
-        for (i, local) in self.locals.iter().enumerate().rev() {
+        for local in self.locals.iter().rev() {
             if local.name == name {
-                return Some(i as u8);
+                return Some(local.slot);
             }
         }
         None
+    }
+
+    /// Check whether a local variable (by name) is a state variable.
+    fn is_local_state(&self, name: &str) -> bool {
+        self.locals
+            .iter()
+            .rev()
+            .find(|l| l.name == name)
+            .map_or(false, |l| l.is_state)
+    }
+
+    /// Mark a local variable (by name) as captured by a closure.
+    fn mark_local_captured(&mut self, name: &str) {
+        for local in self.locals.iter_mut().rev() {
+            if local.name == name {
+                local.is_captured = true;
+                return;
+            }
+        }
     }
 
     /// Resolve an identifier as an upvalue (captured from an enclosing
@@ -168,7 +263,7 @@ impl Compiler {
 
         // Is it a local in the immediately enclosing function?
         if let Some(local_slot) = enclosing.resolve_local(name) {
-            enclosing.locals[local_slot as usize].is_captured = true;
+            enclosing.mark_local_captured(name);
             let idx = self.add_upvalue(UpvalueDescriptor::Local(local_slot));
             self.enclosing = Some(enclosing);
             return Some(idx);
@@ -248,6 +343,43 @@ impl Compiler {
         Ok(())
     }
 
+    /// Compile a block that should produce an expression value on the stack.
+    ///
+    /// The parser wraps the last expression in a block (when not followed by
+    /// a semicolon) in `Statement::Return`. The AST interpreter catches
+    /// `VMError::Return` at the match/for-loop level and converts it to a
+    /// normal value. In the bytecode VM, however, `OpCode::Return` exits the
+    /// entire function frame. This helper strips the `Return` from the last
+    /// statement, compiling only the inner expression so the value is left on
+    /// the stack without exiting the function.
+    fn compile_expression_block(&mut self, block: &Block) -> Result<(), VMError> {
+        let stmts = &block.statement_list;
+        if stmts.is_empty() {
+            self.emit(OpCode::Void);
+            return Ok(());
+        }
+        let last_idx = stmts.len() - 1;
+        for (i, stmt) in stmts.iter().enumerate() {
+            let is_last = i == last_idx;
+            if is_last {
+                match stmt {
+                    Statement::Return(ret) => {
+                        // Produce the value without exiting the function.
+                        if let Some(expr) = ret.get_value() {
+                            self.compile_expression(&expr)?;
+                        } else {
+                            self.emit(OpCode::Void);
+                        }
+                    }
+                    _ => self.compile_statement(stmt, true)?,
+                }
+            } else {
+                self.compile_statement(stmt, false)?;
+            }
+        }
+        Ok(())
+    }
+
     fn compile_statement(
         &mut self,
         statement: &Statement,
@@ -289,7 +421,7 @@ impl Compiler {
                 if let Some(slot) = self.resolve_local(&name) {
                     // If this is a state variable we also need to update
                     // the runtime state map.
-                    if self.locals[slot as usize].is_state {
+                    if self.is_local_state(&name) {
                         let name_const =
                             self.chunk().add_constant(Value::String(name.clone()));
                         self.emit(OpCode::SetState(name_const));
@@ -410,48 +542,17 @@ impl Compiler {
         &mut self,
         for_loop: &crate::parser::ForLoopStatement,
     ) -> Result<(), VMError> {
-        // Compile range bounds.
-        self.compile_expression(&for_loop.get_range_start())?;
-        self.compile_expression(&for_loop.get_range_end())?;
-
         let var_name = for_loop.get_variable().get();
 
-        // Stack layout:  ... | range_end | range_start (we reverse below)
-        // We want: ... | end | counter
-        // The counter starts at range_start. We keep end on the stack too so
-        // we can compare each iteration.
-        // Actually let's keep it simple: store start and end as locals.
-
         self.begin_scope();
-        // The start value is already on the stack at position locals.len().
-        // But we pushed start first then end, so stack is: [start, end]
-        // We need: counter local, end local.
-        // Let's re-order: We'll use the start as the loop variable, and end as
-        // a hidden local.
 
-        // Stack currently: [start_val, end_val]
-        // Add end as a hidden local.
-        let _end_slot = self.add_local(format!("$end_{}", var_name), false);
-        // Now start_val is at position (locals.len() - 2) ... wait, we added
-        // end first. Let's think again.
-        // Actually: we compiled range_start first → it's deeper on the stack.
-        // Then range_end → it's on top.
-        // So: stack[slot_of_start] = start_val, stack[slot_of_end] = end_val.
-        // We want end_val to be the first local we add (it's on top).
-        // Wait, no: locals are indexed from the base of the scope.
-        // Actually, locals map 1:1 to stack positions relative to the frame.
-        // We compiled start, then end, so:
-        //   local slot N = start_val
-        //   local slot N+1 = end_val
-        // But we haven't added locals yet. Let's fix: we should add the
-        // *start* local first (it was pushed first) then the *end* local.
-
-        // Undo the end local we just added:
-        self.locals.pop();
-
-        // The start value was pushed first (lower on stack).
+        // Compile range start, then immediately add it as a local so its
+        // slot reflects the actual stack depth.
+        self.compile_expression(&for_loop.get_range_start())?;
         let counter_slot = self.add_local(var_name.clone(), false);
-        // The end value was pushed second (higher on stack).
+
+        // Same for range end.
+        self.compile_expression(&for_loop.get_range_end())?;
         let _end_slot = self.add_local(format!("$end_{}", var_name), false);
 
         // Loop header: compare counter < end.
@@ -493,16 +594,17 @@ impl Compiler {
         // Push the results-collector array.
         self.emit(OpCode::BeginForExpr);
 
-        // Compile range bounds.
-        self.compile_expression(&for_loop.range_start)?;
-        self.compile_expression(&for_loop.range_end)?;
-
         let var_name = for_loop.variable.get();
 
         self.begin_scope();
 
-        // locals: counter (start), end
+        // Compile range start, then immediately add it as a local so its
+        // slot reflects the actual stack depth.
+        self.compile_expression(&for_loop.range_start)?;
         let counter_slot = self.add_local(var_name.clone(), false);
+
+        // Same for range end.
+        self.compile_expression(&for_loop.range_end)?;
         let end_slot = self.add_local(format!("$end_{}", var_name), false);
 
         // Loop header.
@@ -513,8 +615,11 @@ impl Compiler {
         let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0));
 
         // Loop body – compile the block; the result value is on the stack.
+        // Use compile_expression_block so that the parser's implicit Return
+        // (for the last expression) leaves the value on the stack instead of
+        // exiting the function.
         self.begin_scope();
-        self.compile_block(&for_loop.body)?;
+        self.compile_expression_block(&for_loop.body)?;
         self.end_scope();
 
         // Append result to collector.
@@ -692,25 +797,12 @@ impl Compiler {
                 for elem in &array.elements {
                     match elem {
                         Expression::SpreadForLoop(for_loop) => {
-                            // Compile the for-loop expression (produces an array).
                             self.compile_for_loop_expression(for_loop)?;
-                            // The result is an array on top; we need to spread
-                            // its elements into the collector. We'll handle
-                            // this with a special approach: push it, then use
-                            // runtime logic. Actually, let's compile each
-                            // iteration individually to append.
-                            // For simplicity, re-implement inline:
-                            // Actually the for_loop_expression already produces
-                            // an array. We need to extend the collector.
-                            // Let's just use AppendForExpr which appends a
-                            // single value. For spread, the VM will detect
-                            // array values and extend.
-                            self.emit(OpCode::AppendForExpr);
+                            self.emit(OpCode::SpreadForExpr);
                         }
                         Expression::Spread(inner) => {
                             self.compile_expression(inner)?;
-                            // AppendForExpr – VM will spread array values.
-                            self.emit(OpCode::AppendForExpr);
+                            self.emit(OpCode::SpreadForExpr);
                         }
                         _ => {
                             self.compile_expression(elem)?;
@@ -738,9 +830,16 @@ impl Compiler {
         );
         let mut child = parent.child(name.to_string(), arity);
 
+        // Reserve slot 0 for the callee (the function/closure being called).
+        // At runtime, slot_offset points to the callee on the stack, so
+        // parameters must start at slot 1. We use add_param_local because
+        // these values are pre-existing on the stack (placed by the caller),
+        // not pushed by any emit() in this child compiler.
+        child.add_param_local(String::new());
+
         // Declare parameters as locals in the child scope.
         for param in &func.arguments {
-            child.add_local(param.get(), false);
+            child.add_param_local(param.get());
         }
 
         // Compile the function body.
@@ -816,131 +915,37 @@ impl Compiler {
 
     fn compile_match(&mut self, m: &MatchExpression) -> Result<(), VMError> {
         self.emit(OpCode::MarkBranched);
-        // Compile the scrutinee.
+        // Compile the scrutinee – its value stays on the stack and is
+        // duplicated (via Dup) before each arm comparison.
         self.compile_expression(&m.scrutinee)?;
 
         let mut end_jumps: Vec<usize> = Vec::new();
 
         for (pattern, block) in &m.arms {
-            // Check for wildcard `_`
             let is_wildcard = matches!(
                 pattern,
                 Expression::Literal(Literal::Identifier(ident)) if ident.get() == "_"
             );
 
             if is_wildcard {
-                // Always matches – compile block directly.
-                // Pop the scrutinee copy (we don't need it for wildcard).
+                // Pop the scrutinee (no longer needed) and compile the body.
                 self.emit(OpCode::Pop);
                 self.begin_scope();
-                self.compile_block(block)?;
+                self.compile_expression_block(block)?;
                 self.end_scope();
                 let end_jump = self.emit_jump(OpCode::Jump(0));
                 end_jumps.push(end_jump);
             } else {
-                // Duplicate the scrutinee for comparison (it stays for the
-                // next arm if this one doesn't match).
-                // We don't have a Dup instruction, so we'll use GetLocal
-                // if the scrutinee is a local. For simplicity, let's
-                // store the scrutinee as a hidden local.
-                // Actually, let's just re-read it: the scrutinee is on
-                // top of the stack. We can read it with GetLocal if we
-                // track its slot.
-
-                // The scrutinee was pushed before the match arms; its slot
-                // depends on how many locals we have. Let's handle this by
-                // noting the stack position.
-                // Simplest approach: emit a duplicate by re-getting the
-                // local. But we don't have the slot tracked because the
-                // scrutinee isn't declared as a local.
-
-                // Let's declare a hidden local for the scrutinee before
-                // entering the arms. We'll refactor: add the scrutinee
-                // as a local before the loop.
-                // This requires restructuring. Let's do it.
-                // ... Actually, let me just use a pattern of
-                // re-compiling the scrutinee. That's not ideal but works.
-                // For now, let's use a simpler approach:
-
-                // Compile the pattern value.
-                self.compile_expression(pattern)?;
-                // Eq compares top two values and pushes bool.
-                // But we need the scrutinee to remain for the next arm.
-                // So we need to duplicate it first. Let's introduce
-                // a hidden local approach.
-
-                // The simplest correct approach without a Dup instruction:
-                // We know the scrutinee is at a fixed stack position.
-                // Since we pushed it before arms, it's at current
-                // stack depth = number of locals at that point.
-                // Let's just use GetLocal with the slot we're about to
-                // compute.
-
-                // Actually, the scrutinee is already on the stack but not
-                // named. Its slot index is self.locals.len() (at the time
-                // we push it). But we only compile the scrutinee once at
-                // the top. Let me restructure the whole match compilation.
-                // See restructured version below.
-
-                // For correctness, let's fall back to the Eq approach:
-                // the scrutinee has been consumed by the first comparison.
-                // We need to re-push it. The easiest (if suboptimal) way
-                // is to re-compile the scrutinee expression each arm.
-                // That's what we'll do for now.
-
-                // Pop the scrutinee we pushed at the top; we'll re-push
-                // per arm.
-                // This is getting complicated. Let me use the hidden-local
-                // approach properly.
-                return self.compile_match_with_local(m);
-            }
-        }
-
-        // Patch end jumps.
-        for j in end_jumps {
-            self.patch_jump(j);
-        }
-        Ok(())
-    }
-
-    fn compile_match_with_local(
-        &mut self,
-        m: &MatchExpression,
-    ) -> Result<(), VMError> {
-        // We've already emitted MarkBranched and the scrutinee is on the
-        // stack. But this function is called from compile_match partway
-        // through. Let's redo from scratch – the caller should not have
-        // emitted anything yet. Actually, compile_match already emitted
-        // MarkBranched and the scrutinee. We need to account for that.
-
-        // The scrutinee is on the stack. Treat it as a hidden local.
-        let scrutinee_slot = self.add_local("$scrutinee".to_string(), false);
-
-        let mut end_jumps: Vec<usize> = Vec::new();
-
-        for (pattern, block) in &m.arms {
-            let is_wildcard = matches!(
-                pattern,
-                Expression::Literal(Literal::Identifier(ident)) if ident.get() == "_"
-            );
-
-            if is_wildcard {
-                self.begin_scope();
-                self.compile_block(block)?;
-                self.end_scope();
-                // Jump to end (skip remaining arms).
-                let end_jump = self.emit_jump(OpCode::Jump(0));
-                end_jumps.push(end_jump);
-            } else {
-                // Push scrutinee, push pattern, compare.
-                self.emit(OpCode::GetLocal(scrutinee_slot));
+                // Duplicate the scrutinee so it survives the comparison.
+                self.emit(OpCode::Dup);
                 self.compile_expression(pattern)?;
                 self.emit(OpCode::Eq);
                 let skip_jump = self.emit_jump(OpCode::JumpIfFalse(0));
 
-                // Match: compile body.
+                // Match found – pop the original scrutinee, then run the body.
+                self.emit(OpCode::Pop);
                 self.begin_scope();
-                self.compile_block(block)?;
+                self.compile_expression_block(block)?;
                 self.end_scope();
                 let end_jump = self.emit_jump(OpCode::Jump(0));
                 end_jumps.push(end_jump);
@@ -949,17 +954,13 @@ impl Compiler {
             }
         }
 
-        // If no arm matched, push Void.
+        // No arm matched – pop the scrutinee and push Void.
+        self.emit(OpCode::Pop);
         self.emit(OpCode::Void);
 
         for j in end_jumps {
             self.patch_jump(j);
         }
-
-        // Pop the hidden scrutinee local.
-        // (end_scope won't do it because we're at the same scope depth.)
-        // We leave the match result on the stack; the scrutinee slot will
-        // be cleaned up by the enclosing scope.
         Ok(())
     }
 }

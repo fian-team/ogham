@@ -145,6 +145,51 @@ impl VM {
         }
     }
 
+    // -- Cross-interpreter upvalue closing -----------------------------------
+
+    /// Recursively walk a `Value` and close any open upvalues found on
+    /// `BytecodeClosure` values.  This must be called before handing
+    /// bytecode closures to the tree-walk interpreter, which may later
+    /// call them inside a *new* VM that does not share our stack.
+    fn close_upvalues_on_value(&mut self, value: &Value) {
+        match value {
+            Value::BytecodeClosure(closure) => {
+                for uv in &closure.upvalues {
+                    let should_close = {
+                        let uv_ref = uv.borrow();
+                        matches!(*uv_ref, Upvalue::Open(_))
+                    };
+                    if should_close {
+                        let idx = match *uv.borrow() {
+                            Upvalue::Open(idx) => idx,
+                            _ => unreachable!(),
+                        };
+                        let val = self.stack[idx].clone();
+                        *uv.borrow_mut() = Upvalue::Closed(val);
+                        // Remove from the VM's open-upvalue list.
+                        self.open_upvalues.retain(|open_uv| !Rc::ptr_eq(open_uv, uv));
+                    }
+                }
+            }
+            Value::Array(arr) => {
+                for elem in arr {
+                    self.close_upvalues_on_value(elem);
+                }
+            }
+            Value::Map(map) => {
+                for v in map.values() {
+                    self.close_upvalues_on_value(v);
+                }
+            }
+            Value::Widget(widget) => {
+                for v in widget.properties.values() {
+                    self.close_upvalues_on_value(v);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // -- Read/write upvalue values ------------------------------------------
 
     fn get_upvalue(&self, uv: &Rc<RefCell<Upvalue>>) -> Value {
@@ -257,6 +302,19 @@ impl VM {
                 // -- Stack ---------------------------------------------------
                 OpCode::Pop => {
                     self.pop()?;
+                }
+                OpCode::CloseUpvalue => {
+                    // Close any open upvalue pointing to the top-of-stack
+                    // slot, then pop the value.
+                    let top = self.stack.len() - 1;
+                    self.close_upvalues(top);
+                    self.pop()?;
+                }
+                OpCode::Dup => {
+                    let val = self.stack.last()
+                        .ok_or_else(|| VMError::InvalidOperation("Dup on empty stack".into()))?
+                        .clone();
+                    self.push(val)?;
                 }
 
                 // -- Locals --------------------------------------------------
@@ -577,6 +635,16 @@ impl VM {
                                 .rev()
                                 .collect();
                             self.pop()?; // pop the closure value
+
+                            // Close open upvalues on any BytecodeClosure
+                            // values in the arguments.  The tree-walk
+                            // interpreter may call these via
+                            // call_bytecode_closure, which creates a new
+                            // VM that does not share our stack.
+                            for arg in &args {
+                                self.close_upvalues_on_value(arg);
+                            }
+
                             let result = runtime.call_closure(&closure, &args, "fn")?;
                             self.push(result)?;
                         }
@@ -810,35 +878,33 @@ impl VM {
                 }
                 OpCode::AppendForExpr => {
                     let value = self.pop()?;
-                    // The collector array is below the value.
-                    // But there may be loop locals between the value and the
-                    // collector. We need to find the collector.
-                    // Actually, the collector is right below due to how we
-                    // structured the compilation: after end_scope pops loop
-                    // locals, the collector should be just below.
                     let stack_top = self.stack.len();
-                    // Find the last Array on the stack (the collector).
                     let mut found = false;
                     for i in (0..stack_top).rev() {
-                        if let Value::Array(_) = &self.stack[i] {
-                            // Append to this array.
-                            match &value {
-                                // If the value is an array and this was a
-                                // spread, extend. We detect spread by
-                                // checking if it's an array (from SpreadForLoop
-                                // or Spread).
-                                // For simplicity, always push as a single
-                                // element. The compiler can emit individual
-                                // appends for spreads.
+                        if let Value::Array(ref mut arr) = self.stack[i] {
+                            arr.push(value.clone());
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Err(VMError::InvalidOperation(
+                            "AppendForExpr: no collector array found".to_string(),
+                        ));
+                    }
+                }
+                OpCode::SpreadForExpr => {
+                    let value = self.pop()?;
+                    let stack_top = self.stack.len();
+                    let mut found = false;
+                    for i in (0..stack_top).rev() {
+                        if let Value::Array(ref mut arr) = self.stack[i] {
+                            match value {
+                                Value::Array(ref spread_arr) => {
+                                    arr.extend(spread_arr.iter().cloned());
+                                }
                                 _ => {
-                                    if let Value::Array(ref mut arr) = self.stack[i] {
-                                        // Check if this should be spread
-                                        // (value is Array from a spread context).
-                                        // The compiler should have handled this,
-                                        // so we just push the value as-is unless
-                                        // it's an array from a spread for-loop.
-                                        arr.push(value.clone());
-                                    }
+                                    arr.push(value.clone());
                                 }
                             }
                             found = true;
@@ -847,7 +913,7 @@ impl VM {
                     }
                     if !found {
                         return Err(VMError::InvalidOperation(
-                            "AppendForExpr: no collector array found".to_string(),
+                            "SpreadForExpr: no collector array found".to_string(),
                         ));
                     }
                 }
