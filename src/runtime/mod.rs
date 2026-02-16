@@ -86,6 +86,15 @@ impl Runtime {
         self.host_state.insert(name, value);
     }
 
+    /// Like `inject_host_state`, but only inserts the value when it differs
+    /// from the currently stored value (avoiding unnecessary HashMap churn
+    /// on every frame when state hasn't changed).
+    pub fn inject_host_state_if_changed(&mut self, name: String, value: Value) {
+        if self.host_state.get(&name) != Some(&value) {
+            self.host_state.insert(name, value);
+        }
+    }
+
     pub fn get_host_state(&self, name: &str) -> Option<Value> {
         self.host_state.get(name).cloned()
     }
@@ -143,10 +152,11 @@ impl Runtime {
     }
 
     pub fn rerender(&mut self) -> Result<Value, VMError> {
-        // Clone the module to avoid borrow checker issues
-        let module = self.module.clone().ok_or_else(|| {
-            VMError::InvalidOperation("No module stored in runtime. Cannot rerender.".to_string())
-        })?;
+        if self.module.is_none() {
+            return Err(VMError::InvalidOperation(
+                "No module stored in runtime. Cannot rerender.".to_string(),
+            ));
+        }
         // Clear the rerender flag before re-executing
         self.needs_rerender = false;
         // Reset environment to module level
@@ -158,15 +168,21 @@ impl Runtime {
         // Reset call counters for new render
         self.call_counters.clear();
         // Reuse compiled module (already cached from first execute_module).
-        let result = self.execute_module(&module);
+        // Preserve import caches so that imported files are not re-read,
+        // re-parsed, and re-executed from disk on every rerender. The file
+        // watcher handles invalidation when files change on disk.
+        let result = self.execute_module_cached();
         // Cleanup state for unmounted components
         self.cleanup_unmounted_state();
         result
     }
 
-    /// Invalidate the cached bytecode so the next execute_module recompiles.
+    /// Invalidate the cached bytecode and import caches so the next
+    /// execute_module recompiles and re-imports everything from disk.
     pub fn invalidate_compiled_module(&mut self) {
         self.compiled_module = None;
+        self.import_loaded.clear();
+        self.import_cache.clear();
     }
 
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
@@ -186,6 +202,37 @@ impl Runtime {
             self.compiled_module = Some(proto.clone());
             proto
         };
+
+        let mut vm = VM::new();
+        let result = vm.run(&proto, self);
+        self.cleanup_unmounted_state();
+        result
+    }
+
+    /// Re-execute a module using cached bytecode and cached imports.
+    ///
+    /// Unlike `execute_module`, this method:
+    /// - Preserves `import_loaded` and `import_cache` so that imported `.ogh`
+    ///   files are resolved from memory instead of being re-read, re-parsed,
+    ///   and re-executed from disk.
+    /// - Requires that compiled bytecode already exists (will error otherwise).
+    /// - Does not need the module AST, avoiding an expensive deep clone.
+    ///
+    /// Used by `rerender()` for efficient re-evaluation. The file watcher
+    /// handles cache invalidation when source files change on disk.
+    fn execute_module_cached(&mut self) -> Result<Value, VMError> {
+        self.active_state_paths.clear();
+        self.call_stack.clear();
+        self.call_counters.clear();
+        self.import_loading_stack.clear();
+        // NOTE: import_loaded and import_cache are intentionally preserved
+        // so that imports are resolved from memory rather than disk.
+
+        let proto = self.compiled_module.clone().ok_or_else(|| {
+            VMError::InvalidOperation(
+                "No compiled module cached. Cannot execute_module_cached.".to_string(),
+            )
+        })?;
 
         let mut vm = VM::new();
         let result = vm.run(&proto, self);
@@ -513,10 +560,6 @@ impl Runtime {
             resolved.set_extension("ogh");
         }
 
-        let source = fs::read_to_string(&resolved).map_err(|e| {
-            VMError::ImportError(format!("failed to read {}: {}", resolved.display(), e))
-        })?;
-
         let key = resolved.canonicalize().unwrap_or(resolved.clone());
 
         if self.import_loading_stack.contains(&key) {
@@ -542,13 +585,18 @@ impl Runtime {
                 }
                 if let Err(conflict_name) =
                     self.environment
-                        .copy_from(cached_env, names_to_copy_opt.as_deref(), true)
+                        .copy_from(cached_env, names_to_copy_opt.as_deref(), false)
                 {
                     return Err(VMError::ImportConflict(conflict_name));
                 }
             }
             return Ok(Value::Void);
         }
+
+        // Read file from disk only when not cached.
+        let source = fs::read_to_string(&resolved).map_err(|e| {
+            VMError::ImportError(format!("failed to read {}: {}", resolved.display(), e))
+        })?;
 
         self.import_loading_stack.push(key.clone());
 

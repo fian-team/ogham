@@ -99,15 +99,6 @@ impl Client {
 
     /// Update UI if dirty, then layout with the given dimensions
     pub fn update_ui_layout(&mut self, width: f32, height: f32) {
-        let dirty = self.is_dirty();
-        if dirty {
-            self.clean();
-            // UI is already updated when we reload/recompile, so we just need to update the layout
-            let ui = self.ogham.get_ui_mut();
-            let new_root = ui.root.clone();
-            ui.update(new_root, width, height);
-        }
-
         // Check if runtime needs a rerender due to state updates
         let needs_rerender = {
             let runtime = self.ogham.get_runtime();
@@ -138,9 +129,7 @@ impl Client {
                         .ok();
 
                 if let Some(new_root) = new_root {
-                    // Update the UI with the new root
-                    let ui = self.ogham.get_ui_mut();
-                    ui.update(new_root, width, height);
+                    self.ogham.get_ui_mut().reconcile(new_root);
                 }
             }
         }

@@ -79,7 +79,9 @@ impl Compiler {
         self.emit(OpCode::Return);
         self.function.upvalue_count = self.upvalue_descs.len() as u8;
         self.function.upvalues = self.upvalue_descs;
-        let parent = self.enclosing.expect("finish_child called on top-level compiler");
+        let parent = self
+            .enclosing
+            .expect("finish_child called on top-level compiler");
         (parent, self.function)
     }
 
@@ -101,19 +103,34 @@ impl Compiler {
     fn stack_effect(op: &OpCode) -> i32 {
         match op {
             // Push one value
-            OpCode::Constant(_) | OpCode::True | OpCode::False | OpCode::Void
-            | OpCode::GetLocal(_) | OpCode::GetUpvalue(_) | OpCode::GetState(_)
-            | OpCode::GetHostState(_) | OpCode::Dup | OpCode::BeginForExpr
+            OpCode::Constant(_)
+            | OpCode::True
+            | OpCode::False
+            | OpCode::Void
+            | OpCode::GetLocal(_)
+            | OpCode::GetUpvalue(_)
+            | OpCode::GetState(_)
+            | OpCode::GetHostState(_)
+            | OpCode::Dup
+            | OpCode::BeginForExpr
             | OpCode::Closure(_) => 1,
 
             // Pop one value
-            OpCode::Pop | OpCode::CloseUpvalue | OpCode::SetLocal(_)
-            | OpCode::SetUpvalue(_) | OpCode::AppendForExpr | OpCode::SpreadForExpr
+            OpCode::Pop
+            | OpCode::CloseUpvalue
+            | OpCode::SetLocal(_)
+            | OpCode::SetUpvalue(_)
+            | OpCode::AppendForExpr
+            | OpCode::SpreadForExpr
             | OpCode::JumpIfFalse(_) => -1,
 
             // Pop 1, push 1 (net 0)
-            OpCode::Negate | OpCode::Not | OpCode::ArrayLength
-            | OpCode::GetProperty(_) | OpCode::Log | OpCode::DeclareState(_) => 0,
+            OpCode::Negate
+            | OpCode::Not
+            | OpCode::ArrayLength
+            | OpCode::GetProperty(_)
+            | OpCode::Log
+            | OpCode::DeclareState(_) => 0,
 
             // Peek only (net 0)
             OpCode::SetState(_) | OpCode::MarkBranched | OpCode::Import(_) => 0,
@@ -122,8 +139,16 @@ impl Compiler {
             OpCode::Jump(_) | OpCode::Loop(_) | OpCode::Return => 0,
 
             // Pop 2, push 1 (net -1)
-            OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
-            | OpCode::Eq | OpCode::Ne | OpCode::Gt | OpCode::Ge | OpCode::Lt | OpCode::Le
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Eq
+            | OpCode::Ne
+            | OpCode::Gt
+            | OpCode::Ge
+            | OpCode::Lt
+            | OpCode::Le
             | OpCode::GetIndex => -1,
 
             // Pop 2n key-value pairs, push 1
@@ -380,11 +405,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_statement(
-        &mut self,
-        statement: &Statement,
-        is_last: bool,
-    ) -> Result<(), VMError> {
+    fn compile_statement(&mut self, statement: &Statement, is_last: bool) -> Result<(), VMError> {
         match statement {
             Statement::Expression(expr_stmt) => {
                 self.compile_expression(&expr_stmt.get_value())?;
@@ -422,16 +443,14 @@ impl Compiler {
                     // If this is a state variable we also need to update
                     // the runtime state map.
                     if self.is_local_state(&name) {
-                        let name_const =
-                            self.chunk().add_constant(Value::String(name.clone()));
+                        let name_const = self.chunk().add_constant(Value::String(name.clone()));
                         self.emit(OpCode::SetState(name_const));
                     }
                     self.emit(OpCode::SetLocal(slot));
                 } else if let Some(uv) = self.resolve_upvalue(&name) {
                     // Check if the upvalue is a state variable.
                     // We need a name constant either way for state.
-                    let name_const =
-                        self.chunk().add_constant(Value::String(name.clone()));
+                    let name_const = self.chunk().add_constant(Value::String(name.clone()));
                     // We always emit SetState in case it's state; the VM will
                     // check at runtime.
                     self.emit(OpCode::SetState(name_const));
@@ -475,10 +494,7 @@ impl Compiler {
     // Import
     // -----------------------------------------------------------------------
 
-    fn compile_import(
-        &mut self,
-        import: &crate::parser::ImportStatement,
-    ) -> Result<(), VMError> {
+    fn compile_import(&mut self, import: &crate::parser::ImportStatement) -> Result<(), VMError> {
         let meta = ImportMeta {
             names: import.get_names().clone(),
             path: import.get_path().to_string(),
@@ -587,10 +603,7 @@ impl Compiler {
     // For-loop expression (collects results into array)
     // -----------------------------------------------------------------------
 
-    fn compile_for_loop_expression(
-        &mut self,
-        for_loop: &ForLoopExpression,
-    ) -> Result<(), VMError> {
+    fn compile_for_loop_expression(&mut self, for_loop: &ForLoopExpression) -> Result<(), VMError> {
         // Push the results-collector array.
         self.emit(OpCode::BeginForExpr);
 
@@ -655,17 +668,39 @@ impl Compiler {
                 self.compile_expression(&binary.left)?;
                 self.compile_expression(&binary.right)?;
                 match &binary.operator {
-                    Operator::Plus => { self.emit(OpCode::Add); }
-                    Operator::Minus => { self.emit(OpCode::Sub); }
-                    Operator::Multiply => { self.emit(OpCode::Mul); }
-                    Operator::Divide => { self.emit(OpCode::Div); }
-                    Operator::Equals => { self.emit(OpCode::Eq); }
-                    Operator::NotEquals => { self.emit(OpCode::Ne); }
-                    Operator::GreaterThan => { self.emit(OpCode::Gt); }
-                    Operator::GreaterThanOrEqualTo => { self.emit(OpCode::Ge); }
-                    Operator::LessThan => { self.emit(OpCode::Lt); }
-                    Operator::LessThanOrEqualTo => { self.emit(OpCode::Le); }
-                    Operator::Not => { self.emit(OpCode::Not); }
+                    Operator::Plus => {
+                        self.emit(OpCode::Add);
+                    }
+                    Operator::Minus => {
+                        self.emit(OpCode::Sub);
+                    }
+                    Operator::Multiply => {
+                        self.emit(OpCode::Mul);
+                    }
+                    Operator::Divide => {
+                        self.emit(OpCode::Div);
+                    }
+                    Operator::Equals => {
+                        self.emit(OpCode::Eq);
+                    }
+                    Operator::NotEquals => {
+                        self.emit(OpCode::Ne);
+                    }
+                    Operator::GreaterThan => {
+                        self.emit(OpCode::Gt);
+                    }
+                    Operator::GreaterThanOrEqualTo => {
+                        self.emit(OpCode::Ge);
+                    }
+                    Operator::LessThan => {
+                        self.emit(OpCode::Lt);
+                    }
+                    Operator::LessThanOrEqualTo => {
+                        self.emit(OpCode::Le);
+                    }
+                    Operator::Not => {
+                        self.emit(OpCode::Not);
+                    }
                 };
                 Ok(())
             }
@@ -708,9 +743,7 @@ impl Compiler {
                 self.emit(OpCode::Void);
                 Ok(())
             }
-            Expression::ForLoop(for_loop) => {
-                self.compile_for_loop_expression(for_loop)
-            }
+            Expression::ForLoop(for_loop) => self.compile_for_loop_expression(for_loop),
             Expression::SpreadForLoop(for_loop) => {
                 // Same as ForLoop expression – the spread is handled by the
                 // array literal compilation (see Literal::Array).
@@ -824,10 +857,7 @@ impl Compiler {
         let arity = func.arguments.len() as u8;
 
         // Take `self` out and create a child compiler.
-        let parent = std::mem::replace(
-            self,
-            Compiler::new("<dummy>".to_string(), 0),
-        );
+        let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
         let mut child = parent.child(name.to_string(), arity);
 
         // Reserve slot 0 for the callee (the function/closure being called).

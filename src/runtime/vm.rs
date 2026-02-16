@@ -93,7 +93,9 @@ impl VM {
     fn read_instruction(&mut self) -> Result<OpCode, VMError> {
         let frame = self.current_frame_mut();
         if frame.ip >= frame.closure.proto.chunk.code.len() {
-            return Err(VMError::InvalidOperation("Instruction pointer out of bounds".to_string()));
+            return Err(VMError::InvalidOperation(
+                "Instruction pointer out of bounds".to_string(),
+            ));
         }
         let op = frame.closure.proto.chunk.code[frame.ip].clone();
         frame.ip += 1;
@@ -167,7 +169,8 @@ impl VM {
                         let val = self.stack[idx].clone();
                         *uv.borrow_mut() = Upvalue::Closed(val);
                         // Remove from the VM's open-upvalue list.
-                        self.open_upvalues.retain(|open_uv| !Rc::ptr_eq(open_uv, uv));
+                        self.open_upvalues
+                            .retain(|open_uv| !Rc::ptr_eq(open_uv, uv));
                     }
                 }
             }
@@ -311,7 +314,9 @@ impl VM {
                     self.pop()?;
                 }
                 OpCode::Dup => {
-                    let val = self.stack.last()
+                    let val = self
+                        .stack
+                        .last()
                         .ok_or_else(|| VMError::InvalidOperation("Dup on empty stack".into()))?
                         .clone();
                     self.push(val)?;
@@ -531,14 +536,18 @@ impl VM {
                 OpCode::Loop(offset) => {
                     let frame = self.current_frame_mut();
                     if offset as usize > frame.ip {
-                        return Err(VMError::InvalidOperation("Loop offset underflow".to_string()));
+                        return Err(VMError::InvalidOperation(
+                            "Loop offset underflow".to_string(),
+                        ));
                     }
                     frame.ip -= offset as usize;
-                    
+
                     // Increment iteration counter for infinite loop detection
                     self.iteration_count += 1;
                     if self.iteration_count > MAX_ITERATIONS {
-                        return Err(VMError::ExecutionLimitExceeded("Maximum iterations exceeded".to_string()));
+                        return Err(VMError::ExecutionLimitExceeded(
+                            "Maximum iterations exceeded".to_string(),
+                        ));
                     }
                 }
                 OpCode::Return => {

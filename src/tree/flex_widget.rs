@@ -138,9 +138,9 @@ impl Widget for FlexWidget {
             Size::Shrink => {
                 let _occupied_width: f32 = self.get_children_fixed_width();
                 let occupied_height = self.get_children_fixed_height();
+                let children_basis = self.get_children_basis();
                 let get_dimensions = |child: &WidgetRef| {
                     // Skip absolute positioned children in dimension calculations
-                    let children_basis = self.get_children_basis();
                     let child = child.lock().unwrap();
                     if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                         if matches!(box_widget.style.position, Position::Absolute(_, _)) {
@@ -451,31 +451,42 @@ impl Widget for FlexWidget {
 
         self.layout = Some(Rect::new(cursor_x, cursor_y, width, height));
 
+        // Compute dimensions for every child once and cache the results.
+        // Absolute-positioned children get None so they are skipped in the
+        // normal-flow calculations below.
+        let child_dims: Vec<Option<(f32, f32)>> = self
+            .children
+            .iter()
+            .map(|child| {
+                let child = child.lock().unwrap();
+                if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
+                    if matches!(box_widget.style.position, Position::Absolute(_, _)) {
+                        return None;
+                    }
+                }
+                Some(child.get_dimensions(
+                    &self.style.direction,
+                    content_width,
+                    available_width,
+                    content_height,
+                    available_height,
+                    children_basis,
+                ))
+            })
+            .collect();
+
         // Calculate total size of children in main axis (excluding absolute positioned)
         let mut total_main_size = 0.0;
         let mut max_cross_size = 0.0;
-        for child in self.children.iter() {
-            // Skip absolute positioned children in size calculations
-            let child = child.lock().unwrap();
-            if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                    continue;
+        for dims in &child_dims {
+            if let Some((w, h)) = dims {
+                if self.style.direction.is_row() {
+                    total_main_size += w;
+                    max_cross_size = f32::max(max_cross_size, *h);
+                } else {
+                    total_main_size += h;
+                    max_cross_size = f32::max(max_cross_size, *w);
                 }
-            }
-            let child_dimensions = child.get_dimensions(
-                &self.style.direction,
-                content_width,
-                available_width,
-                content_height,
-                available_height,
-                children_basis,
-            );
-            if self.style.direction.is_row() {
-                total_main_size += child_dimensions.0;
-                max_cross_size = f32::max(max_cross_size, child_dimensions.1);
-            } else {
-                total_main_size += child_dimensions.1;
-                max_cross_size = f32::max(max_cross_size, child_dimensions.0);
             }
         }
 
@@ -539,23 +550,13 @@ impl Widget for FlexWidget {
         }
 
         // Layout non-absolute children first
-        for child in self.children.iter_mut() {
+        for (i, child) in self.children.iter_mut().enumerate() {
+            // Use cached dimensions; None means absolute-positioned, skip it
+            let child_dimensions = match child_dims[i] {
+                Some(dims) => dims,
+                None => continue,
+            };
             let mut child = child.lock().unwrap();
-            // Skip absolute positioned children in normal flow
-            if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                    continue;
-                }
-            }
-
-            let child_dimensions = child.get_dimensions(
-                &self.style.direction,
-                content_width,
-                available_width,
-                content_height,
-                available_height,
-                children_basis,
-            );
 
             // Calculate cross axis offset based on cross alignment
             let cross_offset = self.style.cross_alignment.get_offset(
@@ -638,15 +639,6 @@ impl Widget for FlexWidget {
             let mut child = child.lock().unwrap();
             if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                 if let Position::Absolute(offset_x, offset_y) = box_widget.style.position {
-                    let _child_dimensions = child.get_dimensions(
-                        &self.style.direction,
-                        content_width,
-                        available_width,
-                        content_height,
-                        available_height,
-                        children_basis,
-                    );
-
                     // Position absolute children at their specified coordinates relative to parent
                     let child_x = cursor_x
                         + self.style.margin.get_left() as f32

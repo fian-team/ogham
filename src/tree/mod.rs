@@ -143,12 +143,14 @@ impl UI {
     /// whereas elements that are not matched (did not exist in the previous
     /// hierarchy or are of incompatible types) will be replaced along with
     /// all of their descendants.
-    /// Subsequently triggers a layout to update element bounds.
-    pub fn update(&mut self, new_root: WidgetRef, width: f32, height: f32) {
+    ///
+    /// Does **not** trigger a layout pass. Call `layout()` separately after
+    /// reconciliation when you are ready to recompute element bounds.
+    pub fn reconcile(&mut self, new_root: WidgetRef) {
         {
             // Check if the root references are the same Arc to avoid deadlock
             if Arc::ptr_eq(&self.root, &new_root) {
-                // Same widget reference, skip update to avoid deadlock
+                // Same widget reference, skip reconciliation to avoid deadlock
             } else {
                 let mut root = self.root.lock().unwrap();
                 root.update(new_root);
@@ -163,7 +165,6 @@ impl UI {
                 self.focused = None;
             }
         }
-        self.layout(width, height);
     }
 
     /// Mark the UI as having had interactions since the last render.
