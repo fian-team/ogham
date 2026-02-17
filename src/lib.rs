@@ -178,4 +178,23 @@ impl Ogham {
     pub fn get_path(&self) -> Option<&str> {
         self.path.as_deref()
     }
+
+    /// If the runtime has flagged a rerender, re-execute the module,
+    /// bridge the resulting widget values into the widget tree, and
+    /// reconcile. Returns `true` if a rerender was performed.
+    pub fn update(&mut self) -> Result<bool, runtime::error::RuntimeError> {
+        let widget_value = {
+            let mut rt = self.runtime.lock().expect("runtime lock poisoned");
+            if !rt.needs_rerender() {
+                return Ok(false);
+            }
+            rt.rerender()?
+        };
+
+        let widget_ref =
+            tree::ast_bridge::widget_value_to_widget_ref(&self.runtime, &widget_value)?;
+
+        self.ui.reconcile(widget_ref);
+        Ok(true)
+    }
 }
