@@ -99,7 +99,7 @@ impl TextInputWidget {
 
 impl Widget for TextInputWidget {
     fn update(&mut self, new_widget: WidgetRef) -> bool {
-        let mut new_widget = new_widget.lock().unwrap();
+        let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_text_input_widget) = new_widget.downcast_mut::<TextInputWidget>() {
             self.style = new_text_input_widget.style.clone();
             self.text_style = new_text_input_widget.text_style.clone();

@@ -1,6 +1,5 @@
-// ---------------------------------------------------------------------------
-// Bytecode Compiler – walks the AST and emits bytecode into a Chunk.
-// ---------------------------------------------------------------------------
+//! Bytecode compiler: walks the AST and emits [`OpCode`] instructions into
+//! a [`Chunk`] that the VM can execute.
 
 use crate::parser::{
     Block, Call, Expression, ForLoopExpression, Function, Literal, MatchExpression, Operator,

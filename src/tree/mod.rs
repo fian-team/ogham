@@ -97,7 +97,7 @@ impl UI {
             let mut ctx = EventContext::with_focused(self.focused.clone());
 
             // The root widget (FlexWidget) will handle propagating to its children
-            let mut root = self.root.lock().unwrap();
+            let mut root = self.root.lock().expect("widget lock poisoned");
             let handled = root.handle_event(event, &mut ctx, &self.root.clone());
             drop(root);
 
@@ -115,7 +115,7 @@ impl UI {
 
     fn handle_click_event(&mut self, event: &Event, point: &Point, ctx: &mut EventContext) -> bool {
         // First, check if the root widget contains the point
-        let mut root = self.root.lock().unwrap();
+        let mut root = self.root.lock().expect("widget lock poisoned");
         if root.contains_point(point) {
             // If it does, handle the event on the root
             return root.handle_event(event, ctx, &self.root.clone());
@@ -125,7 +125,7 @@ impl UI {
 
     /// Updates the bounds of widgets in the hierarchy within the constraints provided (typically the screen size).
     pub fn layout(&mut self, width: f32, height: f32) {
-        let mut root = self.root.lock().unwrap();
+        let mut root = self.root.lock().expect("widget lock poisoned");
         root.layout(
             0.0,
             0.0,
@@ -152,7 +152,7 @@ impl UI {
             if Arc::ptr_eq(&self.root, &new_root) {
                 // Same widget reference, skip reconciliation to avoid deadlock
             } else {
-                let mut root = self.root.lock().unwrap();
+                let mut root = self.root.lock().expect("widget lock poisoned");
                 root.update(new_root);
             }
         }

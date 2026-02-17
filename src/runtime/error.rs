@@ -1,8 +1,10 @@
+//! Error types for the Ogham runtime and VM.
+
 use std::path::PathBuf;
 
 use crate::{parser::SyntaxError, runtime::Value, tree::ast_bridge};
 
-/// Runtime error types for execution errors
+/// Errors that can occur during bytecode compilation or VM execution.
 #[derive(Debug)]
 pub enum VMError {
     UndefinedVariable(String),

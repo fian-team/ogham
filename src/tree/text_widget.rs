@@ -106,7 +106,7 @@ impl TextWidget {
 
 impl Widget for TextWidget {
     fn update(&mut self, new_widget: WidgetRef) -> bool {
-        let mut new_widget = new_widget.lock().unwrap();
+        let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_text_widget) = new_widget.downcast_mut::<TextWidget>() {
             self.text = new_text_widget.text.clone();
             self.style = new_text_widget.style.clone();

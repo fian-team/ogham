@@ -1,3 +1,9 @@
+//! Parser: transforms a token stream into an abstract syntax tree (AST).
+//!
+//! The parser consumes [`scanner::Token`]s and produces a tree of
+//! [`Statement`] / [`Expression`] nodes that the compiler or tree-walker
+//! can evaluate.
+
 mod array;
 mod block;
 mod call;
@@ -19,6 +25,7 @@ pub use {
 
 use super::scanner;
 
+/// Recursive-descent parser for the Ogham language.
 #[derive(PartialEq, Clone, Debug)]
 pub struct Parser {
     input: Vec<scanner::Token>,
@@ -677,10 +684,6 @@ impl Parser {
             }
         }
         let expression = self.primary();
-        // TODO: Implement ! and -
-        // while self.next_is(vec![scanner::TokenType::Not]) {
-        //   expression = Expression::new_unary(expression);
-        // }
         expression
     }
 
@@ -801,7 +804,6 @@ impl Parser {
         while !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
             let identifier = self.consume_if_identifier()?;
             self.consume_if(scanner::TokenType::Colon)?;
-            // TODO: Include types with arguments
             let _arg_type = self.parse_type_identifier()?;
             function.arguments.push(identifier);
             if !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
@@ -952,5 +954,114 @@ impl Parser {
             scanner::TokenType::EqualEqual => "==".to_owned(),
             _ => String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::Scanner;
+
+    fn parse(source: &str) -> Function {
+        let mut scanner = Scanner::new(source.to_string());
+        let tokens = scanner.scan();
+        let mut parser = Parser::new(tokens);
+        parser.parse().expect("parse error")
+    }
+
+    #[test]
+    fn parse_let_declaration() {
+        let module = parse("let x = 5;");
+        assert_eq!(module.body.statement_list.len(), 1);
+        match &module.body.statement_list[0] {
+            Statement::Declare(decl) => {
+                assert_eq!(decl.get_identifier_value(), "x");
+            }
+            other => panic!("Expected Declare, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_function_definition() {
+        let module = parse("let add = fn (a: int, b: int) { return a + b; };");
+        assert_eq!(module.body.statement_list.len(), 1);
+        match &module.body.statement_list[0] {
+            Statement::Declare(decl) => {
+                assert_eq!(decl.get_identifier_value(), "add");
+            }
+            other => panic!("Expected Declare, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_if_else() {
+        let module = parse("if true { return 1; } else { return 2; }");
+        assert_eq!(module.body.statement_list.len(), 1);
+        match &module.body.statement_list[0] {
+            Statement::Conditional(_) => {}
+            other => panic!("Expected Conditional, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_state_declaration() {
+        let module = parse("state count = 0;");
+        assert_eq!(module.body.statement_list.len(), 1);
+        match &module.body.statement_list[0] {
+            Statement::DeclareState(state) => {
+                assert_eq!(state.get_identifier_value(), "count");
+            }
+            other => panic!("Expected DeclareState, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_widget_expression() {
+        let module = parse("let w = Flex { width: 100 };");
+        assert_eq!(module.body.statement_list.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_expression() {
+        let module = parse(
+            r#"let result = match x {
+                1 => "one",
+                2 => "two",
+                _ => "other",
+            };"#,
+        );
+        assert_eq!(module.body.statement_list.len(), 1);
+    }
+
+    #[test]
+    fn parse_for_loop_statement() {
+        let module = parse("for (i in 0..10) { log i; }");
+        assert_eq!(module.body.statement_list.len(), 1);
+        match &module.body.statement_list[0] {
+            Statement::ForLoop(_) => {}
+            other => panic!("Expected ForLoop, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_import_statement() {
+        let module = parse(r#"import "./button";"#);
+        assert_eq!(module.body.statement_list.len(), 1);
+        match &module.body.statement_list[0] {
+            Statement::Import(_) => {}
+            other => panic!("Expected Import, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_array_literal() {
+        let module = parse("let arr = [1, 2, 3];");
+        assert_eq!(module.body.statement_list.len(), 1);
+    }
+
+    #[test]
+    fn parse_binary_expression_precedence() {
+        let module = parse("let x = 1 + 2 * 3;");
+        assert_eq!(module.body.statement_list.len(), 1);
     }
 }

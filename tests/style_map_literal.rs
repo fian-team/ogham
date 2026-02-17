@@ -183,7 +183,7 @@ fn pipeline_parse_evaluate_bridge_flex_style_maps() {
         ogham::tree::ast_bridge::widget_value_to_widget_ref(&runtime_ref, &widget_value)
             .expect("bridge should succeed");
     // Downcast to FlexWidget and check style was applied
-    let guard = widget_ref.lock().unwrap();
+    let guard = widget_ref.lock().expect("widget lock poisoned");
     let flex = guard
         .downcast_ref::<ogham::tree::flex_widget::FlexWidget>()
         .expect("should be FlexWidget");

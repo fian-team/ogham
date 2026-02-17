@@ -1,9 +1,12 @@
+//! Runtime value representation for all Ogham types.
+
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
 use crate::runtime::{closure::Closure, opcode::VMClosure, widget::RuntimeWidget};
 
+/// A dynamically-typed value produced and consumed by the Ogham runtime.
 #[derive(Clone, Debug)]
 pub enum Value {
     Integer(i32),

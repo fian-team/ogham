@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// Bytecode VM – stack-based executor for compiled Ogham bytecode.
-// ---------------------------------------------------------------------------
+//! Stack-based bytecode VM that executes compiled Ogham programs.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -10,6 +8,7 @@ use crate::parser::Identifier;
 use crate::runtime::compiler::deserialize_import_meta;
 use crate::runtime::error::VMError;
 use crate::runtime::opcode::{FunctionProto, OpCode, Upvalue, UpvalueDescriptor, VMClosure};
+use crate::runtime::ops;
 use crate::runtime::value::Value;
 use crate::runtime::widget::RuntimeWidget;
 use crate::runtime::Runtime;
@@ -439,22 +438,22 @@ impl VM {
                 OpCode::Add => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(arith_add(&a, &b)?)?;
+                    self.push(ops::add(&a, &b)?)?;
                 }
                 OpCode::Sub => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(arith_sub(&a, &b)?)?;
+                    self.push(ops::subtract(&a, &b)?)?;
                 }
                 OpCode::Mul => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(arith_mul(&a, &b)?)?;
+                    self.push(ops::multiply(&a, &b)?)?;
                 }
                 OpCode::Div => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(arith_div(&a, &b)?)?;
+                    self.push(ops::divide(&a, &b)?)?;
                 }
                 OpCode::Negate => {
                     let val = self.pop()?;
@@ -469,44 +468,32 @@ impl VM {
                 OpCode::Eq => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    if std::mem::discriminant(&a) != std::mem::discriminant(&b) {
-                        return Err(VMError::TypeMismatch(format!(
-                            "Cannot compare values of different types with ==: {:?} and {:?}",
-                            a, b
-                        )));
-                    }
-                    self.push(Value::Boolean(a == b))?;
+                    self.push(ops::equals(&a, &b)?)?;
                 }
                 OpCode::Ne => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    if std::mem::discriminant(&a) != std::mem::discriminant(&b) {
-                        return Err(VMError::TypeMismatch(format!(
-                            "Cannot compare values of different types with !=: {:?} and {:?}",
-                            a, b
-                        )));
-                    }
-                    self.push(Value::Boolean(a != b))?;
+                    self.push(ops::not_equals(&a, &b)?)?;
                 }
                 OpCode::Gt => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(Value::Boolean(cmp_gt(&a, &b)?))?;
+                    self.push(ops::greater_than(&a, &b)?)?;
                 }
                 OpCode::Ge => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(Value::Boolean(cmp_ge(&a, &b)?))?;
+                    self.push(ops::greater_than_or_equal(&a, &b)?)?;
                 }
                 OpCode::Lt => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(Value::Boolean(cmp_lt(&a, &b)?))?;
+                    self.push(ops::less_than(&a, &b)?)?;
                 }
                 OpCode::Le => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(Value::Boolean(cmp_le(&a, &b)?))?;
+                    self.push(ops::less_than_or_equal(&a, &b)?)?;
                 }
                 OpCode::Not => {
                     let val = self.pop()?;
@@ -631,7 +618,10 @@ impl VM {
 
                             // Store restore info on the new frame so
                             // Return can restore the call stack.
-                            let new_frame = self.frames.last_mut().unwrap();
+                            let new_frame = self
+                                .frames
+                                .last_mut()
+                                .expect("frame should exist after call_vm_closure");
                             new_frame.saved_call_stack = Some(old_call_stack);
                             new_frame.saved_has_branched = Some(old_has_branched);
                         }
@@ -928,140 +918,5 @@ impl VM {
                 }
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Arithmetic helpers
-// ---------------------------------------------------------------------------
-
-fn arith_add(a: &Value, b: &Value) -> Result<Value, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
-        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a + *b as f64)),
-        (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
-        (Value::String(a), b) => Ok(Value::String(format!("{}{}", a, b))),
-        (a, Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot add {:?} and {:?}",
-            a, b
-        ))),
-    }
-}
-
-fn arith_sub(a: &Value, b: &Value) -> Result<Value, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 - b)),
-        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a - *b as f64)),
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot subtract {:?} from {:?}",
-            b, a
-        ))),
-    }
-}
-
-fn arith_mul(a: &Value, b: &Value) -> Result<Value, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 * b)),
-        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a * *b as f64)),
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot multiply {:?} and {:?}",
-            a, b
-        ))),
-    }
-}
-
-fn arith_div(a: &Value, b: &Value) -> Result<Value, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => {
-            if *b == 0 {
-                return Err(VMError::InvalidOperation("Division by zero".to_string()));
-            }
-            Ok(Value::Float(*a as f64 / *b as f64))
-        }
-        (Value::Float(a), Value::Float(b)) => {
-            if *b == 0.0 {
-                return Err(VMError::InvalidOperation("Division by zero".to_string()));
-            }
-            Ok(Value::Float(a / b))
-        }
-        (Value::Integer(a), Value::Float(b)) => {
-            if *b == 0.0 {
-                return Err(VMError::InvalidOperation("Division by zero".to_string()));
-            }
-            Ok(Value::Float(*a as f64 / b))
-        }
-        (Value::Float(a), Value::Integer(b)) => {
-            if *b == 0 {
-                return Err(VMError::InvalidOperation("Division by zero".to_string()));
-            }
-            Ok(Value::Float(a / *b as f64))
-        }
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot divide {:?} by {:?}",
-            a, b
-        ))),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Comparison helpers
-// ---------------------------------------------------------------------------
-
-fn cmp_gt(a: &Value, b: &Value) -> Result<bool, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(a > b),
-        (Value::Float(a), Value::Float(b)) => Ok(a > b),
-        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) > *b),
-        (Value::Float(a), Value::Integer(b)) => Ok(*a > (*b as f64)),
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot compare {:?} > {:?}",
-            a, b
-        ))),
-    }
-}
-
-fn cmp_ge(a: &Value, b: &Value) -> Result<bool, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(a >= b),
-        (Value::Float(a), Value::Float(b)) => Ok(a >= b),
-        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) >= *b),
-        (Value::Float(a), Value::Integer(b)) => Ok(*a >= (*b as f64)),
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot compare {:?} >= {:?}",
-            a, b
-        ))),
-    }
-}
-
-fn cmp_lt(a: &Value, b: &Value) -> Result<bool, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(a < b),
-        (Value::Float(a), Value::Float(b)) => Ok(a < b),
-        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) < *b),
-        (Value::Float(a), Value::Integer(b)) => Ok(*a < (*b as f64)),
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot compare {:?} < {:?}",
-            a, b
-        ))),
-    }
-}
-
-fn cmp_le(a: &Value, b: &Value) -> Result<bool, VMError> {
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => Ok(a <= b),
-        (Value::Float(a), Value::Float(b)) => Ok(a <= b),
-        (Value::Integer(a), Value::Float(b)) => Ok((*a as f64) <= *b),
-        (Value::Float(a), Value::Integer(b)) => Ok(*a <= (*b as f64)),
-        _ => Err(VMError::TypeMismatch(format!(
-            "Cannot compare {:?} <= {:?}",
-            a, b
-        ))),
     }
 }

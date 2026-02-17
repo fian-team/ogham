@@ -35,7 +35,7 @@ fn make_event_listener(
             let closure = closure.clone();
             let ename = event_name.to_string();
             Some(Box::new(move |_event: &Event| {
-                let result = rt.lock().unwrap().call_closure(
+                let result = rt.lock().expect("runtime lock poisoned").call_closure(
                     &closure,
                     &[],
                     &format!("event_handler_{}", ename),
@@ -50,7 +50,7 @@ fn make_event_listener(
             let closure = closure.clone();
             let ename = event_name.to_string();
             Some(Box::new(move |_event: &Event| {
-                let result = rt.lock().unwrap().call_bytecode_closure(&closure, &[]);
+                let result = rt.lock().expect("runtime lock poisoned").call_bytecode_closure(&closure, &[]);
                 if let Err(err) = result {
                     eprintln!("[ogham] {} handler error: {:?}", ename, err);
                 }
@@ -74,7 +74,7 @@ fn make_event_listener_with_arg(
             let ename = event_name.to_string();
             Some(Box::new(move |event: &Event| {
                 let arg = Value::String(event.value.clone().unwrap_or_default());
-                let result = rt.lock().unwrap().call_closure(
+                let result = rt.lock().expect("runtime lock poisoned").call_closure(
                     &closure,
                     &[arg],
                     &format!("event_handler_{}", ename),
@@ -90,7 +90,7 @@ fn make_event_listener_with_arg(
             let ename = event_name.to_string();
             Some(Box::new(move |event: &Event| {
                 let arg = Value::String(event.value.clone().unwrap_or_default());
-                let result = rt.lock().unwrap().call_bytecode_closure(&closure, &[arg]);
+                let result = rt.lock().expect("runtime lock poisoned").call_bytecode_closure(&closure, &[arg]);
                 if let Err(err) = result {
                     eprintln!("[ogham] {} handler error: {:?}", ename, err);
                 }

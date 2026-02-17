@@ -94,7 +94,7 @@ impl Client {
 
     /// True when the UI needs to be updated (tree dirty or runtime state changed).
     pub fn needs_ui_update(&self) -> bool {
-        self.ogham.get_ui().is_dirty() || self.ogham.get_runtime().lock().unwrap().needs_rerender()
+        self.ogham.get_ui().is_dirty() || self.ogham.get_runtime().lock().expect("runtime lock poisoned").needs_rerender()
     }
 
     /// Update UI if dirty, then layout with the given dimensions
@@ -102,14 +102,14 @@ impl Client {
         // Check if runtime needs a rerender due to state updates
         let needs_rerender = {
             let runtime = self.ogham.get_runtime();
-            runtime.lock().unwrap().needs_rerender()
+            runtime.lock().expect("runtime lock poisoned").needs_rerender()
         };
 
         if needs_rerender {
             // Rerender the module to get updated widget tree
             let runtime = self.ogham.get_runtime().clone();
             let widget_value = {
-                let mut rt = runtime.lock().unwrap();
+                let mut rt = runtime.lock().expect("runtime lock poisoned");
                 rt.rerender()
                     .map_err(|e| {
                         eprintln!("[ogham] Rerender error: {:?}", e);

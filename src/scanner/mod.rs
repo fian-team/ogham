@@ -1,10 +1,12 @@
+//! Lexical analysis: converts Ogham source text into a stream of tokens.
+
 mod token;
 mod token_type;
 
 pub use token::*;
 pub use token_type::*;
 
-/// Takes an Iris script as input and parses it into a vector of tokens.
+/// Scans Ogham source code and produces a vector of [`Token`]s.
 pub struct Scanner {
     /// The input string; the Iris script to be scanned, in other words.
     input: Vec<char>,
@@ -398,5 +400,118 @@ impl Scanner {
             "false" => self.create_token(TokenType::Boolean(false)),
             _ => self.create_token(TokenType::Identifier(value)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scan(source: &str) -> Vec<Token> {
+        let mut scanner = Scanner::new(source.to_string());
+        scanner.scan()
+    }
+
+    #[test]
+    fn scan_integer_literal() {
+        let tokens = scan("42");
+        assert_eq!(tokens[0].token_type, TokenType::Integer(42));
+    }
+
+    #[test]
+    fn scan_float_literal() {
+        let tokens = scan("3.14");
+        assert_eq!(tokens[0].token_type, TokenType::Float(3.14));
+    }
+
+    #[test]
+    fn scan_string_literal() {
+        let tokens = scan(r#""hello""#);
+        assert_eq!(tokens[0].token_type, TokenType::String("hello".to_string()));
+    }
+
+    #[test]
+    fn scan_boolean_literals() {
+        let tokens = scan("true false");
+        assert_eq!(tokens[0].token_type, TokenType::Boolean(true));
+        assert_eq!(tokens[1].token_type, TokenType::Boolean(false));
+    }
+
+    #[test]
+    fn scan_keywords() {
+        let tokens = scan("let state if else return fn for in match import from log");
+        assert_eq!(tokens[0].token_type, TokenType::Let);
+        assert_eq!(tokens[1].token_type, TokenType::State);
+        assert_eq!(tokens[2].token_type, TokenType::If);
+        assert_eq!(tokens[3].token_type, TokenType::Else);
+        assert_eq!(tokens[4].token_type, TokenType::Return);
+        assert_eq!(tokens[5].token_type, TokenType::Fn);
+        assert_eq!(tokens[6].token_type, TokenType::For);
+        assert_eq!(tokens[7].token_type, TokenType::In);
+        assert_eq!(tokens[8].token_type, TokenType::Match);
+        assert_eq!(tokens[9].token_type, TokenType::Import);
+        assert_eq!(tokens[10].token_type, TokenType::From);
+        assert_eq!(tokens[11].token_type, TokenType::Log);
+    }
+
+    #[test]
+    fn scan_arithmetic_operators() {
+        let tokens = scan("+ - * /");
+        assert_eq!(tokens[0].token_type, TokenType::Plus);
+        assert_eq!(tokens[1].token_type, TokenType::Minus);
+        assert_eq!(tokens[2].token_type, TokenType::Multiply);
+        assert_eq!(tokens[3].token_type, TokenType::Divide);
+    }
+
+    #[test]
+    fn scan_comparison_operators() {
+        let tokens = scan("== != > >= < <=");
+        assert_eq!(tokens[0].token_type, TokenType::EqualEqual);
+        assert_eq!(tokens[1].token_type, TokenType::NotEqual);
+        assert_eq!(tokens[2].token_type, TokenType::GreaterThan);
+        assert_eq!(tokens[3].token_type, TokenType::GreaterThanOrEqualTo);
+        assert_eq!(tokens[4].token_type, TokenType::LessThan);
+        assert_eq!(tokens[5].token_type, TokenType::LessThanOrEqualTo);
+    }
+
+    #[test]
+    fn scan_let_declaration() {
+        let tokens = scan("let x = 5;");
+        assert_eq!(tokens[0].token_type, TokenType::Let);
+        assert_eq!(
+            tokens[1].token_type,
+            TokenType::Identifier("x".to_string())
+        );
+        assert_eq!(tokens[2].token_type, TokenType::Equal);
+        assert_eq!(tokens[3].token_type, TokenType::Integer(5));
+        assert_eq!(tokens[4].token_type, TokenType::Semicolon);
+    }
+
+    #[test]
+    fn scan_identifier_with_underscores() {
+        let tokens = scan("my_variable _private");
+        assert_eq!(
+            tokens[0].token_type,
+            TokenType::Identifier("my_variable".to_string())
+        );
+        assert_eq!(
+            tokens[1].token_type,
+            TokenType::Identifier("_private".to_string())
+        );
+    }
+
+    #[test]
+    fn scan_range_and_spread() {
+        let tokens = scan("0..10 ...");
+        assert_eq!(tokens[0].token_type, TokenType::Integer(0));
+        assert_eq!(tokens[1].token_type, TokenType::Range);
+        assert_eq!(tokens[2].token_type, TokenType::Integer(10));
+        assert_eq!(tokens[3].token_type, TokenType::Spread);
+    }
+
+    #[test]
+    fn scan_fat_arrow() {
+        let tokens = scan("=>");
+        assert_eq!(tokens[0].token_type, TokenType::FatArrow);
     }
 }

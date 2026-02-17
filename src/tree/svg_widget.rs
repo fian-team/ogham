@@ -178,7 +178,7 @@ impl SvgWidget {
 
 impl Widget for SvgWidget {
     fn update(&mut self, new_widget: WidgetRef) -> bool {
-        let mut new_widget = new_widget.lock().unwrap();
+        let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_svg_widget) = new_widget.downcast_mut::<SvgWidget>() {
             // Update path and reload SVG if path or color changed
             let path_changed = self.path != new_svg_widget.path;

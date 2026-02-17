@@ -2,22 +2,15 @@
 name = "ogham"
 version = "0.1.0"
 edition = "2021"
+description = "A UI language and framework inspired by DOM, CSS/Flexbox, and React"
+license = "MIT"
+repository = "https://github.com/user/ogham"
+keywords = ["ui", "framework", "language", "flexbox"]
+categories = ["gui"]
 
 [[bin]]
 name = "client"
 path = "src/client/main.rs"
-
-[[example]]
-name = "library_usage"
-path = "examples/library_usage.rs"
-
-[[example]]
-name = "simple_integration"
-path = "examples/simple_integration.rs"
-
-[[example]]
-name = "complete_app"
-path = "examples/complete_app.rs"
 
 [lib]
 name = "ogham"
@@ -30,7 +23,6 @@ lodepng = "3.12.1"
 winit = "0.30.2"
 glutin = { version = "0.32.0", features = ["egl", "glx", "wgl"] }
 glutin-winit = "0.5.0"
-glow = "0.16.0"
 nalgebra-glm = "0.19.0"
 gl-rs = { version = "0.14.0", package = "gl" }
 raw-window-handle = "0.6.0"

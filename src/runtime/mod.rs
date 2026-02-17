@@ -1,3 +1,9 @@
+//! Ogham runtime: bytecode compiler, VM, and supporting infrastructure.
+//!
+//! The primary execution path compiles Ogham source to bytecode
+//! ([`compiler`]) and runs it in a stack-based VM ([`vm`]).
+//! Shared arithmetic and comparison operations live in [`ops`].
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,10 +32,13 @@ pub mod config;
 pub mod environment;
 pub mod error;
 pub mod opcode;
+pub mod ops;
 pub mod value;
 pub mod vm;
 pub mod widget;
 
+/// The Ogham runtime: holds module state, component state, import caches,
+/// and the environment used during execution.
 pub struct Runtime {
     pub(crate) environment: Environment,
     host_state: HashMap<String, Value>,
@@ -236,25 +245,6 @@ impl Runtime {
 
         let mut vm = VM::new();
         let result = vm.run(&proto, self);
-        self.cleanup_unmounted_state();
-        result
-    }
-
-    /// Execute a module using the original tree-walk interpreter (kept as
-    /// a fallback for debugging / gradual migration).
-    pub fn execute_module_treewalker(&mut self, module: &Function) -> Result<Value, VMError> {
-        self.active_state_paths.clear();
-        self.call_stack.clear();
-        self.call_counters.clear();
-        self.import_loading_stack.clear();
-        self.import_loaded.clear();
-        self.import_cache.clear();
-        self.execute_block(&module.body)?;
-        let result = if let Some(Value::Closure(main_closure)) = self.environment.get("main") {
-            self.call_closure(&main_closure, &[], "main")
-        } else {
-            Ok(Value::Void)
-        };
         self.cleanup_unmounted_state();
         result
     }
@@ -662,7 +652,7 @@ impl Runtime {
         Ok(Value::Void)
     }
 
-    pub fn evaluate_expression(&mut self, expression: &Expression) -> Result<Value, VMError> {
+    fn evaluate_expression(&mut self, expression: &Expression) -> Result<Value, VMError> {
         match expression {
             Expression::Literal(literal) => self.evaluate_literal(literal),
             Expression::Unary(unary) => {
@@ -934,170 +924,19 @@ impl Runtime {
         right: &Value,
     ) -> Result<Value, VMError> {
         match operator {
-            Operator::Plus => self.add(left, right),
-            Operator::Minus => self.subtract(left, right),
-            Operator::Multiply => self.multiply(left, right),
-            Operator::Divide => self.divide(left, right),
-            Operator::Equals => self.compare_equals(left, right),
-            Operator::NotEquals => self.compare_not_equals(left, right),
-            Operator::GreaterThan => self.compare_greater_than(left, right),
-            Operator::GreaterThanOrEqualTo => self.compare_greater_than_or_equal(left, right),
-            Operator::LessThan => self.compare_less_than(left, right),
-            Operator::LessThanOrEqualTo => self.compare_less_than_or_equal(left, right),
+            Operator::Plus => ops::add(left, right),
+            Operator::Minus => ops::subtract(left, right),
+            Operator::Multiply => ops::multiply(left, right),
+            Operator::Divide => ops::divide(left, right),
+            Operator::Equals => ops::equals(left, right),
+            Operator::NotEquals => ops::not_equals(left, right),
+            Operator::GreaterThan => ops::greater_than(left, right),
+            Operator::GreaterThanOrEqualTo => ops::greater_than_or_equal(left, right),
+            Operator::LessThan => ops::less_than(left, right),
+            Operator::LessThanOrEqualTo => ops::less_than_or_equal(left, right),
             Operator::Not => Err(VMError::InvalidOperation(
                 "Not operator is not a binary operator".to_string(),
             )),
-        }
-    }
-
-    fn compare_equals(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        if std::mem::discriminant(left) != std::mem::discriminant(right) {
-            return Err(VMError::TypeMismatch(format!(
-                "Cannot compare values of different types with ==: {:?} and {:?}",
-                left, right
-            )));
-        }
-        Ok(Value::Boolean(left == right))
-    }
-
-    fn compare_not_equals(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        if std::mem::discriminant(left) != std::mem::discriminant(right) {
-            return Err(VMError::TypeMismatch(format!(
-                "Cannot compare values of different types with !=: {:?} and {:?}",
-                left, right
-            )));
-        }
-        Ok(Value::Boolean(left != right))
-    }
-
-    fn add(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a + *b as f64)),
-            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
-            (Value::String(a), b) => Ok(Value::String(format!("{}{}", a, b))),
-            (a, Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot add {:?} and {:?}",
-                left, right
-            ))),
-        }
-    }
-
-    fn subtract(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 - b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a - *b as f64)),
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot subtract {:?} from {:?}",
-                right, left
-            ))),
-        }
-    }
-
-    fn multiply(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(*a as f64 * b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a * *b as f64)),
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot multiply {:?} and {:?}",
-                left, right
-            ))),
-        }
-    }
-
-    fn divide(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => {
-                if *b == 0 {
-                    Err(VMError::InvalidOperation("Division by zero".to_string()))
-                } else {
-                    Ok(Value::Float(*a as f64 / *b as f64))
-                }
-            }
-            (Value::Float(a), Value::Float(b)) => {
-                if *b == 0.0 {
-                    Err(VMError::InvalidOperation("Division by zero".to_string()))
-                } else {
-                    Ok(Value::Float(a / b))
-                }
-            }
-            (Value::Integer(a), Value::Float(b)) => {
-                if *b == 0.0 {
-                    Err(VMError::InvalidOperation("Division by zero".to_string()))
-                } else {
-                    Ok(Value::Float(*a as f64 / b))
-                }
-            }
-            (Value::Float(a), Value::Integer(b)) => {
-                if *b == 0 {
-                    Err(VMError::InvalidOperation("Division by zero".to_string()))
-                } else {
-                    Ok(Value::Float(a / *b as f64))
-                }
-            }
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot divide {:?} by {:?}",
-                left, right
-            ))),
-        }
-    }
-
-    fn compare_greater_than(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Boolean(a > b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Boolean(a > b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Boolean((*a as f64) > *b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Boolean(*a > (*b as f64))),
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot compare {:?} > {:?}",
-                left, right
-            ))),
-        }
-    }
-
-    fn compare_greater_than_or_equal(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Boolean(a >= b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Boolean(a >= b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Boolean((*a as f64) >= *b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Boolean(*a >= (*b as f64))),
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot compare {:?} >= {:?}",
-                left, right
-            ))),
-        }
-    }
-
-    fn compare_less_than(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Boolean(a < b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Boolean(a < b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Boolean((*a as f64) < *b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Boolean(*a < (*b as f64))),
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot compare {:?} < {:?}",
-                left, right
-            ))),
-        }
-    }
-
-    fn compare_less_than_or_equal(&self, left: &Value, right: &Value) -> Result<Value, VMError> {
-        match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Boolean(a <= b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Boolean(a <= b)),
-            (Value::Integer(a), Value::Float(b)) => Ok(Value::Boolean((*a as f64) <= *b)),
-            (Value::Float(a), Value::Integer(b)) => Ok(Value::Boolean(*a <= (*b as f64))),
-            _ => Err(VMError::TypeMismatch(format!(
-                "Cannot compare {:?} <= {:?}",
-                left, right
-            ))),
         }
     }
 
@@ -1234,21 +1073,6 @@ impl Runtime {
         result
     }
 
-    pub fn call_function(
-        &mut self,
-        func: &Function,
-        args: &[Value],
-        function_name: &str,
-    ) -> Result<Value, VMError> {
-        // Create a temporary closure without captured environment
-        let closure = Closure {
-            function: func.clone(),
-            captured_env: self.environment.clone(),
-            captured_path: self.call_stack.clone(),
-        };
-        self.call_closure(&closure, args, function_name)
-    }
-
     /// Call a bytecode closure (produced by the bytecode compiler).
     /// Used by the widget tree's event handlers.
     pub fn call_bytecode_closure(
@@ -1258,23 +1082,6 @@ impl Runtime {
     ) -> Result<Value, VMError> {
         let mut vm = VM::new();
         vm.call_closure(closure, args, self)
-    }
-
-    /// Dispatch a closure call – handles both AST closures and bytecode
-    /// closures transparently.
-    pub fn call_value(
-        &mut self,
-        value: &Value,
-        args: &[Value],
-        function_name: &str,
-    ) -> Result<Value, VMError> {
-        match value {
-            Value::Closure(closure) => self.call_closure(closure, args, function_name),
-            Value::BytecodeClosure(closure) => self.call_bytecode_closure(closure, args),
-            _ => Err(VMError::TypeMismatch(
-                "Only functions can be called".to_string(),
-            )),
-        }
     }
 }
 
@@ -1335,14 +1142,152 @@ pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtim
     // Store the module in the runtime for potential rerendering
     runtime.set_module(module.clone());
 
-    // let value = runtime.execute_module(&module)?;
-
     Ok(runtime)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(source: &str) -> Value {
+        let mut runtime = from_source(source, None).expect("parse and create runtime");
+        let module = runtime.get_module().expect("module").clone();
+        runtime.execute_module(&module).expect("execute")
+    }
+
+    #[test]
+    fn arithmetic_operations() {
+        assert_eq!(
+            run("let main = fn () { return 2 + 3; };"),
+            Value::Integer(5)
+        );
+        assert_eq!(
+            run("let main = fn () { return 10 - 4; };"),
+            Value::Integer(6)
+        );
+        assert_eq!(
+            run("let main = fn () { return 3 * 7; };"),
+            Value::Integer(21)
+        );
+    }
+
+    #[test]
+    fn comparison_operations() {
+        assert_eq!(
+            run("let main = fn () { return 5 > 3; };"),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run("let main = fn () { return 2 < 1; };"),
+            Value::Boolean(false)
+        );
+        assert_eq!(
+            run("let main = fn () { return 3 == 3; };"),
+            Value::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn string_concatenation() {
+        assert_eq!(
+            run(r#"let main = fn () { return "hello" + " " + "world"; };"#),
+            Value::String("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn closures_capture_variables() {
+        let source = r#"
+let make_adder = fn (x: int) {
+    return fn (y: int) { return x + y; };
+};
+let main = fn () {
+    let add5 = make_adder(5);
+    return add5(3);
+};
+"#;
+        assert_eq!(run(source), Value::Integer(8));
+    }
+
+    #[test]
+    fn conditional_if_else() {
+        let source = r#"
+let main = fn () {
+    let x = 10;
+    if x > 5 {
+        return true;
+    } else {
+        return false;
+    }
+};
+"#;
+        assert_eq!(run(source), Value::Boolean(true));
+    }
+
+    #[test]
+    fn for_loop_expression_produces_array() {
+        let source = r#"
+let main = fn () {
+    let arr = [1, 2, 3];
+    return arr.length();
+};
+"#;
+        assert_eq!(run(source), Value::Integer(3));
+    }
+
+    #[test]
+    fn match_expression() {
+        let source = r#"
+let main = fn () {
+    let x = 2;
+    return match x {
+        1 => "one",
+        2 => "two",
+        _ => "other",
+    };
+};
+"#;
+        assert_eq!(run(source), Value::String("two".to_string()));
+    }
+
+    #[test]
+    fn state_persists_across_rerenders() {
+        let source = r#"
+let main = fn () {
+    state count = 0;
+    count = count + 1;
+    return count;
+};
+"#;
+        let mut runtime = from_source(source, None).expect("parse and create runtime");
+        let module = runtime.get_module().expect("module").clone();
+        let first = runtime.execute_module(&module).expect("first execute");
+        assert_eq!(first, Value::Integer(1));
+        let second = runtime.rerender().expect("rerender");
+        assert_eq!(second, Value::Integer(2));
+    }
+
+    #[test]
+    fn map_literals() {
+        let source = r#"
+let main = fn () {
+    let m = { x: 10, y: 20 };
+    return m.x + m.y;
+};
+"#;
+        assert_eq!(run(source), Value::Integer(30));
+    }
+
+    #[test]
+    fn nested_function_calls() {
+        let source = r#"
+let double = fn (n: int) { return n * 2; };
+let main = fn () {
+    return double(double(3));
+};
+"#;
+        assert_eq!(run(source), Value::Integer(12));
+    }
 
     #[test]
     fn array_access_length_and_index() {
@@ -1357,7 +1302,6 @@ let main = fn () {
         let mut runtime = from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         let result = runtime.execute_module(&module).expect("execute");
-        // main() returns the last element: 5
         assert_eq!(result, Value::Integer(5));
     }
 }

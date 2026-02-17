@@ -1,3 +1,22 @@
+//! # Ogham
+//!
+//! A UI language and framework inspired by DOM, CSS/Flexbox, and React.
+//!
+//! Ogham provides a custom language (`.ogh` files), a scanner/parser,
+//! a bytecode compiler + VM runtime, a Flexbox-based widget tree, and
+//! a Skia rendering backend.
+//!
+//! ## Quick start
+//!
+//! ```rust,no_run
+//! use ogham::runtime::config::RuntimeConfig;
+//!
+//! let ogham = ogham::Ogham::from_source(
+//!     r#"let main = fn () { 42 };"#,
+//!     RuntimeConfig::default(),
+//! ).expect("parse and execute");
+//! ```
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -8,6 +27,8 @@ pub mod scanner;
 pub mod skia;
 pub mod tree;
 
+/// Top-level Ogham instance that owns the runtime, widget tree, and
+/// optional file watcher.
 pub struct Ogham {
     ui: tree::UI,
     watcher: Option<file_watcher::FileWatcher>,
@@ -60,7 +81,7 @@ impl Ogham {
         runtime: &Arc<Mutex<runtime::Runtime>>,
     ) -> Result<tree::UI, runtime::error::RuntimeError> {
         let module = {
-            let rt = runtime.lock().unwrap();
+            let rt = runtime.lock().expect("runtime lock poisoned");
             rt.get_module().cloned().ok_or_else(|| {
                 runtime::error::RuntimeError::VmError(runtime::error::VMError::InvalidOperation(
                     "No module stored in runtime".to_string(),
@@ -69,7 +90,7 @@ impl Ogham {
         };
 
         let widget_value = {
-            let mut rt = runtime.lock().unwrap();
+            let mut rt = runtime.lock().expect("runtime lock poisoned");
             rt.execute_module(&module)?
         };
 
@@ -107,7 +128,7 @@ impl Ogham {
     /// Build the list of paths to watch: main file plus every imported module.
     fn paths_to_watch(main_path: &str, runtime: &Arc<Mutex<runtime::Runtime>>) -> Vec<PathBuf> {
         let mut paths = vec![PathBuf::from(main_path)];
-        paths.extend(runtime.lock().unwrap().get_imported_paths());
+        paths.extend(runtime.lock().expect("runtime lock poisoned").get_imported_paths());
         paths
     }
 

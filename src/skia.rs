@@ -1,3 +1,5 @@
+//! Skia rendering backend: draws the widget tree to a Skia surface.
+
 use skia_safe::{
     font_style::{Slant, Weight, Width},
     textlayout::{
@@ -264,7 +266,7 @@ impl Surface for SkiaEnv {
         } else {
             false
         };
-        let widget = widget.lock().unwrap();
+        let widget = widget.lock().expect("widget lock poisoned");
         if let Some(box_widget) = widget.downcast_ref::<FlexWidget>() {
             self.draw_box(box_widget, image_cache);
             for child in box_widget.children.iter() {
@@ -383,7 +385,7 @@ impl Surface for SkiaEnv {
         }
 
         // For now, use the top border properties for the entire border
-        // TODO: Support different border styles per side
+        // Currently using the top border properties for the entire border.
         let border_width = widget.style.border.top.width;
         let border_color = widget.style.border.top.color;
 

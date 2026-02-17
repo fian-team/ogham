@@ -47,7 +47,7 @@ impl FlexWidget {
 
 impl Widget for FlexWidget {
     fn update(&mut self, new_widget: WidgetRef) -> bool {
-        let mut new_widget = new_widget.lock().unwrap();
+        let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_flex_widget) = new_widget.downcast_mut::<FlexWidget>() {
             self.style = new_flex_widget.style.clone();
             self.block_interactions = new_flex_widget.block_interactions;
@@ -66,7 +66,7 @@ impl Widget for FlexWidget {
                     // Same widget reference, skip update to avoid deadlock
                     continue;
                 }
-                let mut child = self.children[i].lock().unwrap();
+                let mut child = self.children[i].lock().expect("widget lock poisoned");
                 if !child.update(new_flex_widget.children[i].clone()) {
                     drop(child); // Drop the lock before replacing the child
                     self.children[i] = new_flex_widget.children[i].clone();
@@ -113,7 +113,7 @@ impl Widget for FlexWidget {
         let mut basis = 0.0;
         for child in self.children.iter() {
             // Skip absolute positioned children as they don't contribute to flex basis
-            let child = child.lock().unwrap();
+            let child = child.lock().expect("widget lock poisoned");
             if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                 if matches!(box_widget.style.position, Position::Absolute(_, _)) {
                     continue;
@@ -141,7 +141,7 @@ impl Widget for FlexWidget {
                 let children_basis = self.get_children_basis();
                 let get_dimensions = |child: &WidgetRef| {
                     // Skip absolute positioned children in dimension calculations
-                    let child = child.lock().unwrap();
+                    let child = child.lock().expect("widget lock poisoned");
                     if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                         if matches!(box_widget.style.position, Position::Absolute(_, _)) {
                             return (0.0, 0.0);
@@ -185,7 +185,7 @@ impl Widget for FlexWidget {
                     .children
                     .iter()
                     .filter(|child| {
-                        let child = child.lock().unwrap();
+                        let child = child.lock().expect("widget lock poisoned");
                         if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                             !matches!(box_widget.style.position, Position::Absolute(_, _))
                         } else {
@@ -227,7 +227,7 @@ impl Widget for FlexWidget {
                 let children_basis = self.get_children_basis();
                 let get_dimensions = |child: &WidgetRef| {
                     // Skip absolute positioned children in dimension calculations
-                    let child = child.lock().unwrap();
+                    let child = child.lock().expect("widget lock poisoned");
                     if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                         if matches!(box_widget.style.position, Position::Absolute(_, _)) {
                             return (0.0, 0.0);
@@ -270,7 +270,7 @@ impl Widget for FlexWidget {
                     .children
                     .iter()
                     .filter(|child| {
-                        let child = child.lock().unwrap();
+                        let child = child.lock().expect("widget lock poisoned");
                         if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                             !matches!(box_widget.style.position, Position::Absolute(_, _))
                         } else {
@@ -327,7 +327,7 @@ impl Widget for FlexWidget {
 
                 // If it does, check children
                 for child_ref in self.children.iter() {
-                    let mut child = child_ref.lock().unwrap();
+                    let mut child = child_ref.lock().expect("widget lock poisoned");
                     if child.handle_event(event, ctx, child_ref) {
                         event_handled = true;
                         break; // Stop propagating once a child handles the event
@@ -350,7 +350,7 @@ impl Widget for FlexWidget {
 
             // Check children in reverse order (child-most first)
             for child_ref in self.children.iter().rev() {
-                let mut child = child_ref.lock().unwrap();
+                let mut child = child_ref.lock().expect("widget lock poisoned");
                 if child.handle_event(event, ctx, child_ref) {
                     event_handled = true;
                     // Don't break here - let all children have a chance to handle the event
@@ -397,7 +397,7 @@ impl Widget for FlexWidget {
             .children
             .iter()
             .filter(|child| {
-                let child = child.lock().unwrap();
+                let child = child.lock().expect("widget lock poisoned");
                 if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                     !matches!(box_widget.style.position, Position::Absolute(_, _))
                 } else {
@@ -458,7 +458,7 @@ impl Widget for FlexWidget {
             .children
             .iter()
             .map(|child| {
-                let child = child.lock().unwrap();
+                let child = child.lock().expect("widget lock poisoned");
                 if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                     if matches!(box_widget.style.position, Position::Absolute(_, _)) {
                         return None;
@@ -556,7 +556,7 @@ impl Widget for FlexWidget {
                 Some(dims) => dims,
                 None => continue,
             };
-            let mut child = child.lock().unwrap();
+            let mut child = child.lock().expect("widget lock poisoned");
 
             // Calculate cross axis offset based on cross alignment
             let cross_offset = self.style.cross_alignment.get_offset(
@@ -636,7 +636,7 @@ impl Widget for FlexWidget {
 
         // Now layout absolute positioned children
         for child in self.children.iter_mut() {
-            let mut child = child.lock().unwrap();
+            let mut child = child.lock().expect("widget lock poisoned");
             if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                 if let Position::Absolute(offset_x, offset_y) = box_widget.style.position {
                     // Position absolute children at their specified coordinates relative to parent
@@ -671,7 +671,7 @@ impl Widget for FlexWidget {
             .iter()
             .filter_map(|child| {
                 // Skip absolute positioned children
-                let child = child.lock().unwrap();
+                let child = child.lock().expect("widget lock poisoned");
                 if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                     if matches!(box_widget.style.position, Position::Absolute(_, _)) {
                         return None;
@@ -690,7 +690,7 @@ impl Widget for FlexWidget {
             .iter()
             .filter_map(|child| {
                 // Skip absolute positioned children
-                let child = child.lock().unwrap();
+                let child = child.lock().expect("widget lock poisoned");
                 if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
                     if matches!(box_widget.style.position, Position::Absolute(_, _)) {
                         return None;
@@ -876,7 +876,7 @@ mod tests {
         // Layout the parent
         let parent_ref = Arc::new(Mutex::new(parent));
         {
-            let mut parent = parent_ref.lock().unwrap();
+            let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
                 0.0,
                 0.0,
@@ -890,7 +890,7 @@ mod tests {
         }
 
         // Verify children don't extend past parent bounds
-        let parent = parent_ref.lock().unwrap();
+        let parent = parent_ref.lock().expect("widget lock poisoned");
         let parent_layout = parent.layout.clone().unwrap();
         let content_width = parent_layout.width
             - parent.style.padding.get_left()
@@ -906,7 +906,7 @@ mod tests {
             + content_width;
 
         for child_ref in parent.children.iter() {
-            let child = child_ref.lock().unwrap();
+            let child = child_ref.lock().expect("widget lock poisoned");
             if let Some(child_layout) = child
                 .downcast_ref::<TestWidget>()
                 .and_then(|w| w.layout.as_ref())
@@ -953,7 +953,7 @@ mod tests {
         // Layout the parent
         let parent_ref = Arc::new(Mutex::new(parent));
         {
-            let mut parent = parent_ref.lock().unwrap();
+            let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
                 0.0,
                 0.0,
@@ -967,7 +967,7 @@ mod tests {
         }
 
         // Verify children don't extend past parent bounds
-        let parent = parent_ref.lock().unwrap();
+        let parent = parent_ref.lock().expect("widget lock poisoned");
         let parent_layout = parent.layout.clone().unwrap();
         let content_height = parent_layout.height
             - parent.style.padding.get_top()
@@ -983,7 +983,7 @@ mod tests {
             + content_height;
 
         for child_ref in parent.children.iter() {
-            let child = child_ref.lock().unwrap();
+            let child = child_ref.lock().expect("widget lock poisoned");
             if let Some(child_layout) = child
                 .downcast_ref::<TestWidget>()
                 .and_then(|w| w.layout.as_ref())
@@ -1027,7 +1027,7 @@ mod tests {
         // Layout the parent
         let parent_ref = Arc::new(Mutex::new(parent));
         {
-            let mut parent = parent_ref.lock().unwrap();
+            let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
                 0.0,
                 0.0,
@@ -1041,7 +1041,7 @@ mod tests {
         }
 
         // Verify parent width accounts for gap
-        let parent = parent_ref.lock().unwrap();
+        let parent = parent_ref.lock().expect("widget lock poisoned");
         let parent_layout = parent.layout.clone().unwrap();
         let expected_width = 2.0 * child_width + gap; // 2 children + 1 gap
         assert!(
@@ -1080,7 +1080,7 @@ mod tests {
         // Layout the parent
         let parent_ref = Arc::new(Mutex::new(parent));
         {
-            let mut parent = parent_ref.lock().unwrap();
+            let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
                 0.0,
                 0.0,
@@ -1094,7 +1094,7 @@ mod tests {
         }
 
         // Verify parent height accounts for gap
-        let parent = parent_ref.lock().unwrap();
+        let parent = parent_ref.lock().expect("widget lock poisoned");
         let parent_layout = parent.layout.clone().unwrap();
         let expected_height = 2.0 * child_height + gap; // 2 children + 1 gap
         assert!(
@@ -1130,7 +1130,7 @@ mod tests {
         // Layout the parent
         let parent_ref = Arc::new(Mutex::new(parent));
         {
-            let mut parent = parent_ref.lock().unwrap();
+            let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
                 0.0,
                 0.0,
@@ -1145,7 +1145,7 @@ mod tests {
 
         // With only one child, gap should not be applied
         // Child should still fit within parent
-        let parent = parent_ref.lock().unwrap();
+        let parent = parent_ref.lock().expect("widget lock poisoned");
         let parent_layout = parent.layout.clone().unwrap();
         let content_width = parent_layout.width
             - parent.style.padding.get_left()
