@@ -657,8 +657,24 @@ impl Runtime {
             Expression::Literal(literal) => self.evaluate_literal(literal),
             Expression::Unary(unary) => {
                 let value = self.evaluate_expression(&unary.value)?;
-                // Unary operations (currently not fully implemented in parser)
-                Ok(value)
+                match unary.operator {
+                    Operator::Minus => match value {
+                        Value::Integer(i) => Ok(Value::Integer(-i)),
+                        Value::Float(f) => Ok(Value::Float(-f)),
+                        _ => Err(VMError::TypeMismatch(format!(
+                            "Cannot negate {:?}",
+                            value
+                        ))),
+                    },
+                    Operator::Not => match value {
+                        Value::Boolean(b) => Ok(Value::Boolean(!b)),
+                        _ => Err(VMError::TypeMismatch(format!(
+                            "Cannot negate (!) {:?}",
+                            value
+                        ))),
+                    },
+                    _ => unreachable!(),
+                }
             }
             Expression::Binary(binary) => {
                 let left = self.evaluate_expression(&binary.left)?;

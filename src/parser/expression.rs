@@ -18,8 +18,8 @@ pub enum Expression {
 }
 
 impl Expression {
-    pub fn new_unary(value: Expression) -> Expression {
-        Expression::Unary(Unary::new(value))
+    pub fn new_unary(operator: Operator, value: Expression) -> Expression {
+        Expression::Unary(Unary::new(operator, value))
     }
     pub fn new_binary(left: Expression, operator: Operator, right: Expression) -> Expression {
         Expression::Binary(Binary::new(left, operator, right))
@@ -121,12 +121,14 @@ pub struct Grouping {
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct Unary {
+    pub operator: Operator,
     pub value: Box<Expression>,
 }
 
 impl Unary {
-    pub fn new(value: Expression) -> Unary {
+    pub fn new(operator: Operator, value: Expression) -> Unary {
         Unary {
+            operator,
             value: Box::new(value),
         }
     }

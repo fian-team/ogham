@@ -72,6 +72,17 @@ impl UI {
     }
 
     pub fn call_event(&mut self, event: &Event) -> bool {
+        if event.name == "mouse_move" {
+            if let Some(point) = &event.point {
+                let changed = self.update_hover(point);
+                if changed {
+                    self.mark_dirty();
+                }
+                return changed;
+            }
+            return false;
+        }
+
         if let Some(point) = &event.point {
             // For click events, clear focus before handling
             // Create context without focused widget since we're clearing focus
@@ -121,6 +132,33 @@ impl UI {
             return root.handle_event(event, ctx, &self.root.clone());
         }
         false
+    }
+
+    /// Walk the widget tree and set `hovered = true` on every widget in the
+    /// path from the root to the deepest widget that contains `point`.
+    /// All other widgets are set to `hovered = false`. Returns `true` if
+    /// any widget's hover state changed.
+    fn update_hover(&mut self, point: &Point) -> bool {
+        let root = self.root.clone();
+        Self::update_hover_recursive(&root, point)
+    }
+
+    fn update_hover_recursive(widget_ref: &WidgetRef, point: &Point) -> bool {
+        let mut widget = widget_ref.lock().expect("widget lock poisoned");
+        let hit = widget.contains_point(point);
+
+        let was_hovered = widget.is_hovered();
+        widget.set_hovered(hit);
+        let mut changed = was_hovered != hit;
+
+        let children = widget.get_children_mut();
+        drop(widget);
+
+        for child in &children {
+            changed |= Self::update_hover_recursive(child, point);
+        }
+
+        changed
     }
 
     /// Updates the bounds of widgets in the hierarchy within the constraints provided (typically the screen size).
@@ -245,6 +283,16 @@ pub trait Widget: Downcast {
     // fn unfocus(&mut self);
     fn get_children_mut(&mut self) -> Vec<WidgetRef> {
         Vec::new()
+    }
+
+    /// Mark this widget as hovered or not. Widgets that store a `hover_style`
+    /// use this flag to decide whether to merge the override into their
+    /// effective style.
+    fn set_hovered(&mut self, _hovered: bool) {}
+
+    /// Returns whether this widget is currently hovered.
+    fn is_hovered(&self) -> bool {
+        false
     }
 }
 impl_downcast!(Widget);

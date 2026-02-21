@@ -15,6 +15,8 @@ pub struct FlexWidget {
     pub children: Vec<WidgetRef>,
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
     pub style: FlexStyle,
+    pub hover_style: Option<FlexStyle>,
+    pub hovered: bool,
     pub block_interactions: bool,
     pub layout: Option<Rect>,
 }
@@ -25,6 +27,8 @@ impl FlexWidget {
             children: Vec::new(),
             event_listeners: HashMap::new(),
             style: FlexStyle::default(),
+            hover_style: None,
+            hovered: false,
             block_interactions: true,
             layout: None,
         }
@@ -35,9 +39,23 @@ impl FlexWidget {
             children: Vec::new(),
             event_listeners: HashMap::new(),
             style,
+            hover_style: None,
+            hovered: false,
             block_interactions: true,
             layout: None,
         }
+    }
+
+    /// Returns the style to use for layout and rendering. When the widget is
+    /// hovered and a pre-merged `hover_style` is set, returns it; otherwise
+    /// returns the base style.
+    pub fn effective_style(&self) -> &FlexStyle {
+        if self.hovered {
+            if let Some(ref s) = self.hover_style {
+                return s;
+            }
+        }
+        &self.style
     }
 
     pub fn add_child(&mut self, child: WidgetRef) {
@@ -50,6 +68,7 @@ impl Widget for FlexWidget {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_flex_widget) = new_widget.downcast_mut::<FlexWidget>() {
             self.style = new_flex_widget.style.clone();
+            self.hover_style = new_flex_widget.hover_style.clone();
             self.block_interactions = new_flex_widget.block_interactions;
             self.layout = new_flex_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
@@ -743,6 +762,14 @@ impl Widget for FlexWidget {
 
     fn get_type(&self) -> &str {
         "box"
+    }
+
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+
+    fn is_hovered(&self) -> bool {
+        self.hovered
     }
 }
 

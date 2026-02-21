@@ -41,6 +41,8 @@ pub struct TextWidget {
     pub text: String,
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
     pub style: TextStyle,
+    pub hover_style: Option<TextStyle>,
+    pub hovered: bool,
     pub layout: Option<Rect>,
 }
 
@@ -50,6 +52,8 @@ impl TextWidget {
             text,
             event_listeners: HashMap::new(),
             style: TextStyle::default(),
+            hover_style: None,
+            hovered: false,
             layout: None,
         }
     }
@@ -59,8 +63,22 @@ impl TextWidget {
             text,
             event_listeners: HashMap::new(),
             style: TextStyle::default().with_color(color),
+            hover_style: None,
+            hovered: false,
             layout: None,
         }
+    }
+
+    /// Returns the style to use for rendering. When the widget is hovered and
+    /// a pre-merged `hover_style` is set, returns it; otherwise returns the
+    /// base style.
+    pub fn effective_style(&self) -> &TextStyle {
+        if self.hovered {
+            if let Some(ref s) = self.hover_style {
+                return s;
+            }
+        }
+        &self.style
     }
 
     fn build_paragraph(&self) -> skia_safe::textlayout::Paragraph {
@@ -110,6 +128,7 @@ impl Widget for TextWidget {
         if let Some(new_text_widget) = new_widget.downcast_mut::<TextWidget>() {
             self.text = new_text_widget.text.clone();
             self.style = new_text_widget.style.clone();
+            self.hover_style = new_text_widget.hover_style.clone();
             self.layout = new_text_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
             std::mem::swap(
@@ -318,5 +337,13 @@ impl Widget for TextWidget {
 
     fn get_children_mut(&mut self) -> Vec<WidgetRef> {
         Vec::new()
+    }
+
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+
+    fn is_hovered(&self) -> bool {
+        self.hovered
     }
 }

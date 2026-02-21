@@ -133,6 +133,193 @@ fn optional_style_map<'a>(parser_widget: &'a RuntimeWidget) -> Option<&'a HashMa
     }
 }
 
+fn optional_hover_style_map<'a>(
+    parser_widget: &'a RuntimeWidget,
+) -> Option<&'a HashMap<String, Value>> {
+    match parser_widget.properties.get("hover_style") {
+        Some(Value::Map(map)) => Some(map),
+        _ => None,
+    }
+}
+
+/// Clone the base `FlexStyle` and apply hover overrides from the map on top.
+fn apply_flex_hover_style(base: &FlexStyle, style_map: &HashMap<String, Value>) -> FlexStyle {
+    let mut s = base.clone();
+    for (key, value) in style_map {
+        match key.as_str() {
+            "direction" => {
+                if let Value::String(dir_str) = value {
+                    s.direction = match dir_str.to_lowercase().as_str() {
+                        "row" => Direction::Row,
+                        "column" => Direction::Column,
+                        "row_reverse" => Direction::RowReverse,
+                        "column_reverse" => Direction::ColumnReverse,
+                        _ => continue,
+                    };
+                }
+            }
+            "main_alignment" => {
+                if let Value::String(v) = value {
+                    if let Some(a) = parse_flex_alignment(v) {
+                        s.main_alignment = a;
+                    }
+                }
+            }
+            "cross_alignment" => {
+                if let Value::String(v) = value {
+                    if let Some(a) = parse_flex_alignment(v) {
+                        s.cross_alignment = a;
+                    }
+                }
+            }
+            "width" => {
+                if let Some(sz) = parse_size_value(value) {
+                    s.width = sz;
+                }
+            }
+            "height" => {
+                if let Some(sz) = parse_size_value(value) {
+                    s.height = sz;
+                }
+            }
+            "gap" => {
+                if let Some(g) = value_to_f32(value) {
+                    s.gap = g;
+                }
+            }
+            "padding" => {
+                if let Some(p) = parse_padding_value(value) {
+                    s.padding = p;
+                }
+            }
+            "margin" => {
+                if let Some(m) = parse_margin_value(value) {
+                    s.margin = m;
+                }
+            }
+            "background_color" => {
+                if let Some(color) = parse_color_value(value) {
+                    s.background_color = Some(color);
+                }
+            }
+            "border" => {
+                if let Some(border) = parse_border_value(value) {
+                    s.border = border;
+                }
+            }
+            "corner_radius" => {
+                if let Some(cr) = parse_corner_radii_value(value) {
+                    s.corner_radii = cr;
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+/// Clone the base `TextStyle` and apply hover overrides from the map on top.
+fn apply_text_hover_style(base: &TextStyle, style_map: &HashMap<String, Value>) -> TextStyle {
+    let mut s = base.clone();
+    for (key, value) in style_map {
+        match key.as_str() {
+            "size" => {
+                if let Some(sz) = value_to_f32(value) {
+                    s.size = sz;
+                }
+            }
+            "color" => {
+                if let Some(c) = parse_color_value(value) {
+                    s.color = c;
+                }
+            }
+            "align" => {
+                if let Value::String(v) = value {
+                    if let Some(a) = parse_text_align(v) {
+                        s.align = a;
+                    }
+                }
+            }
+            "weight" => {
+                if let Value::String(v) = value {
+                    s.weight = match v.to_lowercase().as_str() {
+                        "normal" => FontWeight::Normal,
+                        "bold" => FontWeight::Bold,
+                        "semi_bold" | "semibold" => FontWeight::SemiBold,
+                        "light" => FontWeight::Light,
+                        _ => continue,
+                    };
+                }
+            }
+            "decoration" => {
+                if let Value::String(v) = value {
+                    s.decoration = match v.to_lowercase().as_str() {
+                        "none" => TextDecoration::None,
+                        "underline" => TextDecoration::Underline,
+                        "strikethrough" => TextDecoration::Strikethrough,
+                        _ => continue,
+                    };
+                }
+            }
+            "width" => {
+                if let Some(sz) = parse_size_value(value) {
+                    s.width = sz;
+                }
+            }
+            "height" => {
+                if let Some(sz) = parse_size_value(value) {
+                    s.height = sz;
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+fn parse_size_value(value: &Value) -> Option<Size> {
+    match value {
+        Value::Float(f) => Some(Size::Fixed(*f as f32)),
+        Value::Integer(i) => Some(Size::Fixed(*i as f32)),
+        Value::String(s) => match s.to_lowercase().as_str() {
+            "shrink" => Some(Size::Shrink),
+            "grow" => Some(Size::Grow(1.0)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_padding_value(value: &Value) -> Option<Padding> {
+    match value {
+        Value::Float(f) => Some(Padding::all(*f as f32)),
+        Value::Integer(i) => Some(Padding::all(*i as f32)),
+        Value::Map(map) => {
+            let top = get_float_from_map(map, "top", 0.0);
+            let right = get_float_from_map(map, "right", 0.0);
+            let bottom = get_float_from_map(map, "bottom", 0.0);
+            let left = get_float_from_map(map, "left", 0.0);
+            Some(Padding::new(top, right, bottom, left))
+        }
+        _ => None,
+    }
+}
+
+fn parse_margin_value(value: &Value) -> Option<Margin> {
+    match value {
+        Value::Float(f) => Some(Margin::all(*f as f32)),
+        Value::Integer(i) => Some(Margin::all(*i as f32)),
+        Value::Map(map) => {
+            let top = get_float_from_map(map, "top", 0.0);
+            let right = get_float_from_map(map, "right", 0.0);
+            let bottom = get_float_from_map(map, "bottom", 0.0);
+            let left = get_float_from_map(map, "left", 0.0);
+            Some(Margin::new(top, right, bottom, left))
+        }
+        _ => None,
+    }
+}
+
 fn create_flex_widget(
     runtime: &Arc<Mutex<Runtime>>,
     parser_widget: &RuntimeWidget,
@@ -332,7 +519,9 @@ fn create_flex_widget(
 
     flex_widget.style = style_builder.build();
 
-    // println!("Flex widget style: {:?}", flex_widget.style);
+    if let Some(hover_map) = optional_hover_style_map(parser_widget) {
+        flex_widget.hover_style = Some(apply_flex_hover_style(&flex_widget.style, hover_map));
+    }
 
     // Add children
     for child in children {
@@ -429,8 +618,6 @@ fn create_text_widget(
         }
     }
 
-    // Build full style; preserve all fields (including alignment), while keeping existing
-    // behavior of defaulting via TextStyle.
     let mut text_widget = TextWidget::new(text);
     let mut style = style_builder.build();
     if let Some(w) = width_override {
@@ -440,6 +627,11 @@ fn create_text_widget(
         style.height = h;
     }
     text_widget.style = style;
+
+    if let Some(hover_map) = optional_hover_style_map(parser_widget) {
+        text_widget.hover_style = Some(apply_text_hover_style(&text_widget.style, hover_map));
+    }
+
     Ok(Arc::new(Mutex::new(text_widget)))
 }
 
@@ -665,6 +857,13 @@ fn create_text_input_widget(
 
     text_input.style = style_builder.build();
     text_input.text_style = text_style_builder.build();
+
+    if let Some(hover_map) = optional_hover_style_map(parser_widget) {
+        text_input.hover_style =
+            Some(apply_flex_hover_style(&text_input.style, hover_map));
+        text_input.hover_text_style =
+            Some(apply_text_hover_style(&text_input.text_style, hover_map));
+    }
 
     Ok(Arc::new(Mutex::new(text_input)))
 }

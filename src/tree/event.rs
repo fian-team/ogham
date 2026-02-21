@@ -151,4 +151,8 @@ impl Event {
     pub fn keypress(key_code: u32, character: Option<char>, modifiers: KeyModifiers) -> Self {
         Self::with_keyboard("keypress".to_string(), key_code, character, modifiers)
     }
+
+    pub fn keyup(key_code: u32, character: Option<char>, modifiers: KeyModifiers) -> Self {
+        Self::with_keyboard("keyup".to_string(), key_code, character, modifiers)
+    }
 }

@@ -683,8 +683,17 @@ impl Parser {
                 }
             }
         }
-        let expression = self.primary();
-        expression
+        if self.next_is(vec![scanner::TokenType::Minus]) {
+            self.consume();
+            let operand = self.unary()?;
+            return Ok(Expression::new_unary(Operator::Minus, operand));
+        }
+        if self.next_is(vec![scanner::TokenType::Not]) {
+            self.consume();
+            let operand = self.unary()?;
+            return Ok(Expression::new_unary(Operator::Not, operand));
+        }
+        self.primary()
     }
 
     pub fn primary(&mut self) -> Result<Expression, SyntaxError> {
@@ -1063,5 +1072,98 @@ mod tests {
     fn parse_binary_expression_precedence() {
         let module = parse("let x = 1 + 2 * 3;");
         assert_eq!(module.body.statement_list.len(), 1);
+    }
+
+    #[test]
+    fn parse_unary_negation_integer() {
+        let module = parse("let x = -5;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match expr {
+            Expression::Unary(unary) => {
+                assert_eq!(unary.operator, Operator::Minus);
+                assert_eq!(*unary.value, Expression::Literal(Literal::Integer(5)));
+            }
+            other => panic!("Expected Unary, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_unary_not() {
+        let module = parse("let x = !true;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match expr {
+            Expression::Unary(unary) => {
+                assert_eq!(unary.operator, Operator::Not);
+                assert_eq!(*unary.value, Expression::Literal(Literal::Boolean(true)));
+            }
+            other => panic!("Expected Unary, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_double_negation() {
+        let module = parse("let x = --5;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match &expr {
+            Expression::Unary(outer) => {
+                assert_eq!(outer.operator, Operator::Minus);
+                match outer.value.as_ref() {
+                    Expression::Unary(inner) => {
+                        assert_eq!(inner.operator, Operator::Minus);
+                        assert_eq!(*inner.value, Expression::Literal(Literal::Integer(5)));
+                    }
+                    other => panic!("Expected inner Unary, got {:?}", other),
+                }
+            }
+            other => panic!("Expected outer Unary, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_binary_minus_with_unary_minus() {
+        let module = parse("let x = 0 - -5;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match &expr {
+            Expression::Binary(binary) => {
+                assert_eq!(binary.operator, Operator::Minus);
+                assert_eq!(*binary.left, Expression::Literal(Literal::Integer(0)));
+                match binary.right.as_ref() {
+                    Expression::Unary(unary) => {
+                        assert_eq!(unary.operator, Operator::Minus);
+                        assert_eq!(*unary.value, Expression::Literal(Literal::Integer(5)));
+                    }
+                    other => panic!("Expected Unary on right, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Binary, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_unary_negation_float() {
+        let module = parse("let x = -3.14;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match expr {
+            Expression::Unary(unary) => {
+                assert_eq!(unary.operator, Operator::Minus);
+                assert_eq!(*unary.value, Expression::Literal(Literal::Float(3.14)));
+            }
+            other => panic!("Expected Unary, got {:?}", other),
+        }
     }
 }

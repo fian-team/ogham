@@ -140,96 +140,112 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 },
                 ..
             } => {
-                // Only process key events on key up (Released)
-                if *state == ElementState::Released {
-                    // Create a simple key modifiers struct
-                    let key_modifiers = KeyModifiers::new();
+                let key_modifiers = KeyModifiers {
+                    ctrl: self.modifiers.state().control_key(),
+                    alt: self.modifiers.state().alt_key(),
+                    shift: self.modifiers.state().shift_key(),
+                    meta: self.modifiers.state().super_key(),
+                };
 
-                    // Handle both keydown and keypress events
-                    let mut ui_handled = false;
+                let mut ui_handled = false;
 
-                    // Convert key to a numeric representation for our event system
-                    let key_code = match logical_key {
-                        Key::Character(c) => c.chars().next().unwrap_or(' ') as u32,
-                        _ => {
-                            // Convert the key to a string using debug formatting and map it to key codes
-                            let key_str = format!("{:?}", logical_key);
-                            match key_str.as_str() {
-                                "Backspace" => 8,
-                                "Tab" => 9,
-                                "Enter" => 13,
-                                "Escape" => 27,
-                                "Space" => 32,
-                                "ArrowLeft" => 37,
-                                "ArrowUp" => 38,
-                                "ArrowRight" => 39,
-                                "ArrowDown" => 40,
-                                "Delete" => 46,
-                                "Home" => 36,
-                                "End" => 35,
-                                _ => {
-                                    // For other named keys, try to extract the key name and map it
-                                    if key_str.starts_with("Named(") && key_str.ends_with(")") {
-                                        let key_name = &key_str[6..key_str.len() - 1];
-                                        match key_name {
-                                            "ArrowLeft" => 37,
-                                            "ArrowUp" => 38,
-                                            "ArrowRight" => 39,
-                                            "ArrowDown" => 40,
-                                            "Backspace" => 8,
-                                            "Tab" => 9,
-                                            "Enter" => 13,
-                                            "Escape" => 27,
-                                            "Space" => 32,
-                                            "Delete" => 46,
-                                            "Home" => 36,
-                                            "End" => 35,
-                                            _ => 0, // Unknown named key
-                                        }
-                                    } else {
-                                        0 // Unknown key
+                let key_code = match logical_key {
+                    Key::Character(c) => c.chars().next().unwrap_or(' ') as u32,
+                    _ => {
+                        let key_str = format!("{:?}", logical_key);
+                        match key_str.as_str() {
+                            "Backspace" => 8,
+                            "Tab" => 9,
+                            "Enter" => 13,
+                            "Escape" => 27,
+                            "Space" => 32,
+                            "ArrowLeft" => 37,
+                            "ArrowUp" => 38,
+                            "ArrowRight" => 39,
+                            "ArrowDown" => 40,
+                            "Delete" => 46,
+                            "Home" => 36,
+                            "End" => 35,
+                            _ => {
+                                if key_str.starts_with("Named(")
+                                    && key_str.ends_with(")")
+                                {
+                                    let key_name =
+                                        &key_str[6..key_str.len() - 1];
+                                    match key_name {
+                                        "ArrowLeft" => 37,
+                                        "ArrowUp" => 38,
+                                        "ArrowRight" => 39,
+                                        "ArrowDown" => 40,
+                                        "Backspace" => 8,
+                                        "Tab" => 9,
+                                        "Enter" => 13,
+                                        "Escape" => 27,
+                                        "Space" => 32,
+                                        "Delete" => 46,
+                                        "Home" => 36,
+                                        "End" => 35,
+                                        _ => 0,
                                     }
+                                } else {
+                                    0
                                 }
                             }
                         }
-                    };
+                    }
+                };
 
-                    // Always send keydown event
+                if *state == ElementState::Pressed {
                     let keydown_event = Event::keydown(
                         key_code,
-                        None, // Character will be handled in keypress
+                        None,
                         key_modifiers.clone(),
                     );
-                    ui_handled |= self.client.handle_ui_event(&keydown_event);
+                    ui_handled |=
+                        self.client.handle_ui_event(&keydown_event);
 
-                    // Send keypress event for printable characters
                     if let Key::Character(c) = logical_key {
                         if let Some(character) = c.chars().next() {
-                            let keypress_event =
-                                Event::keypress(key_code, Some(character), key_modifiers);
-                            ui_handled |= self.client.handle_ui_event(&keypress_event);
+                            let keypress_event = Event::keypress(
+                                key_code,
+                                Some(character),
+                                key_modifiers,
+                            );
+                            ui_handled |= self
+                                .client
+                                .handle_ui_event(&keypress_event);
                         }
                     } else if key_code == 32 {
-                        // Handle space key (which comes as NamedKey::Space, not Character)
-                        let keypress_event = Event::keypress(key_code, Some(' '), key_modifiers);
-                        ui_handled |= self.client.handle_ui_event(&keypress_event);
-                    }
-
-                    if self.client.needs_ui_update() {
-                        let logical_size: LogicalSize<f64> = self
-                            .window
-                            .inner_size()
-                            .to_logical(self.window.scale_factor());
-                        self.client.update_ui_layout(
-                            logical_size.width as f32,
-                            logical_size.height as f32,
+                        let keypress_event = Event::keypress(
+                            key_code,
+                            Some(' '),
+                            key_modifiers,
                         );
+                        ui_handled |=
+                            self.client.handle_ui_event(&keypress_event);
                     }
-
-                    ui_handled
                 } else {
-                    false
+                    let keyup_event = Event::keyup(
+                        key_code,
+                        None,
+                        key_modifiers,
+                    );
+                    ui_handled |=
+                        self.client.handle_ui_event(&keyup_event);
                 }
+
+                if self.client.needs_ui_update() {
+                    let logical_size: LogicalSize<f64> = self
+                        .window
+                        .inner_size()
+                        .to_logical(self.window.scale_factor());
+                    self.client.update_ui_layout(
+                        logical_size.width as f32,
+                        logical_size.height as f32,
+                    );
+                }
+
+                ui_handled
             }
             _ => false,
         };
@@ -265,6 +281,12 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 let x = position.x as f32 / scale_factor as f32;
                 let y = position.y as f32 / scale_factor as f32;
                 self.input.move_cursor(glm::vec2(x, y));
+
+                let ui_event = Event::with_point(
+                    "mouse_move".to_string(),
+                    Point::new(x, y),
+                );
+                self.client.handle_ui_event(&ui_event);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 match delta {

@@ -660,7 +660,11 @@ impl Compiler {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Unary(unary) => {
                 self.compile_expression(&unary.value)?;
-                self.emit(OpCode::Negate);
+                match unary.operator {
+                    Operator::Minus => self.emit(OpCode::Negate),
+                    Operator::Not => self.emit(OpCode::Not),
+                    _ => unreachable!(),
+                };
                 Ok(())
             }
             Expression::Binary(binary) => {
