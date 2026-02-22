@@ -182,6 +182,12 @@ impl SkiaEnv {
     ) {
         let style = widget.effective_style();
 
+        // Inset each side by half its stroke width so borders draw inside the element
+        let half_top = self.scale_stroke(style.border.top.width) / 2.0;
+        let half_right = self.scale_stroke(style.border.right.width) / 2.0;
+        let half_bottom = self.scale_stroke(style.border.bottom.width) / 2.0;
+        let half_left = self.scale_stroke(style.border.left.width) / 2.0;
+
         if style.border.top.width > 0.0 {
             self.paint.set_style(PaintStyle::Stroke);
             self.paint
@@ -192,8 +198,8 @@ impl SkiaEnv {
                 style.border.top.color.g,
                 style.border.top.color.b,
             ));
-            self.move_to(x, y);
-            self.line_to(x + width, y);
+            self.move_to(x + half_left, y + half_top);
+            self.line_to(x + width - half_right, y + half_top);
             self.stroke();
         }
 
@@ -207,8 +213,8 @@ impl SkiaEnv {
                 style.border.right.color.g,
                 style.border.right.color.b,
             ));
-            self.move_to(x + width, y);
-            self.line_to(x + width, y + height);
+            self.move_to(x + width - half_right, y + half_top);
+            self.line_to(x + width - half_right, y + height - half_bottom);
             self.stroke();
         }
 
@@ -222,8 +228,8 @@ impl SkiaEnv {
                 style.border.bottom.color.g,
                 style.border.bottom.color.b,
             ));
-            self.move_to(x + width, y + height);
-            self.line_to(x, y + height);
+            self.move_to(x + width - half_right, y + height - half_bottom);
+            self.line_to(x + half_left, y + height - half_bottom);
             self.stroke();
         }
 
@@ -237,8 +243,8 @@ impl SkiaEnv {
                 style.border.left.color.g,
                 style.border.left.color.b,
             ));
-            self.move_to(x, y + height);
-            self.line_to(x, y);
+            self.move_to(x + half_left, y + height - half_bottom);
+            self.line_to(x + half_left, y + half_top);
             self.stroke();
         }
     }
@@ -389,7 +395,8 @@ impl Surface for SkiaEnv {
             || style.corner_radii.bottom_left > 0.0
             || style.corner_radii.bottom_right > 0.0
         {
-            let rect = Rect::new(x, y, x + width, y + height);
+            let half = self.scale_stroke(border_width) / 2.0;
+            let rect = Rect::new(x + half, y + half, x + width - half, y + height - half);
             let rounded_rect = RRect::new_rect_radii(
                 rect,
                 &[
@@ -564,6 +571,12 @@ impl SkiaEnv {
     ) {
         let style = widget.effective_style();
 
+        // Inset each side by half its stroke width so borders draw inside the element
+        let half_top = self.scale_stroke(style.border.top.width) / 2.0;
+        let half_right = self.scale_stroke(style.border.right.width) / 2.0;
+        let half_bottom = self.scale_stroke(style.border.bottom.width) / 2.0;
+        let half_left = self.scale_stroke(style.border.left.width) / 2.0;
+
         if style.border.top.width > 0.0 {
             self.paint.set_style(PaintStyle::Stroke);
             self.paint
@@ -574,8 +587,8 @@ impl SkiaEnv {
                 style.border.top.color.g,
                 style.border.top.color.b,
             ));
-            self.move_to(x, y);
-            self.line_to(x + width, y);
+            self.move_to(x + half_left, y + half_top);
+            self.line_to(x + width - half_right, y + half_top);
             self.stroke();
         }
 
@@ -589,8 +602,8 @@ impl SkiaEnv {
                 style.border.right.color.g,
                 style.border.right.color.b,
             ));
-            self.move_to(x + width, y);
-            self.line_to(x + width, y + height);
+            self.move_to(x + width - half_right, y + half_top);
+            self.line_to(x + width - half_right, y + height - half_bottom);
             self.stroke();
         }
 
@@ -604,8 +617,8 @@ impl SkiaEnv {
                 style.border.bottom.color.g,
                 style.border.bottom.color.b,
             ));
-            self.move_to(x + width, y + height);
-            self.line_to(x, y + height);
+            self.move_to(x + width - half_right, y + height - half_bottom);
+            self.line_to(x + half_left, y + height - half_bottom);
             self.stroke();
         }
 
@@ -619,8 +632,8 @@ impl SkiaEnv {
                 style.border.left.color.g,
                 style.border.left.color.b,
             ));
-            self.move_to(x, y + height);
-            self.line_to(x, y);
+            self.move_to(x + half_left, y + height - half_bottom);
+            self.line_to(x + half_left, y + half_top);
             self.stroke();
         }
     }
