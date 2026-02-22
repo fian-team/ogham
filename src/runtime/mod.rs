@@ -50,11 +50,12 @@ pub struct Runtime {
     // State management
     pub(crate) component_state: HashMap<String, Value>, // Key format: "{call_stack_path}:{variable_name}"
     pub(crate) call_stack: Vec<String>,                 // Current execution path
-    pub(crate) active_state_paths: HashSet<String>,     // Paths that declared state in current render
+    pub(crate) active_state_paths: HashSet<String>, // Paths that declared state in current render
     pub(crate) has_branched: bool, // Track if branching has occurred in current function
     pub(crate) call_counters: HashMap<String, usize>, // Track call counts per function to generate unique paths
     // Import resolution
     project_root: Option<PathBuf>,
+    import_paths: HashMap<String, PathBuf>,
     import_loading_stack: Vec<PathBuf>,
     import_loaded: HashSet<PathBuf>,
     /// Cached environment per resolved path so re-imports (e.g. view_two importing button)
@@ -77,6 +78,7 @@ impl Runtime {
             has_branched: false,
             call_counters: HashMap::new(),
             project_root: None,
+            import_paths: HashMap::new(),
             import_loading_stack: Vec::new(),
             import_loaded: HashSet::new(),
             import_cache: HashMap::new(),
@@ -89,6 +91,10 @@ impl Runtime {
 
     pub fn project_root(&self) -> Option<&PathBuf> {
         self.project_root.as_ref()
+    }
+
+    pub fn set_import_paths(&mut self, paths: HashMap<String, PathBuf>) {
+        self.import_paths = paths;
     }
 
     pub fn inject_host_state(&mut self, name: String, value: Value) {
@@ -539,13 +545,26 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn execute_import(&mut self, import_stmt: &ImportStatement) -> Result<Value, VMError> {
+    pub(crate) fn execute_import(
+        &mut self,
+        import_stmt: &ImportStatement,
+    ) -> Result<Value, VMError> {
         let project_root = self.project_root.as_ref().ok_or_else(|| {
             VMError::ImportError("project root not set; cannot resolve import path".to_string())
         })?;
 
         let path_str = import_stmt.get_path();
-        let mut resolved = project_root.join(path_str);
+
+        let mut resolved = None;
+        for (prefix, base) in &self.import_paths {
+            if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
+                let rest = rest.strip_prefix('/').unwrap_or(rest);
+                resolved = Some(base.join(rest));
+                break;
+            }
+        }
+        let mut resolved = resolved.unwrap_or_else(|| project_root.join(path_str));
+
         if resolved.extension().is_none() {
             resolved.set_extension("ogh");
         }
@@ -661,10 +680,7 @@ impl Runtime {
                     Operator::Minus => match value {
                         Value::Integer(i) => Ok(Value::Integer(-i)),
                         Value::Float(f) => Ok(Value::Float(-f)),
-                        _ => Err(VMError::TypeMismatch(format!(
-                            "Cannot negate {:?}",
-                            value
-                        ))),
+                        _ => Err(VMError::TypeMismatch(format!("Cannot negate {:?}", value))),
                     },
                     Operator::Not => match value {
                         Value::Boolean(b) => Ok(Value::Boolean(!b)),
@@ -1152,6 +1168,10 @@ pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtim
 
         if let Some(ref project_root) = config.project_root {
             runtime.set_project_root(project_root.clone());
+        }
+
+        if !config.import_paths.is_empty() {
+            runtime.set_import_paths(config.import_paths.clone());
         }
     }
 

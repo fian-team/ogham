@@ -8,6 +8,7 @@ pub struct RuntimeConfig {
     pub host_state: Option<std::collections::HashMap<String, Value>>,
     pub event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> bool + Send + Sync>>,
     pub project_root: Option<PathBuf>,
+    pub import_paths: HashMap<String, PathBuf>,
 }
 
 impl RuntimeConfig {
@@ -31,6 +32,11 @@ impl RuntimeConfig {
 
     pub fn with_project_root(mut self, path: PathBuf) -> Self {
         self.project_root = Some(path);
+        self
+    }
+
+    pub fn with_import_path(mut self, prefix: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        self.import_paths.insert(prefix.into(), path.into());
         self
     }
 }
