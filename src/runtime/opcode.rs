@@ -60,6 +60,8 @@ pub enum OpCode {
     Lt,
     Le,
     Not,
+    And,
+    Or,
 
     // -- Control flow -------------------------------------------------------
     /// Unconditional relative jump (signed offset added to ip).

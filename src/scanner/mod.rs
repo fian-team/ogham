@@ -171,6 +171,22 @@ impl Scanner {
                     self.create_token(TokenType::Not)
                 }
             }
+            '|' => {
+                if self.match_next('|') {
+                    self.consume(); // consume the second '|'
+                    self.create_token(TokenType::Or)
+                } else {
+                    self.create_token(TokenType::Error("Unexpected character '|'".to_owned()))
+                }
+            }
+            '&' => {
+                if self.match_next('&') {
+                    self.consume(); // consume the second '&'
+                    self.create_token(TokenType::And)
+                } else {
+                    self.create_token(TokenType::Error("Unexpected character '&'".to_owned()))
+                }
+            }
             // Other
             '"' => self.consume_string(),
             _ => {
@@ -513,5 +529,24 @@ mod tests {
     fn scan_fat_arrow() {
         let tokens = scan("=>");
         assert_eq!(tokens[0].token_type, TokenType::FatArrow);
+    }
+
+    #[test]
+    fn scan_logical_operators() {
+        let tokens = scan("&& ||");
+        assert_eq!(tokens[0].token_type, TokenType::And);
+        assert_eq!(tokens[1].token_type, TokenType::Or);
+    }
+
+    #[test]
+    fn scan_lone_pipe_is_error() {
+        let tokens = scan("|");
+        assert!(matches!(tokens[0].token_type, TokenType::Error(_)));
+    }
+
+    #[test]
+    fn scan_lone_ampersand_is_error() {
+        let tokens = scan("&");
+        assert!(matches!(tokens[0].token_type, TokenType::Error(_)));
     }
 }

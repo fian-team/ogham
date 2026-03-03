@@ -16,4 +16,7 @@ pub enum Operator {
     Divide,
     // Unary
     Not,
+    // Logical
+    And,
+    Or,
 }

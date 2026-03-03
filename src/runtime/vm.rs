@@ -507,6 +507,36 @@ impl VM {
                         }
                     }
                 }
+                OpCode::And => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    match (a, b) {
+                        (Value::Boolean(a), Value::Boolean(b)) => {
+                            self.push(Value::Boolean(a && b))?
+                        }
+                        (a, b) => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "Cannot apply && to {:?} and {:?}",
+                                a, b
+                            )))
+                        }
+                    }
+                }
+                OpCode::Or => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    match (a, b) {
+                        (Value::Boolean(a), Value::Boolean(b)) => {
+                            self.push(Value::Boolean(a || b))?
+                        }
+                        (a, b) => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "Cannot apply || to {:?} and {:?}",
+                                a, b
+                            )))
+                        }
+                    }
+                }
 
                 // -- Control flow --------------------------------------------
                 OpCode::Jump(offset) => {

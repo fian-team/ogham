@@ -84,6 +84,8 @@ impl Parser {
             scanner::TokenType::Divide => Ok(Operator::Divide),
             scanner::TokenType::Not => Ok(Operator::Not),
             scanner::TokenType::NotEqual => Ok(Operator::NotEquals),
+            scanner::TokenType::Or => Ok(Operator::Or),
+            scanner::TokenType::And => Ok(Operator::And),
             _ => Err(SyntaxError {
                 message: "Invalid operator".to_owned(),
                 line,
@@ -608,7 +610,27 @@ impl Parser {
     }
 
     pub fn expression(&mut self) -> Result<Expression, SyntaxError> {
-        self.equality()
+        self.logical_or()
+    }
+
+    pub fn logical_or(&mut self) -> Result<Expression, SyntaxError> {
+        let mut expression = self.logical_and()?;
+        while self.next_is(vec![scanner::TokenType::Or]) {
+            let operator = self.get_current_as_operator()?;
+            let right = self.logical_and()?;
+            expression = Expression::new_binary(expression, operator, right);
+        }
+        Ok(expression)
+    }
+
+    pub fn logical_and(&mut self) -> Result<Expression, SyntaxError> {
+        let mut expression = self.equality()?;
+        while self.next_is(vec![scanner::TokenType::And]) {
+            let operator = self.get_current_as_operator()?;
+            let right = self.equality()?;
+            expression = Expression::new_binary(expression, operator, right);
+        }
+        Ok(expression)
     }
 
     pub fn equality(&mut self) -> Result<Expression, SyntaxError> {
@@ -1164,6 +1186,81 @@ mod tests {
                 assert_eq!(*unary.value, Expression::Literal(Literal::Float(3.14)));
             }
             other => panic!("Expected Unary, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_logical_or() {
+        let module = parse("let x = a || b;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match &expr {
+            Expression::Binary(binary) => {
+                assert_eq!(binary.operator, Operator::Or);
+            }
+            other => panic!("Expected Binary Or, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_logical_and() {
+        let module = parse("let x = a && b;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match &expr {
+            Expression::Binary(binary) => {
+                assert_eq!(binary.operator, Operator::And);
+            }
+            other => panic!("Expected Binary And, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_logical_precedence_and_binds_tighter_than_or() {
+        let module = parse("let x = a || b && c;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match &expr {
+            Expression::Binary(binary) => {
+                assert_eq!(binary.operator, Operator::Or);
+                match binary.right.as_ref() {
+                    Expression::Binary(inner) => {
+                        assert_eq!(inner.operator, Operator::And);
+                    }
+                    other => panic!("Expected inner Binary And, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Binary Or, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_logical_with_grouping() {
+        let module = parse("let x = (a || b) && c;");
+        let expr = match &module.body.statement_list[0] {
+            Statement::Declare(decl) => decl.get_value(),
+            other => panic!("Expected Declare, got {:?}", other),
+        };
+        match &expr {
+            Expression::Binary(binary) => {
+                assert_eq!(binary.operator, Operator::And);
+                match binary.left.as_ref() {
+                    Expression::Grouping(g) => match g.value.as_ref() {
+                        Expression::Binary(inner) => {
+                            assert_eq!(inner.operator, Operator::Or);
+                        }
+                        other => panic!("Expected inner Binary Or, got {:?}", other),
+                    },
+                    other => panic!("Expected Grouping, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Binary And, got {:?}", other),
         }
     }
 }

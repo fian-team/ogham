@@ -32,6 +32,9 @@ pub enum TokenType {
     LessThanOrEqualTo,    // <=
     Not,                  // !
     NotEqual,             // !=
+    // Logical operators
+    And, // &&
+    Or,  // ||
     // Keywords
     State,
     Let,

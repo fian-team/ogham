@@ -148,6 +148,8 @@ impl Compiler {
             | OpCode::Ge
             | OpCode::Lt
             | OpCode::Le
+            | OpCode::And
+            | OpCode::Or
             | OpCode::GetIndex => -1,
 
             // Pop 2n key-value pairs, push 1
@@ -703,6 +705,12 @@ impl Compiler {
                     }
                     Operator::Not => {
                         self.emit(OpCode::Not);
+                    }
+                    Operator::And => {
+                        self.emit(OpCode::And);
+                    }
+                    Operator::Or => {
+                        self.emit(OpCode::Or);
                     }
                 };
                 Ok(())

@@ -969,6 +969,20 @@ impl Runtime {
             Operator::Not => Err(VMError::InvalidOperation(
                 "Not operator is not a binary operator".to_string(),
             )),
+            Operator::And => match (left, right) {
+                (Value::Boolean(a), Value::Boolean(b)) => Ok(Value::Boolean(*a && *b)),
+                _ => Err(VMError::TypeMismatch(format!(
+                    "Cannot apply && to {:?} and {:?}",
+                    left, right
+                ))),
+            },
+            Operator::Or => match (left, right) {
+                (Value::Boolean(a), Value::Boolean(b)) => Ok(Value::Boolean(*a || *b)),
+                _ => Err(VMError::TypeMismatch(format!(
+                    "Cannot apply || to {:?} and {:?}",
+                    left, right
+                ))),
+            },
         }
     }
 
