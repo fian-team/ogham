@@ -350,6 +350,29 @@ impl Compiler {
         Ok(compiler.function)
     }
 
+    /// Compile an imported module. Unlike [`compile_module`](Self::compile_module),
+    /// this does not look up or call a `main` function. Instead it returns the
+    /// top-level local name-to-slot mapping so the caller can extract exported
+    /// bindings from the VM stack after execution.
+    pub fn compile_import(module: &Function) -> Result<(FunctionProto, Vec<(String, u8)>), VMError> {
+        let mut compiler = Compiler::new("<import>".to_string(), 0);
+        compiler.compile_block(&module.body)?;
+
+        let local_names: Vec<(String, u8)> = compiler
+            .locals
+            .iter()
+            .filter(|l| l.depth == 0)
+            .map(|l| (l.name.clone(), l.slot))
+            .collect();
+
+        compiler.emit(OpCode::Void);
+        compiler.emit(OpCode::Return);
+
+        compiler.function.upvalue_count = compiler.upvalue_descs.len() as u8;
+        compiler.function.upvalues = compiler.upvalue_descs;
+        Ok((compiler.function, local_names))
+    }
+
     // -----------------------------------------------------------------------
     // Block / Statement compilation
     // -----------------------------------------------------------------------
@@ -481,7 +504,7 @@ impl Compiler {
                 // Events are not executed by the runtime.
             }
             Statement::Import(import_stmt) => {
-                self.compile_import(import_stmt)?;
+                self.compile_import_stmt(import_stmt)?;
             }
             Statement::ForLoop(for_loop) => {
                 self.emit(OpCode::MarkBranched);
@@ -495,7 +518,7 @@ impl Compiler {
     // Import
     // -----------------------------------------------------------------------
 
-    fn compile_import(&mut self, import: &crate::parser::ImportStatement) -> Result<(), VMError> {
+    fn compile_import_stmt(&mut self, import: &crate::parser::ImportStatement) -> Result<(), VMError> {
         let meta = ImportMeta {
             names: import.get_names().clone(),
             path: import.get_path().to_string(),

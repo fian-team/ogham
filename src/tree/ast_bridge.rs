@@ -21,30 +21,14 @@ impl From<VMError> for BridgeError {
     }
 }
 
-/// Create a boxed event-listener closure from a `Value` that is either an
-/// AST `Closure` or a bytecode `BytecodeClosure`. Returns `None` if the
-/// value is not a callable.
+/// Create a boxed event-listener closure from a `Value::BytecodeClosure`.
+/// Returns `None` if the value is not a callable.
 fn make_event_listener(
     value: &Value,
     runtime: &Arc<Mutex<Runtime>>,
     event_name: &str,
 ) -> Option<Box<dyn Fn(&Event)>> {
     match value {
-        Value::Closure(closure) => {
-            let rt = runtime.clone();
-            let closure = closure.clone();
-            let ename = event_name.to_string();
-            Some(Box::new(move |_event: &Event| {
-                let result = rt.lock().expect("runtime lock poisoned").call_closure(
-                    &closure,
-                    &[],
-                    &format!("event_handler_{}", ename),
-                );
-                if let Err(err) = result {
-                    eprintln!("[ogham] {} handler error: {:?}", ename, err);
-                }
-            }))
-        }
         Value::BytecodeClosure(closure) => {
             let rt = runtime.clone();
             let closure = closure.clone();
@@ -68,22 +52,6 @@ fn make_event_listener_with_arg(
     event_name: &str,
 ) -> Option<Box<dyn Fn(&Event)>> {
     match value {
-        Value::Closure(closure) => {
-            let rt = runtime.clone();
-            let closure = closure.clone();
-            let ename = event_name.to_string();
-            Some(Box::new(move |event: &Event| {
-                let arg = Value::String(event.value.clone().unwrap_or_default());
-                let result = rt.lock().expect("runtime lock poisoned").call_closure(
-                    &closure,
-                    &[arg],
-                    &format!("event_handler_{}", ename),
-                );
-                if let Err(err) = result {
-                    eprintln!("[ogham] {} handler error: {:?}", ename, err);
-                }
-            }))
-        }
         Value::BytecodeClosure(closure) => {
             let rt = runtime.clone();
             let closure = closure.clone();

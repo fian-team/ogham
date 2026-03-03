@@ -76,7 +76,6 @@ The `Value` enum (`src/runtime/value.rs`) represents all dynamic types:
 | `String(String)` | `String` | |
 | `Map(HashMap<String, Value>)` | `HashMap` | Object-like key-value maps |
 | `Array(Vec<Value>)` | `Vec` | Ordered collections |
-| `Closure(Closure)` | | AST-level closure |
 | `BytecodeClosure(Rc<VMClosure>)` | | Compiled closure |
 | `Widget(RuntimeWidget)` | | A widget produced during execution |
 | `Void` | | Unit / no value |
@@ -368,7 +367,6 @@ ogham/
       config.rs             -- RuntimeConfig builder
       environment.rs        -- variable scoping
       error.rs              -- error types
-      closure.rs            -- closure representation
       opcode.rs             -- bytecode opcodes
       ops.rs                -- arithmetic/comparison operations
       widget.rs             -- runtime widget representation

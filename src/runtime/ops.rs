@@ -1,7 +1,7 @@
 //! Shared arithmetic and comparison operations on [`Value`].
 //!
-//! Both the bytecode VM and the tree-walker (used for imports) delegate
-//! to the helpers in this module so that the logic is defined once.
+//! The bytecode VM delegates to the helpers in this module so that
+//! arithmetic and comparison logic is defined once.
 
 use crate::runtime::error::VMError;
 use crate::runtime::value::Value;

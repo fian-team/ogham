@@ -61,6 +61,19 @@ impl VM {
         }
     }
 
+    /// Extract top-level local variables from the stack after a module has
+    /// finished executing. `local_names` maps variable names to their stack
+    /// slot indices (produced by [`Compiler::compile_import`]).
+    pub fn read_stack_locals(&self, local_names: &[(String, u8)]) -> HashMap<String, Value> {
+        let mut map = HashMap::new();
+        for (name, slot) in local_names {
+            if let Some(value) = self.stack.get(*slot as usize) {
+                map.insert(name.clone(), value.clone());
+            }
+        }
+        map
+    }
+
     // -- Stack helpers ------------------------------------------------------
 
     fn push(&mut self, value: Value) -> Result<(), VMError> {
@@ -143,52 +156,6 @@ impl VM {
             } else {
                 i += 1;
             }
-        }
-    }
-
-    // -- Cross-interpreter upvalue closing -----------------------------------
-
-    /// Recursively walk a `Value` and close any open upvalues found on
-    /// `BytecodeClosure` values.  This must be called before handing
-    /// bytecode closures to the tree-walk interpreter, which may later
-    /// call them inside a *new* VM that does not share our stack.
-    fn close_upvalues_on_value(&mut self, value: &Value) {
-        match value {
-            Value::BytecodeClosure(closure) => {
-                for uv in &closure.upvalues {
-                    let should_close = {
-                        let uv_ref = uv.borrow();
-                        matches!(*uv_ref, Upvalue::Open(_))
-                    };
-                    if should_close {
-                        let idx = match *uv.borrow() {
-                            Upvalue::Open(idx) => idx,
-                            _ => unreachable!(),
-                        };
-                        let val = self.stack[idx].clone();
-                        *uv.borrow_mut() = Upvalue::Closed(val);
-                        // Remove from the VM's open-upvalue list.
-                        self.open_upvalues
-                            .retain(|open_uv| !Rc::ptr_eq(open_uv, uv));
-                    }
-                }
-            }
-            Value::Array(arr) => {
-                for elem in arr {
-                    self.close_upvalues_on_value(elem);
-                }
-            }
-            Value::Map(map) => {
-                for v in map.values() {
-                    self.close_upvalues_on_value(v);
-                }
-            }
-            Value::Widget(widget) => {
-                for v in widget.properties.values() {
-                    self.close_upvalues_on_value(v);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -655,28 +622,6 @@ impl VM {
                             new_frame.saved_call_stack = Some(old_call_stack);
                             new_frame.saved_has_branched = Some(old_has_branched);
                         }
-                        Value::Closure(closure) => {
-                            // Fall back to tree-walk for AST closures.
-                            let args: Vec<Value> = (0..arg_count)
-                                .map(|_| self.pop())
-                                .collect::<Result<Vec<_>, _>>()?
-                                .into_iter()
-                                .rev()
-                                .collect();
-                            self.pop()?; // pop the closure value
-
-                            // Close open upvalues on any BytecodeClosure
-                            // values in the arguments.  The tree-walk
-                            // interpreter may call these via
-                            // call_bytecode_closure, which creates a new
-                            // VM that does not share our stack.
-                            for arg in &args {
-                                self.close_upvalues_on_value(arg);
-                            }
-
-                            let result = runtime.call_closure(&closure, &args, "fn")?;
-                            self.push(result)?;
-                        }
                         _ => {
                             return Err(VMError::TypeMismatch(
                                 "Only functions can be called".to_string(),
@@ -883,10 +828,10 @@ impl VM {
                         VMError::ImportError(format!("Invalid import metadata: {}", meta_str))
                     })?;
 
-                    // Delegate to the existing Runtime import machinery.
-                    // This scans + parses + tree-walk-executes the imported
-                    // file and merges exported names into the runtime's
-                    // Environment.
+                    // Delegate to the Runtime import machinery which
+                    // compiles the imported file to bytecode, runs it in
+                    // a fresh VM, and merges exported names into the
+                    // runtime's Environment.
                     let import_stmt =
                         crate::parser::ImportStatement::new(meta.names.clone(), meta.path.clone());
                     runtime.execute_import(&import_stmt)?;

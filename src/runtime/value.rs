@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-use crate::runtime::{closure::Closure, opcode::VMClosure, widget::RuntimeWidget};
+use crate::runtime::{opcode::VMClosure, widget::RuntimeWidget};
 
 /// A dynamically-typed value produced and consumed by the Ogham runtime.
 #[derive(Clone, Debug)]
@@ -13,7 +13,6 @@ pub enum Value {
     Float(f64),
     Boolean(bool),
     String(String),
-    Closure(Closure),
     /// A bytecode closure produced by the bytecode compiler / VM.
     BytecodeClosure(Rc<VMClosure>),
     Map(HashMap<String, Value>),
@@ -29,7 +28,6 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
-            (Value::Closure(a), Value::Closure(b)) => a == b,
             (Value::BytecodeClosure(a), Value::BytecodeClosure(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
@@ -47,7 +45,6 @@ impl fmt::Display for Value {
             Value::Float(fl) => write!(f, "{}", fl),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "{}", s),
-            Value::Closure(_) => write!(f, "<closure>"),
             Value::BytecodeClosure(_) => write!(f, "<closure>"),
             Value::Map(_) => write!(f, "<map>"),
             Value::Array(_) => write!(f, "<array>"),
