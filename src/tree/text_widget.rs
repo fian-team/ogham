@@ -82,9 +82,8 @@ impl TextWidget {
     }
 
     fn build_paragraph(&self) -> skia_safe::textlayout::Paragraph {
-        // Text layout is requested during layout (not rendering), so we keep a small per-thread
-        // cache of the expensive Skia objects (FontMgr/FontCollection/etc) and just mutate their
-        // parameters for the current measurement.
+        use crate::tree::{with_active_default_font, with_active_font_collection};
+
         TEXT_LAYOUT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
 
@@ -96,7 +95,6 @@ impl TextWidget {
                     TextAlign::Right => SkiaTextAlign::Right,
                 });
 
-            // Color doesn't affect measurement, but Skia requires a foreground paint.
             let c = self.style.get_color();
             let mut paint = Paint::default();
             paint.set_color(skia_safe::Color::from_argb(c.a, c.r, c.g, c.b));
@@ -113,8 +111,23 @@ impl TextWidget {
                 Slant::Upright,
             ));
 
+            if let Some(ref family) = self.style.font {
+                cache
+                    .skia_text_style
+                    .set_font_families(&[family.as_str()]);
+            } else if let Some(default) = with_active_default_font(|f| f.to_string()) {
+                cache
+                    .skia_text_style
+                    .set_font_families(&[default.as_str()]);
+            } else {
+                cache.skia_text_style.set_font_families(&[] as &[&str]);
+            }
+
+            let fc = with_active_font_collection(|fc| fc.clone());
+            let font_collection = fc.as_ref().unwrap_or(&cache.font_collection);
+
             let mut paragraph_builder =
-                ParagraphBuilder::new(&cache.paragraph_style, &cache.font_collection);
+                ParagraphBuilder::new(&cache.paragraph_style, font_collection);
             paragraph_builder.push_style(&cache.skia_text_style);
             paragraph_builder.add_text(self.text.clone());
             paragraph_builder.build()

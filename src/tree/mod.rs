@@ -36,7 +36,10 @@ pub mod text_widget;
 /// Bridge between the AST and the UI tree.
 pub mod ast_bridge;
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
+
+use skia_safe::textlayout::FontCollection;
 
 use crate::tree::{
     event::{Event, EventContext},
@@ -49,6 +52,29 @@ use crate::tree::{
     text_widget::TextWidget,
 };
 
+thread_local! {
+    static ACTIVE_FONT_COLLECTION: RefCell<Option<FontCollection>> = RefCell::new(None);
+    static ACTIVE_DEFAULT_FONT: RefCell<Option<String>> = RefCell::new(None);
+}
+
+/// Run a closure with access to the font collection that was set for the
+/// current layout pass. Returns `None` when no collection has been set.
+pub fn with_active_font_collection<R>(f: impl FnOnce(&FontCollection) -> R) -> Option<R> {
+    ACTIVE_FONT_COLLECTION.with(|cell| {
+        let borrow = cell.borrow();
+        borrow.as_ref().map(f)
+    })
+}
+
+/// Run a closure with the default font family name that was set for the
+/// current layout pass. Returns `None` when no default has been set.
+pub fn with_active_default_font<R>(f: impl FnOnce(&str) -> R) -> Option<R> {
+    ACTIVE_DEFAULT_FONT.with(|cell| {
+        let borrow = cell.borrow();
+        borrow.as_deref().map(f)
+    })
+}
+
 /// The UI root containing the widget tree and global state.
 pub struct UI {
     /// The root element in the widget hierarchy.
@@ -59,6 +85,13 @@ pub struct UI {
     dirty: bool,
     /// Currently-focused widget, if any.
     focused: Option<WidgetRef>,
+    /// Font collection with registered custom fonts. Shared with the
+    /// rendering backend and made available to widgets during layout via
+    /// a thread-local.
+    pub font_collection: Option<FontCollection>,
+    /// Default font family applied to all text widgets that don't specify
+    /// their own `font` in their style.
+    pub default_font: Option<String>,
 }
 
 impl UI {
@@ -68,7 +101,17 @@ impl UI {
             image_cache: ImageCache::new(),
             dirty: true,
             focused: None,
+            font_collection: None,
+            default_font: None,
         }
+    }
+
+    pub fn set_font_collection(&mut self, fc: FontCollection) {
+        self.font_collection = Some(fc);
+    }
+
+    pub fn set_default_font(&mut self, name: String) {
+        self.default_font = Some(name);
     }
 
     pub fn call_event(&mut self, event: &Event) -> bool {
@@ -163,6 +206,19 @@ impl UI {
 
     /// Updates the bounds of widgets in the hierarchy within the constraints provided (typically the screen size).
     pub fn layout(&mut self, width: f32, height: f32) {
+        if let Some(ref fc) = self.font_collection {
+            let fc_clone = fc.clone();
+            ACTIVE_FONT_COLLECTION.with(|cell| {
+                *cell.borrow_mut() = Some(fc_clone);
+            });
+        }
+        if let Some(ref name) = self.default_font {
+            let name_clone = name.clone();
+            ACTIVE_DEFAULT_FONT.with(|cell| {
+                *cell.borrow_mut() = Some(name_clone);
+            });
+        }
+
         let mut root = self.root.lock().expect("widget lock poisoned");
         root.layout(
             0.0,
@@ -174,6 +230,14 @@ impl UI {
             height,
             0.0,
         );
+        drop(root);
+
+        ACTIVE_FONT_COLLECTION.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+        ACTIVE_DEFAULT_FONT.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
     }
 
     /// Reconcile the current hierarchy with a newly-provided hierarchy.

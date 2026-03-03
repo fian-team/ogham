@@ -17,8 +17,11 @@
 //! ).expect("parse and execute");
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use skia_safe::textlayout::FontCollection;
+use skia_safe::{FontMgr, Typeface};
 
 mod file_watcher;
 pub mod parser;
@@ -35,6 +38,13 @@ pub struct Ogham {
     config: runtime::config::RuntimeConfig,
     runtime: Arc<Mutex<runtime::Runtime>>,
     path: Option<String>,
+    font_collection: Option<FontCollection>,
+    /// Raw typeface data keyed by family name, kept so we can rebuild the
+    /// collection after registering additional fonts.
+    registered_typefaces: Vec<(String, Typeface)>,
+    /// Default font family applied to all text widgets that don't set
+    /// their own `font` style property.
+    default_font: Option<String>,
 }
 
 impl Ogham {
@@ -54,6 +64,9 @@ impl Ogham {
             config,
             ui,
             path: Some(path),
+            font_collection: None,
+            registered_typefaces: Vec::new(),
+            default_font: None,
         })
     }
 
@@ -73,6 +86,9 @@ impl Ogham {
             config,
             ui,
             path: None,
+            font_collection: None,
+            registered_typefaces: Vec::new(),
+            default_font: None,
         })
     }
 
@@ -138,7 +154,13 @@ impl Ogham {
             path,
             Some(self.config.clone()),
         )?));
-        let new_ui = Self::create_ui_from_runtime(&new_runtime)?;
+        let mut new_ui = Self::create_ui_from_runtime(&new_runtime)?;
+        if let Some(ref fc) = self.font_collection {
+            new_ui.set_font_collection(fc.clone());
+        }
+        if let Some(ref name) = self.default_font {
+            new_ui.set_default_font(name.clone());
+        }
         self.runtime = new_runtime;
         self.ui = new_ui;
         Ok(())
@@ -153,7 +175,13 @@ impl Ogham {
             source,
             Some(self.config.clone()),
         )?));
-        let new_ui = Self::create_ui_from_runtime(&new_runtime)?;
+        let mut new_ui = Self::create_ui_from_runtime(&new_runtime)?;
+        if let Some(ref fc) = self.font_collection {
+            new_ui.set_font_collection(fc.clone());
+        }
+        if let Some(ref name) = self.default_font {
+            new_ui.set_default_font(name.clone());
+        }
         self.runtime = new_runtime;
         self.ui = new_ui;
         Ok(())
@@ -177,6 +205,55 @@ impl Ogham {
     /// Get the current file path being watched
     pub fn get_path(&self) -> Option<&str> {
         self.path.as_deref()
+    }
+
+    /// Set a default font family that will be used by all text widgets
+    /// that don't explicitly specify a `font` in their style.
+    pub fn set_default_font(&mut self, name: &str) {
+        self.default_font = Some(name.to_string());
+        self.ui.set_default_font(name.to_string());
+    }
+
+    /// Register a named font family from one or more TTF/OTF files.
+    ///
+    /// Each file is loaded as a `Typeface` and registered under the given
+    /// `family` name. Skia will select the appropriate weight automatically
+    /// based on the metadata embedded in each font file.
+    ///
+    /// Can be called multiple times with the same family to add more weights,
+    /// or with different families to register additional fonts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a file cannot be read or does not contain a valid font.
+    pub fn register_font(&mut self, family: &str, paths: &[impl AsRef<Path>]) {
+        let font_mgr = FontMgr::new();
+        for path in paths {
+            let bytes = std::fs::read(path.as_ref())
+                .unwrap_or_else(|e| panic!("failed to read font file {:?}: {}", path.as_ref(), e));
+            let typeface = font_mgr
+                .new_from_data(&bytes, None)
+                .unwrap_or_else(|| panic!("invalid font file: {:?}", path.as_ref()));
+            self.registered_typefaces
+                .push((family.to_string(), typeface));
+        }
+        self.rebuild_font_collection();
+    }
+
+    fn rebuild_font_collection(&mut self) {
+        use skia_safe::textlayout::TypefaceFontProvider;
+
+        let mut provider = TypefaceFontProvider::new();
+        for (family, typeface) in &self.registered_typefaces {
+            provider.register_typeface(typeface.clone(), Some(family.as_str()));
+        }
+
+        let mut fc = FontCollection::new();
+        fc.set_asset_font_manager(Some(provider.into()));
+        fc.set_default_font_manager(FontMgr::new(), None);
+
+        self.ui.set_font_collection(fc.clone());
+        self.font_collection = Some(fc);
     }
 
     /// If the runtime has flagged a rerender, re-execute the module,

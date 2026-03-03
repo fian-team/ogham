@@ -368,6 +368,9 @@ pub struct TextStyle {
     pub width: Size,
     /// Controls layout height behavior for text widgets.
     pub height: Size,
+    /// Optional registered font family name (e.g. `"heading"`).
+    /// When `None`, the system default font is used.
+    pub font: Option<String>,
 }
 
 impl TextStyle {
@@ -389,6 +392,10 @@ impl TextStyle {
 
     pub fn get_align(&self) -> TextAlign {
         self.align
+    }
+
+    pub fn get_font(&self) -> Option<&str> {
+        self.font.as_deref()
     }
 
     pub fn with_color(mut self, color: Color) -> Self {
@@ -505,6 +512,12 @@ impl TextStyleBuilder {
         self
     }
 
+    /// Sets the font family name (must match a registered font)
+    pub fn font(mut self, name: String) -> Self {
+        self.style.font = Some(name);
+        self
+    }
+
     /// Builds the TextStyle
     pub fn build(self) -> TextStyle {
         self.style
@@ -530,6 +543,7 @@ impl Default for TextStyle {
             // Preserve historical behavior: text expands to fill its allocation by default.
             width: Size::Grow(1.0),
             height: Size::Grow(1.0),
+            font: None,
         }
     }
 }

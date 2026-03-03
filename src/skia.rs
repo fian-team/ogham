@@ -28,6 +28,7 @@ pub struct SkiaEnv {
     pub font_collection: FontCollection,
     pub text_style: TextStyle,
     pub dpi_scale: f32,
+    pub default_font: Option<String>,
 }
 
 impl SkiaEnv {
@@ -53,6 +54,7 @@ impl SkiaEnv {
             font_collection,
             text_style,
             dpi_scale,
+            default_font: None,
         }
     }
 
@@ -252,8 +254,25 @@ impl SkiaEnv {
 
 impl Surface for SkiaEnv {
     fn draw(&mut self, ui: &mut UI) {
+        let saved_fc = if let Some(ref fc) = ui.font_collection {
+            let old = std::mem::replace(&mut self.font_collection, fc.clone());
+            Some(old)
+        } else {
+            None
+        };
+        let saved_default_font = if ui.default_font.is_some() {
+            std::mem::replace(&mut self.default_font, ui.default_font.clone())
+        } else {
+            None
+        };
+
         let focused = ui.get_focused().map(|f| f.clone());
         self.draw_widget(&ui.root, focused.as_ref(), &mut ui.image_cache);
+
+        if let Some(old) = saved_fc {
+            self.font_collection = old;
+        }
+        self.default_font = saved_default_font;
     }
 
     fn draw_widget(
@@ -444,6 +463,13 @@ impl Surface for SkiaEnv {
                 Width::NORMAL,
                 Slant::Upright,
             ));
+            if let Some(ref family) = style.font {
+                self.text_style.set_font_families(&[family.as_str()]);
+            } else if let Some(ref default) = self.default_font {
+                self.text_style.set_font_families(&[default.as_str()]);
+            } else {
+                self.text_style.set_font_families(&[] as &[&str]);
+            }
             self.paragraph_style
                 .set_text_align(match style.get_align() {
                     TextAlign::Left => SkiaTextAlign::Left,
@@ -504,6 +530,11 @@ impl Surface for SkiaEnv {
                 Width::NORMAL,
                 Slant::Upright,
             ));
+            if let Some(ref default) = self.default_font {
+                self.text_style.set_font_families(&[default.as_str()]);
+            } else {
+                self.text_style.set_font_families(&[] as &[&str]);
+            }
 
             self.paragraph_style.set_text_align(SkiaTextAlign::Left);
             let mut paragraph_builder =
@@ -658,6 +689,13 @@ impl SkiaEnv {
                 Width::NORMAL,
                 Slant::Upright,
             ));
+            if let Some(ref family) = style.font {
+                self.text_style.set_font_families(&[family.as_str()]);
+            } else if let Some(ref default) = self.default_font {
+                self.text_style.set_font_families(&[default.as_str()]);
+            } else {
+                self.text_style.set_font_families(&[] as &[&str]);
+            }
             self.paragraph_style
                 .set_text_align(match style.get_align() {
                     TextAlign::Left => SkiaTextAlign::Left,
@@ -741,6 +779,13 @@ impl SkiaEnv {
                 Width::NORMAL,
                 Slant::Upright,
             ));
+            if let Some(ref family) = text_style.font {
+                self.text_style.set_font_families(&[family.as_str()]);
+            } else if let Some(ref default) = self.default_font {
+                self.text_style.set_font_families(&[default.as_str()]);
+            } else {
+                self.text_style.set_font_families(&[] as &[&str]);
+            }
 
             self.paragraph_style
                 .set_text_align(match text_style.align {

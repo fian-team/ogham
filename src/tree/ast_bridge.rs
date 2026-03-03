@@ -271,6 +271,11 @@ fn apply_text_hover_style(base: &TextStyle, style_map: &HashMap<String, Value>) 
                     s.height = sz;
                 }
             }
+            "font" => {
+                if let Value::String(v) = value {
+                    s.font = Some(v.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -613,6 +618,11 @@ fn create_text_widget(
                         }
                     }
                 }
+                "font" => {
+                    if let Value::String(s) = value {
+                        style_builder = style_builder.font(s.clone());
+                    }
+                }
                 _ => {}
             }
         }
@@ -848,6 +858,11 @@ fn create_text_input_widget(
                             }
                             _ => {}
                         }
+                    }
+                }
+                "font" => {
+                    if let Value::String(s) = value {
+                        text_style_builder = text_style_builder.font(s.clone());
                     }
                 }
                 _ => {}
