@@ -107,6 +107,25 @@ impl Runtime {
         self.host_state.get(name).cloned()
     }
 
+    /// Inject multiple host state values at once. Only values that differ
+    /// from the currently stored value are inserted, and `request_rerender`
+    /// is called automatically if anything changed.
+    pub fn inject_host_state_batch(
+        &mut self,
+        values: impl IntoIterator<Item = (String, Value)>,
+    ) {
+        let mut changed = false;
+        for (key, value) in values {
+            if self.host_state.get(&key) != Some(&value) {
+                self.host_state.insert(key, value);
+                changed = true;
+            }
+        }
+        if changed {
+            self.request_rerender();
+        }
+    }
+
     pub fn register_event_handler<S, F>(&mut self, name: S, handler: F)
     where
         S: Into<String>,

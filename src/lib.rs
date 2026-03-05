@@ -58,16 +58,18 @@ impl Ogham {
         let ui = Self::create_ui_from_runtime(&runtime)?;
         let watch_paths = Self::paths_to_watch(&path, &runtime);
         let watcher = file_watcher::FileWatcher::new(watch_paths)?;
-        Ok(Self {
+        let mut instance = Self {
             watcher: Some(watcher),
             runtime,
-            config,
+            config: config.clone(),
             ui,
             path: Some(path),
             font_collection: None,
             registered_typefaces: Vec::new(),
             default_font: None,
-        })
+        };
+        instance.apply_config_fonts(&config);
+        Ok(instance)
     }
 
     /// Create an Ogham instance from source code (no file watching)
@@ -80,16 +82,29 @@ impl Ogham {
             Some(config.clone()),
         )?));
         let ui = Self::create_ui_from_runtime(&runtime)?;
-        Ok(Self {
+        let mut instance = Self {
             watcher: None,
             runtime,
-            config,
+            config: config.clone(),
             ui,
             path: None,
             font_collection: None,
             registered_typefaces: Vec::new(),
             default_font: None,
-        })
+        };
+        instance.apply_config_fonts(&config);
+        Ok(instance)
+    }
+
+    /// Register fonts and set the default font family from the config.
+    fn apply_config_fonts(&mut self, config: &runtime::config::RuntimeConfig) {
+        for entry in &config.fonts {
+            let paths: Vec<&Path> = entry.paths.iter().map(|p| p.as_path()).collect();
+            self.register_font(&entry.family, &paths);
+        }
+        if let Some(ref name) = config.default_font {
+            self.set_default_font(name);
+        }
     }
 
     /// Helper function to create UI from a runtime
@@ -202,6 +217,20 @@ impl Ogham {
         &self.runtime
     }
 
+    /// Run a closure with shared access to the runtime, internalizing
+    /// the mutex lock (with poisoned-mutex recovery).
+    pub fn with_runtime<R>(&self, f: impl FnOnce(&runtime::Runtime) -> R) -> R {
+        let guard = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        f(&guard)
+    }
+
+    /// Run a closure with exclusive access to the runtime, internalizing
+    /// the mutex lock (with poisoned-mutex recovery).
+    pub fn with_runtime_mut<R>(&self, f: impl FnOnce(&mut runtime::Runtime) -> R) -> R {
+        let mut guard = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        f(&mut guard)
+    }
+
     /// Get the current file path being watched
     pub fn get_path(&self) -> Option<&str> {
         self.path.as_deref()
@@ -254,6 +283,22 @@ impl Ogham {
 
         self.ui.set_font_collection(fc.clone());
         self.font_collection = Some(fc);
+    }
+
+    /// Perform a complete frame update: check for file changes, reload if
+    /// needed, run the `inject` callback to push host state into the
+    /// runtime, then reconcile the widget tree if a rerender is pending.
+    ///
+    /// Returns `true` if a rerender was performed.
+    pub fn tick(
+        &mut self,
+        inject: impl FnOnce(&mut runtime::Runtime),
+    ) -> Result<bool, runtime::error::RuntimeError> {
+        if self.check_for_changes() {
+            self.reload()?;
+        }
+        self.with_runtime_mut(inject);
+        self.update()
     }
 
     /// If the runtime has flagged a rerender, re-execute the module,
