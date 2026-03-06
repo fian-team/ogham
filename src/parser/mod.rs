@@ -82,6 +82,8 @@ impl Parser {
             scanner::TokenType::Minus => Ok(Operator::Minus),
             scanner::TokenType::Multiply => Ok(Operator::Multiply),
             scanner::TokenType::Divide => Ok(Operator::Divide),
+            scanner::TokenType::Modulo => Ok(Operator::Modulo),
+            scanner::TokenType::Power => Ok(Operator::Power),
             scanner::TokenType::Not => Ok(Operator::Not),
             scanner::TokenType::NotEqual => Ok(Operator::NotEquals),
             scanner::TokenType::Or => Ok(Operator::Or),
@@ -672,16 +674,28 @@ impl Parser {
     }
 
     pub fn factor(&mut self) -> Result<Expression, SyntaxError> {
-        let mut expression = self.unary()?;
+        let mut expression = self.exponent()?;
         while self.next_is(vec![
             scanner::TokenType::Multiply,
             scanner::TokenType::Divide,
+            scanner::TokenType::Modulo,
         ]) {
             let operator = self.get_current_as_operator()?;
-            let right = self.unary()?;
+            let right = self.exponent()?;
             expression = Expression::new_binary(expression, operator, right);
         }
         Ok(expression)
+    }
+
+    pub fn exponent(&mut self) -> Result<Expression, SyntaxError> {
+        let base = self.unary()?;
+        if self.next_is(vec![scanner::TokenType::Power]) {
+            let operator = self.get_current_as_operator()?;
+            let exp = self.exponent()?;
+            Ok(Expression::new_binary(base, operator, exp))
+        } else {
+            Ok(base)
+        }
     }
 
     pub fn range(&mut self) -> Result<Expression, SyntaxError> {
@@ -704,6 +718,18 @@ impl Parser {
                     return self.parse_for_loop_expression(true);
                 }
             }
+        }
+        if self.next_is(vec![scanner::TokenType::Increment]) {
+            let token = self.current().unwrap();
+            let line = token.line;
+            let column = token.column;
+            self.consume();
+            let ident = self.consume_if_identifier().map_err(|_| SyntaxError {
+                message: "Prefix ++ can only be applied to a variable".to_owned(),
+                line,
+                column,
+            })?;
+            return Ok(Expression::PrefixIncrement(ident));
         }
         if self.next_is(vec![scanner::TokenType::Minus]) {
             self.consume();
@@ -810,6 +836,14 @@ impl Parser {
                 let index = self.expression()?;
                 self.consume_if(scanner::TokenType::RightSquareBracket)?;
                 expr = Expression::new_index_access(expr, index);
+            } else if self.next_is(vec![scanner::TokenType::Increment]) {
+                if let Expression::Literal(Literal::Identifier(ref ident)) = expr {
+                    let ident = ident.clone();
+                    self.consume();
+                    expr = Expression::PostfixIncrement(ident);
+                } else {
+                    break;
+                }
             } else {
                 break;
             }

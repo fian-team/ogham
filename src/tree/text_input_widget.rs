@@ -166,19 +166,10 @@ impl Widget for TextInputWidget {
     }
 
     fn get_basis(&self, direction: &Direction) -> f32 {
-        match direction {
-            Direction::Row | Direction::RowReverse => match self.style.width {
-                Size::Fixed(_w) => 0.0,
-                Size::Shrink => 0.0,
-                Size::Grow(basis) => basis,
-                Size::Percent(_p) => 0.0,
-            },
-            Direction::Column | Direction::ColumnReverse => match self.style.height {
-                Size::Fixed(_h) => 0.0,
-                Size::Shrink => 0.0,
-                Size::Grow(basis) => basis,
-                Size::Percent(_p) => 0.0,
-            },
+        if direction.is_row() {
+            self.style.width.grow_basis()
+        } else {
+            self.style.height.grow_basis()
         }
     }
 
@@ -375,41 +366,16 @@ impl Widget for TextInputWidget {
         self.layout = Some(Rect::new(cursor_x, cursor_y, width, height));
     }
 
-    fn get_children_fixed_width(&self) -> f32 {
-        0.0 // No children
-    }
-
-    fn get_children_fixed_height(&self) -> f32 {
-        0.0 // No children
-    }
-
     fn get_fixed_width(&self) -> Option<f32> {
-        match self.style.width {
-            Size::Fixed(w) => Some(w),
-            _ => None,
-        }
+        self.style.width.as_fixed()
     }
 
     fn get_fixed_height(&self) -> Option<f32> {
-        match self.style.height {
-            Size::Fixed(h) => Some(h),
-            _ => None,
-        }
+        self.style.height.as_fixed()
     }
 
     fn contains_point(&self, point: &Point) -> bool {
-        if let Some(layout) = &self.layout {
-            point.x() >= layout.x
-                && point.x() <= layout.x + layout.width
-                && point.y() >= layout.y
-                && point.y() <= layout.y + layout.height
-        } else {
-            false
-        }
-    }
-
-    fn get_children_mut(&mut self) -> Vec<WidgetRef> {
-        Vec::new()
+        self.layout.as_ref().is_some_and(|r| r.contains(point))
     }
 
     fn set_hovered(&mut self, hovered: bool) {

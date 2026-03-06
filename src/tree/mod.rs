@@ -21,7 +21,6 @@ pub mod flex_widget;
 pub mod image;
 /// Convenience macros for working with widgets.
 #[macro_use]
-pub mod macros;
 pub mod event;
 pub mod point;
 pub mod rect;
@@ -319,8 +318,12 @@ pub trait Widget: Downcast {
     fn get_children(&self) -> Vec<WidgetRef>;
     fn get_basis(&self, direction: &Direction) -> f32;
     fn get_children_basis(&self) -> f32;
-    fn get_children_fixed_width(&self) -> f32;
-    fn get_children_fixed_height(&self) -> f32;
+    fn get_children_fixed_width(&self) -> f32 {
+        0.0
+    }
+    fn get_children_fixed_height(&self) -> f32 {
+        0.0
+    }
     fn get_fixed_width(&self) -> Option<f32>;
     fn get_fixed_height(&self) -> Option<f32>;
     fn handle_event(&mut self, event: &Event, ctx: &mut EventContext, self_ref: &WidgetRef)

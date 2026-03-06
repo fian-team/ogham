@@ -16,13 +16,6 @@ impl Environment {
         }
     }
 
-    pub fn new_with_parent(parent: Environment) -> Self {
-        Self {
-            variables: HashMap::new(),
-            parent: Some(Box::new(parent)),
-        }
-    }
-
     pub fn define(&mut self, name: String, value: Value) {
         self.variables.insert(name, value);
     }
@@ -83,8 +76,4 @@ impl Environment {
         Ok(())
     }
 
-    /// Returns true if this environment (top-level only) defines the given name.
-    pub fn defines(&self, name: &str) -> bool {
-        self.variables.contains_key(name)
-    }
 }

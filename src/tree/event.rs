@@ -40,11 +40,6 @@ impl EventContext {
         self.focus_request.take()
     }
 
-    /// Check if there's a focus request without consuming it
-    pub fn has_focus_request(&self) -> bool {
-        self.focus_request.is_some()
-    }
-
     /// Check if the given widget reference is the currently focused widget
     /// This compares the inner pointers of the Arc, not the Arc instances themselves,
     /// since cloned Arcs are different instances but point to the same data.
@@ -75,16 +70,7 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
-impl KeyModifiers {
-    pub fn new() -> Self {
-        Self {
-            ctrl: false,
-            alt: false,
-            shift: false,
-            meta: false,
-        }
-    }
-}
+impl KeyModifiers {}
 
 pub struct Event {
     pub name: String,

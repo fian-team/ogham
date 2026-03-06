@@ -107,24 +107,14 @@ impl Widget for FlexWidget {
     }
 
     fn get_basis(&self, direction: &Direction) -> f32 {
-        // Absolute positioned children should have a flex basis of 0
         if matches!(self.style.position, Position::Absolute(_, _)) {
             return 0.0;
         }
 
-        match direction {
-            Direction::Row | Direction::RowReverse => match self.style.width {
-                Size::Fixed(_w) => 0.0,
-                Size::Shrink => 0.0,
-                Size::Grow(basis) => basis,
-                Size::Percent(_p) => 0.0,
-            },
-            Direction::Column | Direction::ColumnReverse => match self.style.height {
-                Size::Fixed(_h) => 0.0,
-                Size::Shrink => 0.0,
-                Size::Grow(basis) => basis,
-                Size::Percent(_p) => 0.0,
-            },
+        if direction.is_row() {
+            self.style.width.grow_basis()
+        } else {
+            self.style.height.grow_basis()
         }
     }
 
@@ -724,17 +714,11 @@ impl Widget for FlexWidget {
     }
 
     fn get_fixed_width(&self) -> Option<f32> {
-        match self.style.width {
-            Size::Fixed(w) => Some(w),
-            _ => None,
-        }
+        self.style.width.as_fixed()
     }
 
     fn get_fixed_height(&self) -> Option<f32> {
-        match self.style.height {
-            Size::Fixed(h) => Some(h),
-            _ => None,
-        }
+        self.style.height.as_fixed()
     }
 
     fn contains_point(&self, point: &Point) -> bool {
@@ -824,14 +808,6 @@ mod tests {
             0.0
         }
 
-        fn get_children_fixed_width(&self) -> f32 {
-            0.0
-        }
-
-        fn get_children_fixed_height(&self) -> f32 {
-            0.0
-        }
-
         fn get_fixed_width(&self) -> Option<f32> {
             Some(self.width)
         }
@@ -881,17 +857,13 @@ mod tests {
 
         let mut parent = FlexWidget::with_style(
             FlexStyle::builder()
-                .width_fixed(parent_width)
-                .height_fixed(parent_height)
+                .width(Size::Fixed(parent_width))
+                .height(Size::Fixed(parent_height))
                 .gap(gap)
-                .row()
+                .direction(Direction::Row)
                 .build(),
         );
 
-        // Add 3 children, each 50px wide
-        // Total child width: 3 * 50 = 150px
-        // Total gap: 2 * 10 = 20px
-        // Total needed: 150 + 20 = 170px (fits in 200px)
         let child_width = 50.0;
         let child_height = 80.0;
 
@@ -958,17 +930,13 @@ mod tests {
 
         let mut parent = FlexWidget::with_style(
             FlexStyle::builder()
-                .width_fixed(parent_width)
-                .height_fixed(parent_height)
+                .width(Size::Fixed(parent_width))
+                .height(Size::Fixed(parent_height))
                 .gap(gap)
-                .column()
+                .direction(Direction::Column)
                 .build(),
         );
 
-        // Add 3 children, each 50px tall
-        // Total child height: 3 * 50 = 150px
-        // Total gap: 2 * 15 = 30px
-        // Total needed: 150 + 30 = 180px (fits in 200px)
         let child_width = 80.0;
         let child_height = 50.0;
 
@@ -1034,15 +1002,13 @@ mod tests {
 
         let mut parent = FlexWidget::with_style(
             FlexStyle::builder()
-                .width_shrink()
-                .height_fixed(parent_height)
+                .width(Size::Shrink)
+                .height(Size::Fixed(parent_height))
                 .gap(gap)
-                .row()
+                .direction(Direction::Row)
                 .build(),
         );
 
-        // Add 2 children, each 100px wide
-        // Expected parent width: 2 * 100 + 1 * 20 = 220px
         let child_width = 100.0;
         let child_height = 80.0;
 
@@ -1087,15 +1053,13 @@ mod tests {
 
         let mut parent = FlexWidget::with_style(
             FlexStyle::builder()
-                .width_fixed(parent_width)
-                .height_shrink()
+                .width(Size::Fixed(parent_width))
+                .height(Size::Shrink)
                 .gap(gap)
-                .column()
+                .direction(Direction::Column)
                 .build(),
         );
 
-        // Add 2 children, each 75px tall
-        // Expected parent height: 2 * 75 + 1 * 25 = 175px
         let child_width = 80.0;
         let child_height = 75.0;
 
@@ -1141,14 +1105,13 @@ mod tests {
 
         let mut parent = FlexWidget::with_style(
             FlexStyle::builder()
-                .width_fixed(parent_width)
-                .height_fixed(parent_height)
+                .width(Size::Fixed(parent_width))
+                .height(Size::Fixed(parent_height))
                 .gap(gap)
-                .row()
+                .direction(Direction::Row)
                 .build(),
         );
 
-        // Add only 1 child
         let child_width = 50.0;
         let child_height = 80.0;
         let child = Arc::new(Mutex::new(TestWidget::new(child_width, child_height)));

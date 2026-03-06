@@ -1,15 +1,10 @@
 //! Integration tests verifying that imported modules are compiled to bytecode
 //! and executed in the VM (not tree-walked).
 
-use ogham::runtime::value::Value;
+mod common;
 
-fn execute_file(path: &str) -> Value {
-    let mut runtime = ogham::runtime::from_file(path, None).expect("from_file should succeed");
-    let module = runtime.get_module().expect("module").clone();
-    runtime
-        .execute_module(&module)
-        .expect("execute_module should succeed")
-}
+use common::execute_file;
+use ogham::runtime::value::Value;
 
 #[test]
 fn import_all_produces_widget() {

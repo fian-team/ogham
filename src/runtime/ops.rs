@@ -85,6 +85,58 @@ pub fn divide(a: &Value, b: &Value) -> Result<Value, VMError> {
     }
 }
 
+pub fn modulo(a: &Value, b: &Value) -> Result<Value, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => {
+            if *b == 0 {
+                return Err(VMError::InvalidOperation("Modulo by zero".to_string()));
+            }
+            Ok(Value::Integer(a % b))
+        }
+        (Value::Float(a), Value::Float(b)) => {
+            if *b == 0.0 {
+                return Err(VMError::InvalidOperation("Modulo by zero".to_string()));
+            }
+            Ok(Value::Float(a % b))
+        }
+        (Value::Integer(a), Value::Float(b)) => {
+            if *b == 0.0 {
+                return Err(VMError::InvalidOperation("Modulo by zero".to_string()));
+            }
+            Ok(Value::Float(*a as f64 % b))
+        }
+        (Value::Float(a), Value::Integer(b)) => {
+            if *b == 0 {
+                return Err(VMError::InvalidOperation("Modulo by zero".to_string()));
+            }
+            Ok(Value::Float(a % *b as f64))
+        }
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot modulo {:?} by {:?}",
+            a, b
+        ))),
+    }
+}
+
+pub fn power(a: &Value, b: &Value) -> Result<Value, VMError> {
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => {
+            if *b < 0 {
+                Ok(Value::Float((*a as f64).powi(*b)))
+            } else {
+                Ok(Value::Integer(a.pow(*b as u32)))
+            }
+        }
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(*b))),
+        (Value::Integer(a), Value::Float(b)) => Ok(Value::Float((*a as f64).powf(*b))),
+        (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(a.powi(*b))),
+        _ => Err(VMError::TypeMismatch(format!(
+            "Cannot raise {:?} to {:?}",
+            a, b
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Comparison
 // ---------------------------------------------------------------------------

@@ -68,6 +68,54 @@ fn make_event_listener_with_arg(
     }
 }
 
+/// Register an event listener (no arguments) on a widget's listener map.
+/// Does nothing if the property is absent; returns an error if it is present but not a closure.
+fn register_event_listener(
+    listeners: &mut HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
+    properties: &HashMap<String, Value>,
+    runtime: &Arc<Mutex<Runtime>>,
+    event_name: &str,
+) -> Result<(), BridgeError> {
+    if let Some(value) = properties.get(event_name) {
+        if let Some(listener) = make_event_listener(value, runtime, event_name) {
+            listeners
+                .entry(event_name.to_string())
+                .or_default()
+                .push(listener);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                event_name.to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Register an event listener that receives a single `Value` argument (e.g. `on_change`).
+/// Does nothing if the property is absent; returns an error if it is present but not a closure.
+fn register_event_listener_with_arg(
+    listeners: &mut HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
+    properties: &HashMap<String, Value>,
+    runtime: &Arc<Mutex<Runtime>>,
+    event_name: &str,
+) -> Result<(), BridgeError> {
+    if let Some(value) = properties.get(event_name) {
+        if let Some(listener) = make_event_listener_with_arg(value, runtime, event_name) {
+            listeners
+                .entry(event_name.to_string())
+                .or_default()
+                .push(listener);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                event_name.to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Converts a Value::Widget from the Runtime to a WidgetRef for use in the UI
 pub fn widget_value_to_widget_ref(
     runtime: &Arc<Mutex<Runtime>>,
@@ -213,7 +261,7 @@ fn apply_text_hover_style(base: &TextStyle, style_map: &HashMap<String, Value>) 
                     s.weight = match v.to_lowercase().as_str() {
                         "normal" => FontWeight::Normal,
                         "bold" => FontWeight::Bold,
-                        "semi_bold" | "semibold" => FontWeight::SemiBold,
+                        "semi_bold" => FontWeight::SemiBold,
                         "light" => FontWeight::Light,
                         _ => continue,
                     };
@@ -250,7 +298,7 @@ fn apply_text_hover_style(base: &TextStyle, style_map: &HashMap<String, Value>) 
     s
 }
 
-fn parse_size_value(value: &Value) -> Option<Size> {
+pub(crate) fn parse_size_value(value: &Value) -> Option<Size> {
     match value {
         Value::Float(f) => Some(Size::Fixed(*f as f32)),
         Value::Integer(i) => Some(Size::Fixed(*i as f32)),
@@ -263,7 +311,7 @@ fn parse_size_value(value: &Value) -> Option<Size> {
     }
 }
 
-fn parse_padding_value(value: &Value) -> Option<Padding> {
+pub(crate) fn parse_padding_value(value: &Value) -> Option<Padding> {
     match value {
         Value::Float(f) => Some(Padding::all(*f as f32)),
         Value::Integer(i) => Some(Padding::all(*i as f32)),
@@ -278,7 +326,7 @@ fn parse_padding_value(value: &Value) -> Option<Padding> {
     }
 }
 
-fn parse_margin_value(value: &Value) -> Option<Margin> {
+pub(crate) fn parse_margin_value(value: &Value) -> Option<Margin> {
     match value {
         Value::Float(f) => Some(Margin::all(*f as f32)),
         Value::Integer(i) => Some(Margin::all(*i as f32)),
@@ -310,20 +358,12 @@ fn create_flex_widget(
     let mut children = Vec::new();
 
     // Event handlers (e.g. `mouse_down: fn () { ... }`)
-    if let Some(value) = parser_widget.properties.get("mouse_down") {
-        if let Some(listener) = make_event_listener(value, runtime, "mouse_down") {
-            flex_widget
-                .event_listeners
-                .entry("mouse_down".to_string())
-                .or_default()
-                .push(listener);
-        } else {
-            return Err(BridgeError::InvalidPropertyType(
-                "mouse_down".to_string(),
-                format!("Expected Closure, got {:?}", value),
-            ));
-        }
-    }
+    register_event_listener(
+        &mut flex_widget.event_listeners,
+        &parser_widget.properties,
+        runtime,
+        "mouse_down",
+    )?;
 
     if let Some(value) = parser_widget.properties.get("children") {
         // Children can be:
@@ -333,26 +373,6 @@ fn create_flex_widget(
         if let Value::Array(children_array) = value {
             // Array of widgets - iterate in order
             for child_value in children_array {
-                if let Value::Widget(child_widget) = child_value {
-                    let child_ref =
-                        widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
-                    children.push(child_ref);
-                }
-            }
-        } else if let Value::Map(children_map) = value {
-            // Try to extract widgets from the map
-            // If keys are numeric strings, sort them; otherwise just iterate
-            let mut sorted_entries: Vec<_> = children_map.iter().collect();
-            sorted_entries.sort_by(|a, b| {
-                // Try to parse keys as numbers for ordering
-                if let (Ok(a_num), Ok(b_num)) = (a.0.parse::<i32>(), b.0.parse::<i32>()) {
-                    a_num.cmp(&b_num)
-                } else {
-                    a.0.cmp(b.0)
-                }
-            });
-
-            for (_, child_value) in sorted_entries {
                 if let Value::Widget(child_widget) = child_value {
                     let child_ref =
                         widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
@@ -374,53 +394,40 @@ fn create_flex_widget(
             match key.as_str() {
                 "direction" => {
                     if let Value::String(dir_str) = value {
-                        match dir_str.to_lowercase().as_str() {
-                            "row" => style_builder = style_builder.row(),
-                            "column" => style_builder = style_builder.column(),
-                            "row_reverse" => style_builder = style_builder.row_reverse(),
-                            "column_reverse" => style_builder = style_builder.column_reverse(),
-                            _ => {}
+                        let dir = match dir_str.to_lowercase().as_str() {
+                            "row" => Some(Direction::Row),
+                            "column" => Some(Direction::Column),
+                            "row_reverse" => Some(Direction::RowReverse),
+                            "column_reverse" => Some(Direction::ColumnReverse),
+                            _ => None,
+                        };
+                        if let Some(d) = dir {
+                            style_builder = style_builder.direction(d);
                         }
                     }
                 }
                 "main_alignment" => {
                     if let Value::String(s) = value {
-                        if let Some(alignment) = parse_flex_alignment(&s) {
+                        if let Some(alignment) = parse_flex_alignment(s) {
                             style_builder = style_builder.main_alignment(alignment);
                         }
                     }
                 }
                 "cross_alignment" => {
                     if let Value::String(s) = value {
-                        if let Some(alignment) = parse_flex_alignment(&s) {
+                        if let Some(alignment) = parse_flex_alignment(s) {
                             style_builder = style_builder.cross_alignment(alignment);
                         }
                     }
                 }
                 "width" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.width_fixed(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.width_fixed(*i as f32);
-                    } else if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "shrink" => style_builder = style_builder.width_shrink(),
-                            "grow" => style_builder = style_builder.width_grow(1.0),
-                            _ => {}
-                        }
+                    if let Some(sz) = parse_size_value(value) {
+                        style_builder = style_builder.width(sz);
                     }
                 }
                 "height" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.height_fixed(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.height_fixed(*i as f32);
-                    } else if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "shrink" => style_builder = style_builder.height_shrink(),
-                            "grow" => style_builder = style_builder.height_grow(1.0),
-                            _ => {}
-                        }
+                    if let Some(sz) = parse_size_value(value) {
+                        style_builder = style_builder.height(sz);
                     }
                 }
                 "gap" => {
@@ -431,39 +438,18 @@ fn create_flex_widget(
                     }
                 }
                 "padding" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.padding(Padding::all(*f as f32));
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.padding(Padding::all(*i as f32));
-                    } else if let Value::Map(padding_map) = value {
-                        let top = get_float_from_map(&padding_map, "top", 0.0);
-                        let right = get_float_from_map(&padding_map, "right", 0.0);
-                        let bottom = get_float_from_map(&padding_map, "bottom", 0.0);
-                        let left = get_float_from_map(&padding_map, "left", 0.0);
-                        style_builder =
-                            style_builder.padding(Padding::new(top, right, bottom, left));
+                    if let Some(p) = parse_padding_value(value) {
+                        style_builder = style_builder.padding(p);
                     }
                 }
                 "margin" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.margin(Margin::all(*f as f32));
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.margin(Margin::all(*i as f32));
-                    } else if let Value::Map(margin_map) = value {
-                        let top = get_float_from_map(&margin_map, "top", 0.0);
-                        let right = get_float_from_map(&margin_map, "right", 0.0);
-                        let bottom = get_float_from_map(&margin_map, "bottom", 0.0);
-                        let left = get_float_from_map(&margin_map, "left", 0.0);
-                        style_builder = style_builder.margin(Margin::new(top, right, bottom, left));
+                    if let Some(m) = parse_margin_value(value) {
+                        style_builder = style_builder.margin(m);
                     }
                 }
                 "background_color" => {
-                    if let Value::Map(color_map) = value {
-                        let r = get_integer_from_map(color_map, "r", 0) as u8;
-                        let g = get_integer_from_map(color_map, "g", 0) as u8;
-                        let b = get_integer_from_map(color_map, "b", 0) as u8;
-                        let a = get_integer_from_map(color_map, "a", 255) as u8;
-                        style_builder = style_builder.background(r, g, b, a);
+                    if let Some(color) = parse_color_value(value) {
+                        style_builder = style_builder.background_color(color);
                     }
                 }
                 "border" => {
@@ -476,16 +462,7 @@ fn create_flex_widget(
                         style_builder = style_builder.corner_radii(corner_radii);
                     }
                 }
-                _ => {
-                    // If a value is a widget, treat it as a child (named-slot style).
-                    if let Value::Widget(child_widget) = value {
-                        let child_ref = widget_value_to_widget_ref(
-                            runtime,
-                            &Value::Widget(child_widget.clone()),
-                        )?;
-                        children.push(child_ref);
-                    }
-                }
+                _ => {}
             }
         }
     }
@@ -545,12 +522,8 @@ fn create_text_widget(
                     }
                 }
                 "color" => {
-                    if let Value::Map(color_map) = value {
-                        let r = get_integer_from_map(color_map, "r", 0) as u8;
-                        let g = get_integer_from_map(color_map, "g", 0) as u8;
-                        let b = get_integer_from_map(color_map, "b", 0) as u8;
-                        let a = get_integer_from_map(color_map, "a", 255) as u8;
-                        style_builder = style_builder.color_rgba(r, g, b, a);
+                    if let Some(c) = parse_color_value(value) {
+                        style_builder = style_builder.color(c);
                     }
                 }
                 "align" => {
@@ -561,29 +534,13 @@ fn create_text_widget(
                     }
                 }
                 "width" => {
-                    if let Value::Float(f) = value {
-                        width_override = Some(Size::Fixed(*f as f32));
-                    } else if let Value::Integer(i) = value {
-                        width_override = Some(Size::Fixed(*i as f32));
-                    } else if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "shrink" => width_override = Some(Size::Shrink),
-                            "grow" => width_override = Some(Size::Grow(1.0)),
-                            _ => {}
-                        }
+                    if let Some(sz) = parse_size_value(value) {
+                        width_override = Some(sz);
                     }
                 }
                 "height" => {
-                    if let Value::Float(f) = value {
-                        height_override = Some(Size::Fixed(*f as f32));
-                    } else if let Value::Integer(i) = value {
-                        height_override = Some(Size::Fixed(*i as f32));
-                    } else if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "shrink" => height_override = Some(Size::Shrink),
-                            "grow" => height_override = Some(Size::Grow(1.0)),
-                            _ => {}
-                        }
+                    if let Some(sz) = parse_size_value(value) {
+                        height_override = Some(sz);
                     }
                 }
                 "font" => {
@@ -639,50 +596,24 @@ fn create_text_input_widget(
     }
 
     // Event handlers (e.g. `on_change: fn (value) { ... }`, `mouse_down: fn () { ... }`)
-    if let Some(value) = parser_widget.properties.get("on_change") {
-        if let Some(listener) = make_event_listener_with_arg(value, runtime, "on_change") {
-            text_input
-                .event_listeners
-                .entry("on_change".to_string())
-                .or_default()
-                .push(listener);
-        } else {
-            return Err(BridgeError::InvalidPropertyType(
-                "on_change".to_string(),
-                format!("Expected Closure, got {:?}", value),
-            ));
-        }
-    }
-
-    if let Some(value) = parser_widget.properties.get("mouse_down") {
-        if let Some(listener) = make_event_listener(value, runtime, "mouse_down") {
-            text_input
-                .event_listeners
-                .entry("mouse_down".to_string())
-                .or_default()
-                .push(listener);
-        } else {
-            return Err(BridgeError::InvalidPropertyType(
-                "mouse_down".to_string(),
-                format!("Expected Closure, got {:?}", value),
-            ));
-        }
-    }
-
-    if let Some(value) = parser_widget.properties.get("mouse_up") {
-        if let Some(listener) = make_event_listener(value, runtime, "mouse_up") {
-            text_input
-                .event_listeners
-                .entry("mouse_up".to_string())
-                .or_default()
-                .push(listener);
-        } else {
-            return Err(BridgeError::InvalidPropertyType(
-                "mouse_up".to_string(),
-                format!("Expected Closure, got {:?}", value),
-            ));
-        }
-    }
+    register_event_listener_with_arg(
+        &mut text_input.event_listeners,
+        &parser_widget.properties,
+        runtime,
+        "on_change",
+    )?;
+    register_event_listener(
+        &mut text_input.event_listeners,
+        &parser_widget.properties,
+        runtime,
+        "mouse_down",
+    )?;
+    register_event_listener(
+        &mut text_input.event_listeners,
+        &parser_widget.properties,
+        runtime,
+        "mouse_up",
+    )?;
 
     let style_props = optional_style_map(parser_widget);
     if let Some(style_map) = style_props {
@@ -690,65 +621,28 @@ fn create_text_input_widget(
             match key.as_str() {
                 // FlexStyle properties
                 "width" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.width_fixed(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.width_fixed(*i as f32);
-                    } else if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "shrink" => style_builder = style_builder.width_shrink(),
-                            "grow" => style_builder = style_builder.width_grow(1.0),
-                            _ => {}
-                        }
+                    if let Some(sz) = parse_size_value(value) {
+                        style_builder = style_builder.width(sz);
                     }
                 }
                 "height" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.height_fixed(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.height_fixed(*i as f32);
-                    } else if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "shrink" => style_builder = style_builder.height_shrink(),
-                            "grow" => style_builder = style_builder.height_grow(1.0),
-                            _ => {}
-                        }
+                    if let Some(sz) = parse_size_value(value) {
+                        style_builder = style_builder.height(sz);
                     }
                 }
                 "padding" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.padding(Padding::all(*f as f32));
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.padding(Padding::all(*i as f32));
-                    } else if let Value::Map(padding_map) = value {
-                        let top = get_float_from_map(&padding_map, "top", 0.0);
-                        let right = get_float_from_map(&padding_map, "right", 0.0);
-                        let bottom = get_float_from_map(&padding_map, "bottom", 0.0);
-                        let left = get_float_from_map(&padding_map, "left", 0.0);
-                        style_builder =
-                            style_builder.padding(Padding::new(top, right, bottom, left));
+                    if let Some(p) = parse_padding_value(value) {
+                        style_builder = style_builder.padding(p);
                     }
                 }
                 "margin" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.margin(Margin::all(*f as f32));
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.margin(Margin::all(*i as f32));
-                    } else if let Value::Map(margin_map) = value {
-                        let top = get_float_from_map(&margin_map, "top", 0.0);
-                        let right = get_float_from_map(&margin_map, "right", 0.0);
-                        let bottom = get_float_from_map(&margin_map, "bottom", 0.0);
-                        let left = get_float_from_map(&margin_map, "left", 0.0);
-                        style_builder = style_builder.margin(Margin::new(top, right, bottom, left));
+                    if let Some(m) = parse_margin_value(value) {
+                        style_builder = style_builder.margin(m);
                     }
                 }
                 "background_color" => {
-                    if let Value::Map(color_map) = value {
-                        let r = get_integer_from_map(color_map, "r", 0) as u8;
-                        let g = get_integer_from_map(color_map, "g", 0) as u8;
-                        let b = get_integer_from_map(color_map, "b", 0) as u8;
-                        let a = get_integer_from_map(color_map, "a", 255) as u8;
-                        style_builder = style_builder.background(r, g, b, a);
+                    if let Some(color) = parse_color_value(value) {
+                        style_builder = style_builder.background_color(color);
                     }
                 }
                 "border" => {
@@ -770,12 +664,15 @@ fn create_text_input_widget(
                 }
                 "direction" => {
                     if let Value::String(dir_str) = value {
-                        match dir_str.to_lowercase().as_str() {
-                            "row" => style_builder = style_builder.row(),
-                            "column" => style_builder = style_builder.column(),
-                            "row_reverse" => style_builder = style_builder.row_reverse(),
-                            "column_reverse" => style_builder = style_builder.column_reverse(),
-                            _ => {}
+                        let dir = match dir_str.to_lowercase().as_str() {
+                            "row" => Some(Direction::Row),
+                            "column" => Some(Direction::Column),
+                            "row_reverse" => Some(Direction::RowReverse),
+                            "column_reverse" => Some(Direction::ColumnReverse),
+                            _ => None,
+                        };
+                        if let Some(d) = dir {
+                            style_builder = style_builder.direction(d);
                         }
                     }
                 }
@@ -788,43 +685,41 @@ fn create_text_input_widget(
                     }
                 }
                 "color" => {
-                    if let Value::Map(color_map) = value {
-                        let r = get_integer_from_map(color_map, "r", 0) as u8;
-                        let g = get_integer_from_map(color_map, "g", 0) as u8;
-                        let b = get_integer_from_map(color_map, "b", 0) as u8;
-                        let a = get_integer_from_map(color_map, "a", 255) as u8;
-                        text_style_builder = text_style_builder.color_rgba(r, g, b, a);
+                    if let Some(c) = parse_color_value(value) {
+                        text_style_builder = text_style_builder.color(c);
                     }
                 }
                 "weight" => {
                     if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "normal" => text_style_builder = text_style_builder.normal(),
-                            "bold" => text_style_builder = text_style_builder.bold(),
-                            "semi_bold" | "semibold" => {
-                                text_style_builder = text_style_builder.semi_bold()
-                            }
-                            "light" => text_style_builder = text_style_builder.light(),
-                            _ => {}
+                        let w = match s.to_lowercase().as_str() {
+                            "normal" => Some(FontWeight::Normal),
+                            "bold" => Some(FontWeight::Bold),
+                            "semi_bold" => Some(FontWeight::SemiBold),
+                            "light" => Some(FontWeight::Light),
+                            _ => None,
+                        };
+                        if let Some(w) = w {
+                            text_style_builder = text_style_builder.weight(w);
                         }
                     }
                 }
                 "align" => {
                     if let Value::String(s) = value {
-                        if let Some(align) = parse_text_align(&s) {
+                        if let Some(align) = parse_text_align(s) {
                             text_style_builder = text_style_builder.align(align);
                         }
                     }
                 }
                 "decoration" => {
                     if let Value::String(s) = value {
-                        match s.to_lowercase().as_str() {
-                            "none" => text_style_builder = text_style_builder.no_decoration(),
-                            "underline" => text_style_builder = text_style_builder.underline(),
-                            "strikethrough" => {
-                                text_style_builder = text_style_builder.strikethrough()
-                            }
-                            _ => {}
+                        let d = match s.to_lowercase().as_str() {
+                            "none" => Some(TextDecoration::None),
+                            "underline" => Some(TextDecoration::Underline),
+                            "strikethrough" => Some(TextDecoration::Strikethrough),
+                            _ => None,
+                        };
+                        if let Some(d) = d {
+                            text_style_builder = text_style_builder.decoration(d);
                         }
                     }
                 }
@@ -903,25 +798,16 @@ fn create_svg_widget(
     };
 
     // Optional color
-    let mut color = None;
-    if let Some(style_map) = style_props {
-        if let Some(color_value) = style_map.get("color") {
-            if let Value::Map(color_map) = color_value {
-                let r = get_integer_from_map(color_map, "r", 0) as u8;
-                let g = get_integer_from_map(color_map, "g", 0) as u8;
-                let b = get_integer_from_map(color_map, "b", 0) as u8;
-                let a = get_integer_from_map(color_map, "a", 255) as u8;
-                color = Some(Color::new(r, g, b, a));
-            }
-        }
-    }
+    let color = style_props
+        .and_then(|m| m.get("color"))
+        .and_then(parse_color_value);
 
     let svg_widget = SvgWidget::new(path, width, height, color);
     Ok(Arc::new(Mutex::new(svg_widget)))
 }
 
 // Helper functions
-fn get_float_from_map(map: &HashMap<String, Value>, key: &str, default: f32) -> f32 {
+pub(crate) fn get_float_from_map(map: &HashMap<String, Value>, key: &str, default: f32) -> f32 {
     if let Some(value) = map.get(key) {
         match value {
             Value::Float(f) => *f as f32,
@@ -933,7 +819,7 @@ fn get_float_from_map(map: &HashMap<String, Value>, key: &str, default: f32) -> 
     }
 }
 
-fn get_integer_from_map(map: &HashMap<String, Value>, key: &str, default: i32) -> i32 {
+pub(crate) fn get_integer_from_map(map: &HashMap<String, Value>, key: &str, default: i32) -> i32 {
     if let Some(value) = map.get(key) {
         match value {
             Value::Integer(i) => *i,
@@ -945,7 +831,7 @@ fn get_integer_from_map(map: &HashMap<String, Value>, key: &str, default: i32) -
     }
 }
 
-fn value_to_f32(value: &Value) -> Option<f32> {
+pub(crate) fn value_to_f32(value: &Value) -> Option<f32> {
     match value {
         Value::Float(f) => Some(*f as f32),
         Value::Integer(i) => Some(*i as f32),
@@ -953,7 +839,7 @@ fn value_to_f32(value: &Value) -> Option<f32> {
     }
 }
 
-fn parse_color_value(value: &Value) -> Option<Color> {
+pub(crate) fn parse_color_value(value: &Value) -> Option<Color> {
     match value {
         Value::Map(map) => {
             let r = get_integer_from_map(map, "r", 0).clamp(0, 255) as u8;
@@ -966,7 +852,7 @@ fn parse_color_value(value: &Value) -> Option<Color> {
     }
 }
 
-fn parse_border_style_value(value: &Value) -> Option<BorderStyle> {
+pub(crate) fn parse_border_style_value(value: &Value) -> Option<BorderStyle> {
     match value {
         Value::String(s) => match s.to_lowercase().as_str() {
             "solid" => Some(BorderStyle::Solid),
@@ -978,7 +864,7 @@ fn parse_border_style_value(value: &Value) -> Option<BorderStyle> {
     }
 }
 
-fn parse_border_side_value(value: &Value) -> Option<BorderSide> {
+pub(crate) fn parse_border_side_value(value: &Value) -> Option<BorderSide> {
     // Supported shapes:
     // - number => width, default black, solid
     // - { width, color, style }
@@ -1010,7 +896,7 @@ fn parse_border_side_value(value: &Value) -> Option<BorderSide> {
     }
 }
 
-fn parse_border_value(value: &Value) -> Option<Border> {
+pub(crate) fn parse_border_value(value: &Value) -> Option<Border> {
     // Supported shapes:
     // - number => uniform border width on all sides (black, solid)
     // - { width, color, style } => uniform side definition
@@ -1059,17 +945,13 @@ fn parse_border_value(value: &Value) -> Option<Border> {
     }
 }
 
-fn parse_corner_radii_value(value: &Value) -> Option<CornerRadii> {
+pub(crate) fn parse_corner_radii_value(value: &Value) -> Option<CornerRadii> {
     // Supported shapes:
     // - number => all corners
-    // - { all } => all corners
     // - { top_left, top_right, bottom_left, bottom_right }
     match value {
         Value::Float(_) | Value::Integer(_) => Some(CornerRadii::all(value_to_f32(value)?)),
         Value::Map(map) => {
-            if let Some(all) = map.get("all").and_then(value_to_f32) {
-                return Some(CornerRadii::all(all));
-            }
             let tl = map.get("top_left").and_then(value_to_f32)?;
             let tr = map.get("top_right").and_then(value_to_f32)?;
             let bl = map.get("bottom_left").and_then(value_to_f32)?;
@@ -1080,7 +962,7 @@ fn parse_corner_radii_value(value: &Value) -> Option<CornerRadii> {
     }
 }
 
-fn parse_text_align(value: &str) -> Option<TextAlign> {
+pub(crate) fn parse_text_align(value: &str) -> Option<TextAlign> {
     match value.to_lowercase().as_str() {
         "left" => Some(TextAlign::Left),
         "center" => Some(TextAlign::Center),
@@ -1089,7 +971,7 @@ fn parse_text_align(value: &str) -> Option<TextAlign> {
     }
 }
 
-fn parse_flex_alignment(value: &str) -> Option<Alignment> {
+pub(crate) fn parse_flex_alignment(value: &str) -> Option<Alignment> {
     match value.to_lowercase().as_str() {
         "start" => Some(Alignment::Start),
         "center" => Some(Alignment::Center),

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::tree::{
     flex_widget::FlexWidget,
     image::ImageCache,
-    style::{FontWeight, TextAlign},
+    style::{Border, BorderSide, CornerRadii, FontWeight, TextAlign},
     svg_widget::SvgWidget,
     text_input_widget::TextInputWidget,
     text_widget::TextWidget,
@@ -174,6 +174,122 @@ impl SkiaEnv {
         self.surface.canvas()
     }
 
+    /// Configures `self.paint` and `self.text_style` from an Ogham `TextStyle`,
+    /// and sets the paragraph text alignment. Returns the DPI-scaled font size.
+    fn apply_text_style(&mut self, style: &crate::tree::style::TextStyle) -> f32 {
+        self.paint.set_style(PaintStyle::Fill);
+        let color = style.get_color();
+        self.paint
+            .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
+        self.text_style.set_foreground_paint(&self.paint);
+        let scaled_font_size = self.scale_font_size(style.get_size());
+        self.text_style.set_font_size(scaled_font_size);
+        self.text_style.set_font_style(FontStyle::new(
+            match style.get_weight() {
+                FontWeight::Normal => Weight::NORMAL,
+                FontWeight::SemiBold => Weight::SEMI_BOLD,
+                FontWeight::Bold => Weight::BOLD,
+                FontWeight::Light => Weight::LIGHT,
+            },
+            Width::NORMAL,
+            Slant::Upright,
+        ));
+        if let Some(ref family) = style.font {
+            self.text_style.set_font_families(&[family.as_str()]);
+        } else if let Some(ref default) = self.default_font {
+            self.text_style.set_font_families(&[default.as_str()]);
+        } else {
+            self.text_style.set_font_families(&[] as &[&str]);
+        }
+        self.paragraph_style
+            .set_text_align(match style.get_align() {
+                TextAlign::Left => SkiaTextAlign::Left,
+                TextAlign::Center => SkiaTextAlign::Center,
+                TextAlign::Right => SkiaTextAlign::Right,
+            });
+        scaled_font_size
+    }
+
+    /// Constructs an `RRect` with DPI-scaled corner radii.
+    fn make_scaled_rrect(&self, rect: Rect, radii: &CornerRadii) -> RRect {
+        RRect::new_rect_radii(
+            rect,
+            &[
+                Point::new(
+                    self.scale_dim(radii.top_left),
+                    self.scale_dim(radii.top_left),
+                ),
+                Point::new(
+                    self.scale_dim(radii.top_right),
+                    self.scale_dim(radii.top_right),
+                ),
+                Point::new(
+                    self.scale_dim(radii.bottom_right),
+                    self.scale_dim(radii.bottom_right),
+                ),
+                Point::new(
+                    self.scale_dim(radii.bottom_left),
+                    self.scale_dim(radii.bottom_left),
+                ),
+            ],
+        )
+    }
+
+    /// Draws a single border line if the side has a non-zero width.
+    fn draw_border_line(&mut self, side: &BorderSide, x1: f32, y1: f32, x2: f32, y2: f32) {
+        if side.width > 0.0 {
+            self.paint.set_style(PaintStyle::Stroke);
+            self.paint
+                .set_stroke_width(self.scale_stroke(side.width));
+            self.paint.set_color(Color::from_argb(
+                side.color.a,
+                side.color.r,
+                side.color.g,
+                side.color.b,
+            ));
+            self.move_to(x1, y1);
+            self.line_to(x2, y2);
+            self.stroke();
+        }
+    }
+
+    /// Draws rectangular borders (top, right, bottom, left) inset by half their stroke widths.
+    fn draw_border_sides(&mut self, border: &Border, x: f32, y: f32, width: f32, height: f32) {
+        let half_top = self.scale_stroke(border.top.width) / 2.0;
+        let half_right = self.scale_stroke(border.right.width) / 2.0;
+        let half_bottom = self.scale_stroke(border.bottom.width) / 2.0;
+        let half_left = self.scale_stroke(border.left.width) / 2.0;
+
+        self.draw_border_line(
+            &border.top,
+            x + half_left,
+            y + half_top,
+            x + width - half_right,
+            y + half_top,
+        );
+        self.draw_border_line(
+            &border.right,
+            x + width - half_right,
+            y + half_top,
+            x + width - half_right,
+            y + height - half_bottom,
+        );
+        self.draw_border_line(
+            &border.bottom,
+            x + width - half_right,
+            y + height - half_bottom,
+            x + half_left,
+            y + height - half_bottom,
+        );
+        self.draw_border_line(
+            &border.left,
+            x + half_left,
+            y + height - half_bottom,
+            x + half_left,
+            y + half_top,
+        );
+    }
+
     fn draw_text_input_borders(
         &mut self,
         widget: &TextInputWidget,
@@ -183,72 +299,7 @@ impl SkiaEnv {
         height: f32,
     ) {
         let style = widget.effective_style();
-
-        // Inset each side by half its stroke width so borders draw inside the element
-        let half_top = self.scale_stroke(style.border.top.width) / 2.0;
-        let half_right = self.scale_stroke(style.border.right.width) / 2.0;
-        let half_bottom = self.scale_stroke(style.border.bottom.width) / 2.0;
-        let half_left = self.scale_stroke(style.border.left.width) / 2.0;
-
-        if style.border.top.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.top.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.top.color.a,
-                style.border.top.color.r,
-                style.border.top.color.g,
-                style.border.top.color.b,
-            ));
-            self.move_to(x + half_left, y + half_top);
-            self.line_to(x + width - half_right, y + half_top);
-            self.stroke();
-        }
-
-        if style.border.right.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.right.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.right.color.a,
-                style.border.right.color.r,
-                style.border.right.color.g,
-                style.border.right.color.b,
-            ));
-            self.move_to(x + width - half_right, y + half_top);
-            self.line_to(x + width - half_right, y + height - half_bottom);
-            self.stroke();
-        }
-
-        if style.border.bottom.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.bottom.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.bottom.color.a,
-                style.border.bottom.color.r,
-                style.border.bottom.color.g,
-                style.border.bottom.color.b,
-            ));
-            self.move_to(x + width - half_right, y + height - half_bottom);
-            self.line_to(x + half_left, y + height - half_bottom);
-            self.stroke();
-        }
-
-        if style.border.left.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.left.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.left.color.a,
-                style.border.left.color.r,
-                style.border.left.color.g,
-                style.border.left.color.b,
-            ));
-            self.move_to(x + half_left, y + height - half_bottom);
-            self.line_to(x + half_left, y + half_top);
-            self.stroke();
-        }
+        self.draw_border_sides(&style.border, x, y, width, height);
     }
 }
 
@@ -351,27 +402,8 @@ impl Surface for SkiaEnv {
                     || style.corner_radii.bottom_right > 0.0
                 {
                     let rect = Rect::new(box_x, box_y, box_x + box_width, box_y + box_height);
-                    let rounded_rect = RRect::new_rect_radii(
-                        rect,
-                        &[
-                            Point::new(
-                                self.scale_dim(style.corner_radii.top_left),
-                                self.scale_dim(style.corner_radii.top_left),
-                            ),
-                            Point::new(
-                                self.scale_dim(style.corner_radii.top_right),
-                                self.scale_dim(style.corner_radii.top_right),
-                            ),
-                            Point::new(
-                                self.scale_dim(style.corner_radii.bottom_right),
-                                self.scale_dim(style.corner_radii.bottom_right),
-                            ),
-                            Point::new(
-                                self.scale_dim(style.corner_radii.bottom_left),
-                                self.scale_dim(style.corner_radii.bottom_left),
-                            ),
-                        ],
-                    );
+                    let rounded_rect =
+                        self.make_scaled_rrect(rect, &style.corner_radii);
                     self.surface.canvas().draw_rrect(rounded_rect, &self.paint);
                 } else {
                     self.surface.canvas().draw_rect(
@@ -416,27 +448,7 @@ impl Surface for SkiaEnv {
         {
             let half = self.scale_stroke(border_width) / 2.0;
             let rect = Rect::new(x + half, y + half, x + width - half, y + height - half);
-            let rounded_rect = RRect::new_rect_radii(
-                rect,
-                &[
-                    Point::new(
-                        self.scale_dim(style.corner_radii.top_left),
-                        self.scale_dim(style.corner_radii.top_left),
-                    ),
-                    Point::new(
-                        self.scale_dim(style.corner_radii.top_right),
-                        self.scale_dim(style.corner_radii.top_right),
-                    ),
-                    Point::new(
-                        self.scale_dim(style.corner_radii.bottom_right),
-                        self.scale_dim(style.corner_radii.bottom_right),
-                    ),
-                    Point::new(
-                        self.scale_dim(style.corner_radii.bottom_left),
-                        self.scale_dim(style.corner_radii.bottom_left),
-                    ),
-                ],
-            );
+            let rounded_rect = self.make_scaled_rrect(rect, &style.corner_radii);
             self.surface.canvas().draw_rrect(rounded_rect, &self.paint);
         } else {
             self.draw_rectangular_borders(widget, x, y, width, height);
@@ -446,36 +458,7 @@ impl Surface for SkiaEnv {
     fn draw_text(&mut self, widget: &TextWidget) {
         if let Some(layout) = &widget.layout {
             let style = widget.effective_style();
-            self.paint.set_style(PaintStyle::Fill);
-            let color = style.get_color();
-            self.paint
-                .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
-            self.text_style.set_foreground_paint(&self.paint);
-            self.text_style
-                .set_font_size(self.scale_font_size(style.get_size()));
-            self.text_style.set_font_style(FontStyle::new(
-                match style.get_weight() {
-                    FontWeight::Normal => Weight::NORMAL,
-                    FontWeight::SemiBold => Weight::SEMI_BOLD,
-                    FontWeight::Bold => Weight::BOLD,
-                    FontWeight::Light => Weight::LIGHT,
-                },
-                Width::NORMAL,
-                Slant::Upright,
-            ));
-            if let Some(ref family) = style.font {
-                self.text_style.set_font_families(&[family.as_str()]);
-            } else if let Some(ref default) = self.default_font {
-                self.text_style.set_font_families(&[default.as_str()]);
-            } else {
-                self.text_style.set_font_families(&[] as &[&str]);
-            }
-            self.paragraph_style
-                .set_text_align(match style.get_align() {
-                    TextAlign::Left => SkiaTextAlign::Left,
-                    TextAlign::Center => SkiaTextAlign::Center,
-                    TextAlign::Right => SkiaTextAlign::Right,
-                });
+            self.apply_text_style(style);
             let mut paragraph_builder =
                 ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
             paragraph_builder.push_style(&self.text_style);
@@ -601,107 +584,13 @@ impl SkiaEnv {
         height: f32,
     ) {
         let style = widget.effective_style();
-
-        // Inset each side by half its stroke width so borders draw inside the element
-        let half_top = self.scale_stroke(style.border.top.width) / 2.0;
-        let half_right = self.scale_stroke(style.border.right.width) / 2.0;
-        let half_bottom = self.scale_stroke(style.border.bottom.width) / 2.0;
-        let half_left = self.scale_stroke(style.border.left.width) / 2.0;
-
-        if style.border.top.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.top.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.top.color.a,
-                style.border.top.color.r,
-                style.border.top.color.g,
-                style.border.top.color.b,
-            ));
-            self.move_to(x + half_left, y + half_top);
-            self.line_to(x + width - half_right, y + half_top);
-            self.stroke();
-        }
-
-        if style.border.right.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.right.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.right.color.a,
-                style.border.right.color.r,
-                style.border.right.color.g,
-                style.border.right.color.b,
-            ));
-            self.move_to(x + width - half_right, y + half_top);
-            self.line_to(x + width - half_right, y + height - half_bottom);
-            self.stroke();
-        }
-
-        if style.border.bottom.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.bottom.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.bottom.color.a,
-                style.border.bottom.color.r,
-                style.border.bottom.color.g,
-                style.border.bottom.color.b,
-            ));
-            self.move_to(x + width - half_right, y + height - half_bottom);
-            self.line_to(x + half_left, y + height - half_bottom);
-            self.stroke();
-        }
-
-        if style.border.left.width > 0.0 {
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(style.border.left.width));
-            self.paint.set_color(Color::from_argb(
-                style.border.left.color.a,
-                style.border.left.color.r,
-                style.border.left.color.g,
-                style.border.left.color.b,
-            ));
-            self.move_to(x + half_left, y + height - half_bottom);
-            self.line_to(x + half_left, y + half_top);
-            self.stroke();
-        }
+        self.draw_border_sides(&style.border, x, y, width, height);
     }
 
     fn draw_text(&mut self, widget: &TextWidget) {
         if let Some(layout) = &widget.layout {
             let style = widget.effective_style();
-            self.paint.set_style(PaintStyle::Fill);
-            let color = style.get_color();
-            self.paint
-                .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
-            self.text_style.set_foreground_paint(&self.paint);
-            self.text_style
-                .set_font_size(self.scale_font_size(style.get_size()));
-            self.text_style.set_font_style(FontStyle::new(
-                match style.get_weight() {
-                    FontWeight::Normal => Weight::NORMAL,
-                    FontWeight::SemiBold => Weight::SEMI_BOLD,
-                    FontWeight::Bold => Weight::BOLD,
-                    FontWeight::Light => Weight::LIGHT,
-                },
-                Width::NORMAL,
-                Slant::Upright,
-            ));
-            if let Some(ref family) = style.font {
-                self.text_style.set_font_families(&[family.as_str()]);
-            } else if let Some(ref default) = self.default_font {
-                self.text_style.set_font_families(&[default.as_str()]);
-            } else {
-                self.text_style.set_font_families(&[] as &[&str]);
-            }
-            self.paragraph_style
-                .set_text_align(match style.get_align() {
-                    TextAlign::Left => SkiaTextAlign::Left,
-                    TextAlign::Center => SkiaTextAlign::Center,
-                    TextAlign::Right => SkiaTextAlign::Right,
-                });
+            self.apply_text_style(style);
             let mut paragraph_builder =
                 ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
             paragraph_builder.push_style(&self.text_style);
@@ -746,7 +635,6 @@ impl SkiaEnv {
                 layout.height - style.margin.get_top() - style.margin.get_bottom(),
             );
 
-            let font_size = self.scale_font_size(text_style.size);
             let padding_left = self.scale_dim(style.padding.get_left());
             let padding_right = self.scale_dim(style.padding.get_right());
             let padding_top = self.scale_dim(style.padding.get_top());
@@ -758,41 +646,7 @@ impl SkiaEnv {
 
             self.draw_text_input_borders(widget, box_x, box_y, box_width, box_height);
 
-            self.paint.set_style(PaintStyle::Fill);
-            let text_color = text_style.color;
-            self.paint.set_color(Color::from_argb(
-                text_color.a,
-                text_color.r,
-                text_color.g,
-                text_color.b,
-            ));
-            self.text_style.set_foreground_paint(&self.paint);
-
-            self.text_style.set_font_size(font_size);
-            self.text_style.set_font_style(FontStyle::new(
-                match text_style.weight {
-                    crate::tree::style::FontWeight::Normal => Weight::NORMAL,
-                    crate::tree::style::FontWeight::SemiBold => Weight::SEMI_BOLD,
-                    crate::tree::style::FontWeight::Bold => Weight::BOLD,
-                    crate::tree::style::FontWeight::Light => Weight::LIGHT,
-                },
-                Width::NORMAL,
-                Slant::Upright,
-            ));
-            if let Some(ref family) = text_style.font {
-                self.text_style.set_font_families(&[family.as_str()]);
-            } else if let Some(ref default) = self.default_font {
-                self.text_style.set_font_families(&[default.as_str()]);
-            } else {
-                self.text_style.set_font_families(&[] as &[&str]);
-            }
-
-            self.paragraph_style
-                .set_text_align(match text_style.align {
-                    crate::tree::style::TextAlign::Left => SkiaTextAlign::Left,
-                    crate::tree::style::TextAlign::Center => SkiaTextAlign::Center,
-                    crate::tree::style::TextAlign::Right => SkiaTextAlign::Right,
-                });
+            let font_size = self.apply_text_style(text_style);
             let mut paragraph_builder =
                 ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
             paragraph_builder.push_style(&self.text_style);

@@ -250,19 +250,10 @@ impl Widget for TextWidget {
     }
 
     fn get_basis(&self, direction: &Direction) -> f32 {
-        match direction {
-            Direction::Row | Direction::RowReverse => match self.style.width {
-                Size::Fixed(_) => 0.0,
-                Size::Shrink => 0.0,
-                Size::Grow(basis) => basis,
-                Size::Percent(_) => 0.0,
-            },
-            Direction::Column | Direction::ColumnReverse => match self.style.height {
-                Size::Fixed(_) => 0.0,
-                Size::Shrink => 0.0,
-                Size::Grow(basis) => basis,
-                Size::Percent(_) => 0.0,
-            },
+        if direction.is_row() {
+            self.style.width.grow_basis()
+        } else {
+            self.style.height.grow_basis()
         }
     }
 
@@ -270,26 +261,12 @@ impl Widget for TextWidget {
         0.0 // No children so no basis
     }
 
-    fn get_children_fixed_width(&self) -> f32 {
-        0.0 // No children so no fixed width
-    }
-
-    fn get_children_fixed_height(&self) -> f32 {
-        0.0 // No children so no fixed height
-    }
-
     fn get_fixed_width(&self) -> Option<f32> {
-        match self.style.width {
-            Size::Fixed(w) => Some(w),
-            _ => None,
-        }
+        self.style.width.as_fixed()
     }
 
     fn get_fixed_height(&self) -> Option<f32> {
-        match self.style.height {
-            Size::Fixed(h) => Some(h),
-            _ => None,
-        }
+        self.style.height.as_fixed()
     }
 
     fn handle_event(
@@ -337,19 +314,7 @@ impl Widget for TextWidget {
     }
 
     fn contains_point(&self, point: &Point) -> bool {
-        if let Some(layout) = &self.layout {
-            // Text widgets don't have margins, so we just check if the point is within the layout bounds
-            point.x() >= layout.x
-                && point.x() <= layout.x + layout.width
-                && point.y() >= layout.y
-                && point.y() <= layout.y + layout.height
-        } else {
-            false
-        }
-    }
-
-    fn get_children_mut(&mut self) -> Vec<WidgetRef> {
-        Vec::new()
+        self.layout.as_ref().is_some_and(|r| r.contains(point))
     }
 
     fn set_hovered(&mut self, hovered: bool) {

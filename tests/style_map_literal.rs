@@ -1,9 +1,11 @@
 //! Tests that Flex widget style properties with nested map literals
 //! (background_color, padding, margin) parse and evaluate correctly.
 
-use ogham::parser::{Expression, Literal, Parser, Statement};
+mod common;
+
+use common::parse_module;
+use ogham::parser::{Expression, Literal, Statement};
 use ogham::runtime::value::Value;
-use ogham::scanner::Scanner;
 
 const FLEX_STYLE_WITH_NESTED_MAPS: &str = r#"
 Flex {
@@ -20,14 +22,6 @@ Flex {
   }
 }
 "#;
-
-/// Parses source as a full module (single implicit-return expression).
-fn parse_module(source: &str) -> ogham::parser::Function {
-    let mut scanner = Scanner::new(source.to_string());
-    let tokens = scanner.scan();
-    let mut parser = Parser::new(tokens);
-    parser.parse().expect("parse should succeed")
-}
 
 #[test]
 fn parse_flex_style_with_nested_map_literals() {

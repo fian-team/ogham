@@ -15,4 +15,12 @@ impl Rect {
             height,
         }
     }
+
+    /// Returns `true` if `point` lies within this rectangle (inclusive edges).
+    pub fn contains(&self, point: &super::point::Point) -> bool {
+        point.x() >= self.x
+            && point.x() <= self.x + self.width
+            && point.y() >= self.y
+            && point.y() <= self.y + self.height
+    }
 }

@@ -217,13 +217,6 @@ impl Ogham {
         &self.runtime
     }
 
-    /// Run a closure with shared access to the runtime, internalizing
-    /// the mutex lock (with poisoned-mutex recovery).
-    pub fn with_runtime<R>(&self, f: impl FnOnce(&runtime::Runtime) -> R) -> R {
-        let guard = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-        f(&guard)
-    }
-
     /// Run a closure with exclusive access to the runtime, internalizing
     /// the mutex lock (with poisoned-mutex recovery).
     pub fn with_runtime_mut<R>(&self, f: impl FnOnce(&mut runtime::Runtime) -> R) -> R {

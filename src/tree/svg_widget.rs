@@ -236,14 +236,6 @@ impl Widget for SvgWidget {
         0.0 // No children so no basis
     }
 
-    fn get_children_fixed_width(&self) -> f32 {
-        0.0 // No children so no fixed width
-    }
-
-    fn get_children_fixed_height(&self) -> f32 {
-        0.0 // No children so no fixed height
-    }
-
     fn get_fixed_width(&self) -> Option<f32> {
         Some(self.width)
     }
@@ -288,17 +280,6 @@ impl Widget for SvgWidget {
     }
 
     fn contains_point(&self, point: &Point) -> bool {
-        if let Some(layout) = &self.layout {
-            point.x() >= layout.x
-                && point.x() <= layout.x + layout.width
-                && point.y() >= layout.y
-                && point.y() <= layout.y + layout.height
-        } else {
-            false
-        }
-    }
-
-    fn get_children_mut(&mut self) -> Vec<WidgetRef> {
-        Vec::new()
+        self.layout.as_ref().is_some_and(|r| r.contains(point))
     }
 }

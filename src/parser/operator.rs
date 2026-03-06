@@ -14,6 +14,9 @@ pub enum Operator {
     // Factor
     Multiply,
     Divide,
+    Modulo,
+    // Exponent
+    Power,
     // Unary
     Not,
     // Logical

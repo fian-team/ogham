@@ -1,16 +1,9 @@
 //! Integration tests for unary expressions (negation and logical not).
 
-use ogham::runtime::value::Value;
+mod common;
 
-fn eval(source: &str) -> Value {
-    let wrapped = format!("let main = fn () {{ {} }};", source);
-    let mut runtime =
-        ogham::runtime::from_source(&wrapped, None).expect("from_source should succeed");
-    let module = runtime.get_module().expect("module").clone();
-    runtime
-        .execute_module(&module)
-        .expect("execute_module should succeed")
-}
+use common::eval;
+use ogham::runtime::value::Value;
 
 #[test]
 fn negate_integer() {

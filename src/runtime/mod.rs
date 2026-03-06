@@ -134,7 +134,7 @@ impl Runtime {
         self.event_handlers.insert(name.into(), Arc::new(handler));
     }
 
-    pub fn register_event_handler_arc(
+    pub(crate) fn register_event_handler_arc(
         &mut self,
         name: String,
         handler: Arc<dyn Fn(&[Value]) -> bool + Send + Sync>,
@@ -155,10 +155,6 @@ impl Runtime {
 
     pub fn request_rerender(&mut self) {
         self.needs_rerender = true;
-    }
-
-    pub fn clear_rerender_flag(&mut self) {
-        self.needs_rerender = false;
     }
 
     pub fn set_module(&mut self, module: Function) {
@@ -202,14 +198,6 @@ impl Runtime {
         // Cleanup state for unmounted components
         self.cleanup_unmounted_state();
         result
-    }
-
-    /// Invalidate the cached bytecode and import caches so the next
-    /// execute_module recompiles and re-imports everything from disk.
-    pub fn invalidate_compiled_module(&mut self) {
-        self.compiled_module = None;
-        self.import_loaded.clear();
-        self.import_cache.clear();
     }
 
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {

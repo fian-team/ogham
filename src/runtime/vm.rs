@@ -118,6 +118,17 @@ impl VM {
         &self.current_frame().closure.proto.chunk.constants[idx as usize]
     }
 
+    /// Read a constant at `idx` and return it as a `String`, or error if it
+    /// is not a `Value::String`.
+    fn read_string_constant(&self, idx: u16) -> Result<String, VMError> {
+        match self.read_constant(idx) {
+            Value::String(s) => Ok(s.clone()),
+            _ => Err(VMError::InvalidOperation(
+                "expected string constant".to_string(),
+            )),
+        }
+    }
+
     // -- Upvalue helpers ----------------------------------------------------
 
     fn capture_upvalue(&mut self, stack_index: usize) -> Rc<RefCell<Upvalue>> {
@@ -318,14 +329,7 @@ impl VM {
 
                 // -- State ---------------------------------------------------
                 OpCode::GetState(name_idx) => {
-                    let name = match self.read_constant(name_idx) {
-                        Value::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::InvalidOperation(
-                                "GetState: expected string constant for variable name".to_string(),
-                            ))
-                        }
-                    };
+                    let name = self.read_string_constant(name_idx)?;
                     // Lookup order: state → host state. If neither, it's
                     // an undefined variable.
                     if let Some(val) = runtime.get_state_value(&name) {
@@ -337,14 +341,7 @@ impl VM {
                     }
                 }
                 OpCode::DeclareState(name_idx) => {
-                    let name = match self.read_constant(name_idx) {
-                        Value::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::InvalidOperation(
-                                "DeclareState: expected string constant".to_string(),
-                            ))
-                        }
-                    };
+                    let name = self.read_string_constant(name_idx)?;
                     // The initializer value is on top of the stack.
                     let init_value = self.pop()?;
 
@@ -371,14 +368,7 @@ impl VM {
                     self.push(value)?;
                 }
                 OpCode::SetState(name_idx) => {
-                    let name = match self.read_constant(name_idx) {
-                        Value::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::InvalidOperation(
-                                "SetState: expected string constant".to_string(),
-                            ))
-                        }
-                    };
+                    let name = self.read_string_constant(name_idx)?;
                     let value = self.peek(0).clone();
                     runtime.set_state_value(&name, value);
                     runtime.request_rerender();
@@ -386,14 +376,7 @@ impl VM {
 
                 // -- Host state ----------------------------------------------
                 OpCode::GetHostState(name_idx) => {
-                    let name = match self.read_constant(name_idx) {
-                        Value::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::InvalidOperation(
-                                "GetHostState: expected string constant".to_string(),
-                            ))
-                        }
-                    };
+                    let name = self.read_string_constant(name_idx)?;
                     if let Some(val) = runtime.get_host_state(&name) {
                         self.push(val)?;
                     } else {
@@ -421,6 +404,16 @@ impl VM {
                     let b = self.pop()?;
                     let a = self.pop()?;
                     self.push(ops::divide(&a, &b)?)?;
+                }
+                OpCode::Mod => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(ops::modulo(&a, &b)?)?;
+                }
+                OpCode::Pow => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    self.push(ops::power(&a, &b)?)?;
                 }
                 OpCode::Negate => {
                     let val = self.pop()?;
@@ -693,14 +686,7 @@ impl VM {
                     }
                 }
                 OpCode::GetProperty(name_idx) => {
-                    let name = match self.read_constant(name_idx) {
-                        Value::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::InvalidOperation(
-                                "GetProperty: expected string constant".to_string(),
-                            ))
-                        }
-                    };
+                    let name = self.read_string_constant(name_idx)?;
                     let object = self.pop()?;
                     match object {
                         Value::Map(map) => {
@@ -732,14 +718,7 @@ impl VM {
                     identifier_constant,
                     property_count,
                 } => {
-                    let ident_name = match self.read_constant(identifier_constant) {
-                        Value::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::InvalidOperation(
-                                "Widget: expected string constant for identifier".to_string(),
-                            ))
-                        }
-                    };
+                    let ident_name = self.read_string_constant(identifier_constant)?;
                     let mut props = HashMap::new();
                     let pc = property_count as usize;
                     // Stack has pc pairs of (key_string, value).
@@ -804,8 +783,8 @@ impl VM {
                     self.push(Value::Void)?;
                 }
                 OpCode::Log => {
-                    let _val = self.pop()?;
-                    // Log is a no-op in the current tree-walk interpreter too.
+                    let val = self.pop()?;
+                    eprintln!("[ogham] {}", val);
                     self.push(Value::Void)?;
                 }
 
@@ -816,14 +795,7 @@ impl VM {
 
                 // -- Import --------------------------------------------------
                 OpCode::Import(meta_idx) => {
-                    let meta_str = match self.read_constant(meta_idx) {
-                        Value::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::InvalidOperation(
-                                "Import: expected string constant".to_string(),
-                            ))
-                        }
-                    };
+                    let meta_str = self.read_string_constant(meta_idx)?;
                     let meta = deserialize_import_meta(&meta_str).ok_or_else(|| {
                         VMError::ImportError(format!("Invalid import metadata: {}", meta_str))
                     })?;

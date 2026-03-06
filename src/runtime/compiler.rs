@@ -142,6 +142,8 @@ impl Compiler {
             | OpCode::Sub
             | OpCode::Mul
             | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Pow
             | OpCode::Eq
             | OpCode::Ne
             | OpCode::Gt
@@ -500,9 +502,6 @@ impl Compiler {
                 self.compile_expression(&log_stmt.get_value())?;
                 self.emit(OpCode::Log);
             }
-            Statement::Event(_) => {
-                // Events are not executed by the runtime.
-            }
             Statement::Import(import_stmt) => {
                 self.compile_import_stmt(import_stmt)?;
             }
@@ -575,6 +574,49 @@ impl Compiler {
     }
 
     // -----------------------------------------------------------------------
+    // For-loop shared core
+    // -----------------------------------------------------------------------
+
+    /// Shared scaffolding for both for-loop statements and for-loop
+    /// expressions. Sets up the counter/end locals, loop header, increment,
+    /// and exit jump. The caller supplies `body_fn` to emit the body-specific
+    /// bytecode; it receives the counter slot index.
+    fn compile_for_loop_core(
+        &mut self,
+        for_loop_variable: &str,
+        range_start: &Expression,
+        range_end: &Expression,
+        body_fn: impl FnOnce(&mut Self, u8) -> Result<(), VMError>,
+    ) -> Result<(), VMError> {
+        self.begin_scope();
+
+        self.compile_expression(range_start)?;
+        let counter_slot = self.add_local(for_loop_variable.to_string(), false);
+
+        self.compile_expression(range_end)?;
+        let end_slot = self.add_local(format!("$end_{}", for_loop_variable), false);
+
+        let loop_start = self.function.chunk.code.len();
+        self.emit(OpCode::GetLocal(counter_slot));
+        self.emit(OpCode::GetLocal(end_slot));
+        self.emit(OpCode::Lt);
+        let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0));
+
+        body_fn(self, counter_slot)?;
+
+        self.emit(OpCode::GetLocal(counter_slot));
+        self.emit_constant(Value::Integer(1));
+        self.emit(OpCode::Add);
+        self.emit(OpCode::SetLocal(counter_slot));
+
+        self.emit_loop(loop_start);
+        self.patch_jump(exit_jump);
+
+        self.end_scope();
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // For-loop statement
     // -----------------------------------------------------------------------
 
@@ -583,44 +625,16 @@ impl Compiler {
         for_loop: &crate::parser::ForLoopStatement,
     ) -> Result<(), VMError> {
         let var_name = for_loop.get_variable().get();
+        let range_start = for_loop.get_range_start();
+        let range_end = for_loop.get_range_end();
+        let body = for_loop.get_body();
 
-        self.begin_scope();
-
-        // Compile range start, then immediately add it as a local so its
-        // slot reflects the actual stack depth.
-        self.compile_expression(&for_loop.get_range_start())?;
-        let counter_slot = self.add_local(var_name.clone(), false);
-
-        // Same for range end.
-        self.compile_expression(&for_loop.get_range_end())?;
-        let _end_slot = self.add_local(format!("$end_{}", var_name), false);
-
-        // Loop header: compare counter < end.
-        let loop_start = self.function.chunk.code.len();
-        self.emit(OpCode::GetLocal(counter_slot));
-        self.emit(OpCode::GetLocal(_end_slot));
-        self.emit(OpCode::Lt);
-        let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0));
-
-        // Loop body.
-        self.begin_scope();
-        self.compile_block(&for_loop.get_body())?;
-        self.end_scope();
-
-        // Increment counter: counter = counter + 1.
-        self.emit(OpCode::GetLocal(counter_slot));
-        self.emit_constant(Value::Integer(1));
-        self.emit(OpCode::Add);
-        self.emit(OpCode::SetLocal(counter_slot));
-
-        // Jump back to loop header.
-        self.emit_loop(loop_start);
-
-        // Patch exit jump.
-        self.patch_jump(exit_jump);
-
-        self.end_scope();
-        Ok(())
+        self.compile_for_loop_core(&var_name, &range_start, &range_end, |compiler, _| {
+            compiler.begin_scope();
+            compiler.compile_block(&body)?;
+            compiler.end_scope();
+            Ok(())
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -628,52 +642,22 @@ impl Compiler {
     // -----------------------------------------------------------------------
 
     fn compile_for_loop_expression(&mut self, for_loop: &ForLoopExpression) -> Result<(), VMError> {
-        // Push the results-collector array.
         self.emit(OpCode::BeginForExpr);
 
         let var_name = for_loop.variable.get();
 
-        self.begin_scope();
-
-        // Compile range start, then immediately add it as a local so its
-        // slot reflects the actual stack depth.
-        self.compile_expression(&for_loop.range_start)?;
-        let counter_slot = self.add_local(var_name.clone(), false);
-
-        // Same for range end.
-        self.compile_expression(&for_loop.range_end)?;
-        let end_slot = self.add_local(format!("$end_{}", var_name), false);
-
-        // Loop header.
-        let loop_start = self.function.chunk.code.len();
-        self.emit(OpCode::GetLocal(counter_slot));
-        self.emit(OpCode::GetLocal(end_slot));
-        self.emit(OpCode::Lt);
-        let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0));
-
-        // Loop body – compile the block; the result value is on the stack.
-        // Use compile_expression_block so that the parser's implicit Return
-        // (for the last expression) leaves the value on the stack instead of
-        // exiting the function.
-        self.begin_scope();
-        self.compile_expression_block(&for_loop.body)?;
-        self.end_scope();
-
-        // Append result to collector.
-        self.emit(OpCode::AppendForExpr);
-
-        // Increment counter.
-        self.emit(OpCode::GetLocal(counter_slot));
-        self.emit_constant(Value::Integer(1));
-        self.emit(OpCode::Add);
-        self.emit(OpCode::SetLocal(counter_slot));
-
-        self.emit_loop(loop_start);
-        self.patch_jump(exit_jump);
-
-        self.end_scope();
-        // The results array is now on top of the stack.
-        Ok(())
+        self.compile_for_loop_core(
+            &var_name,
+            &for_loop.range_start,
+            &for_loop.range_end,
+            |compiler, _| {
+                compiler.begin_scope();
+                compiler.compile_expression_block(&for_loop.body)?;
+                compiler.end_scope();
+                compiler.emit(OpCode::AppendForExpr);
+                Ok(())
+            },
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -707,6 +691,12 @@ impl Compiler {
                     }
                     Operator::Divide => {
                         self.emit(OpCode::Div);
+                    }
+                    Operator::Modulo => {
+                        self.emit(OpCode::Mod);
+                    }
+                    Operator::Power => {
+                        self.emit(OpCode::Pow);
                     }
                     Operator::Equals => {
                         self.emit(OpCode::Eq);
@@ -792,6 +782,56 @@ impl Compiler {
                 Ok(())
             }
             Expression::Match(m) => self.compile_match(m),
+            Expression::PrefixIncrement(ident) => {
+                self.compile_increment(ident, true)
+            }
+            Expression::PostfixIncrement(ident) => {
+                self.compile_increment(ident, false)
+            }
+        }
+    }
+
+    /// Compile `++x` (prefix=true) or `x++` (prefix=false).
+    /// Leaves the appropriate value on the stack: new for prefix, old for postfix.
+    fn compile_increment(
+        &mut self,
+        ident: &crate::parser::Identifier,
+        prefix: bool,
+    ) -> Result<(), VMError> {
+        let name = ident.get();
+
+        if let Some(slot) = self.resolve_local(&name) {
+            if !prefix {
+                self.emit(OpCode::GetLocal(slot));
+            }
+            self.emit(OpCode::GetLocal(slot));
+            self.emit_constant(Value::Integer(1));
+            self.emit(OpCode::Add);
+            if self.is_local_state(&name) {
+                let name_const = self.chunk().add_constant(Value::String(name.clone()));
+                self.emit(OpCode::SetState(name_const));
+            }
+            self.emit(OpCode::SetLocal(slot));
+            if prefix {
+                self.emit(OpCode::GetLocal(slot));
+            }
+            Ok(())
+        } else if let Some(uv) = self.resolve_upvalue(&name) {
+            if !prefix {
+                self.emit(OpCode::GetUpvalue(uv));
+            }
+            self.emit(OpCode::GetUpvalue(uv));
+            self.emit_constant(Value::Integer(1));
+            self.emit(OpCode::Add);
+            let name_const = self.chunk().add_constant(Value::String(name.clone()));
+            self.emit(OpCode::SetState(name_const));
+            self.emit(OpCode::SetUpvalue(uv));
+            if prefix {
+                self.emit(OpCode::GetUpvalue(uv));
+            }
+            Ok(())
+        } else {
+            Err(VMError::UndefinedVariable(name))
         }
     }
 

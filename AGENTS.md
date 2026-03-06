@@ -165,10 +165,10 @@ for (i in 0..items.length()) {
 };
 ```
 
-### Type casting
+### Debugging
 
 ```ogh
-let s = count -> string;
+log expression;  // prints value to stderr
 ```
 
 ## Integration Guide

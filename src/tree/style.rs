@@ -53,272 +53,108 @@ pub struct FlexStyleBuilder {
 }
 
 impl FlexStyleBuilder {
-    /// Sets the position property
     pub fn position(mut self, position: Position) -> Self {
         self.style.position = position;
         self
     }
 
-    /// Sets position to Static
-    pub fn static_position(mut self) -> Self {
-        self.style.position = Position::Static;
-        self
-    }
-
-    /// Sets position to Relative with the given offsets
-    pub fn relative_position(mut self, x: f32, y: f32) -> Self {
-        self.style.position = Position::Relative(x, y);
-        self
-    }
-
-    /// Sets position to Absolute with the given offsets
-    pub fn absolute_position(mut self, x: f32, y: f32) -> Self {
-        self.style.position = Position::Absolute(x, y);
-        self
-    }
-
-    /// Sets the width property
     pub fn width(mut self, width: Size) -> Self {
         self.style.width = width;
         self
     }
 
-    /// Sets width to Fixed with the given value
-    pub fn width_fixed(mut self, value: f32) -> Self {
-        self.style.width = Size::Fixed(value);
-        self
-    }
-
-    /// Sets width to Grow with the given basis
-    pub fn width_grow(mut self, basis: f32) -> Self {
-        self.style.width = Size::Grow(basis);
-        self
-    }
-
-    /// Sets width to Shrink
-    pub fn width_shrink(mut self) -> Self {
-        self.style.width = Size::Shrink;
-        self
-    }
-
-    /// Sets width to Percent with the given percentage
-    pub fn width_percent(mut self, percent: f32) -> Self {
-        self.style.width = Size::Percent(percent);
-        self
-    }
-
-    /// Sets the height property
     pub fn height(mut self, height: Size) -> Self {
         self.style.height = height;
         self
     }
 
-    /// Sets height to Fixed with the given value
-    pub fn height_fixed(mut self, value: f32) -> Self {
-        self.style.height = Size::Fixed(value);
-        self
-    }
-
-    /// Sets height to Grow with the given basis
-    pub fn height_grow(mut self, basis: f32) -> Self {
-        self.style.height = Size::Grow(basis);
-        self
-    }
-
-    /// Sets height to Shrink
-    pub fn height_shrink(mut self) -> Self {
-        self.style.height = Size::Shrink;
-        self
-    }
-
-    /// Sets height to Percent with the given percentage
-    pub fn height_percent(mut self, percent: f32) -> Self {
-        self.style.height = Size::Percent(percent);
-        self
-    }
-
-    /// Sets the direction property
     pub fn direction(mut self, direction: Direction) -> Self {
         self.style.direction = direction;
         self
     }
 
-    /// Sets direction to Row
-    pub fn row(mut self) -> Self {
-        self.style.direction = Direction::Row;
-        self
-    }
-
-    /// Sets direction to Column
-    pub fn column(mut self) -> Self {
-        self.style.direction = Direction::Column;
-        self
-    }
-
-    /// Sets direction to RowReverse
-    pub fn row_reverse(mut self) -> Self {
-        self.style.direction = Direction::RowReverse;
-        self
-    }
-
-    /// Sets direction to ColumnReverse
-    pub fn column_reverse(mut self) -> Self {
-        self.style.direction = Direction::ColumnReverse;
-        self
-    }
-
-    /// Sets the main alignment property
     pub fn main_alignment(mut self, alignment: Alignment) -> Self {
         self.style.main_alignment = alignment;
         self
     }
 
-    /// Sets the cross alignment property
     pub fn cross_alignment(mut self, alignment: Alignment) -> Self {
         self.style.cross_alignment = alignment;
         self
     }
 
-    /// Sets both main and cross alignment
+    /// Sets both main and cross alignment.
     pub fn align(mut self, main: Alignment, cross: Alignment) -> Self {
         self.style.main_alignment = main;
         self.style.cross_alignment = cross;
         self
     }
 
-    /// Sets the gap property
     pub fn gap(mut self, gap: f32) -> Self {
         self.style.gap = gap;
         self
     }
 
-    /// Sets the padding property
     pub fn padding(mut self, padding: Padding) -> Self {
         self.style.padding = padding;
         self
     }
 
-    /// Sets padding to all sides with the same value
-    pub fn padding_all(mut self, value: f32) -> Self {
-        self.style.padding = Padding::all(value);
-        self
-    }
-
-    /// Sets padding with symmetric horizontal and vertical values
-    pub fn padding_symmetric(mut self, horizontal: f32, vertical: f32) -> Self {
-        self.style.padding = Padding::symmetric(horizontal, vertical);
-        self
-    }
-
-    /// Sets padding with individual values
-    pub fn padding_xy(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
-        self.style.padding = Padding::new(top, right, bottom, left);
-        self
-    }
-
-    /// Sets the margin property
     pub fn margin(mut self, margin: Margin) -> Self {
         self.style.margin = margin;
         self
     }
 
-    /// Sets margin to all sides with the same value
-    pub fn margin_all(mut self, value: f32) -> Self {
-        self.style.margin = Margin::all(value);
-        self
-    }
-
-    /// Sets margin with symmetric horizontal and vertical values
-    pub fn margin_symmetric(mut self, horizontal: f32, vertical: f32) -> Self {
-        self.style.margin = Margin::symmetric(horizontal, vertical);
-        self
-    }
-
-    /// Sets margin with individual values
-    pub fn margin_xy(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
-        self.style.margin = Margin::new(top, right, bottom, left);
-        self
-    }
-
-    /// Sets the border property
     pub fn border(mut self, border: Border) -> Self {
         self.style.border = border;
         self
     }
 
-    /// Sets the corner radii property
     pub fn corner_radii(mut self, corner_radii: CornerRadii) -> Self {
         self.style.corner_radii = corner_radii;
         self
     }
 
-    /// Sets corner radii to all corners with the same value
-    pub fn corner_radius(mut self, radius: f32) -> Self {
-        self.style.corner_radii = CornerRadii::all(radius);
-        self
-    }
-
-    /// Sets the background color property
     pub fn background_color(mut self, color: Color) -> Self {
         self.style.background_color = Some(color);
         self
     }
 
-    /// Sets the background color property (removes background if None)
     pub fn background_color_opt(mut self, color: Option<Color>) -> Self {
         self.style.background_color = color;
         self
     }
 
-    /// Convenience method to set background color from RGBA values
-    pub fn background(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
-        self.style.background_color = Some(Color::new(r, g, b, a));
-        self
-    }
-
-    /// Sets the background image property
     pub fn background_image(mut self, image_path: String) -> Self {
         self.style.background_image = Some(image_path);
         self
     }
 
-    /// Sets the background image property (removes image if None)
     pub fn background_image_opt(mut self, image_path: Option<String>) -> Self {
         self.style.background_image = image_path;
         self
     }
 
-    /// Sets the text size property
     pub fn text_size(mut self, size: f32) -> Self {
         self.style.text_size = Some(size);
         self
     }
 
-    /// Sets the text size property (removes size if None)
     pub fn text_size_opt(mut self, size: Option<f32>) -> Self {
         self.style.text_size = size;
         self
     }
 
-    /// Sets the text color property
     pub fn text_color(mut self, color: Color) -> Self {
         self.style.text_color = Some(color);
         self
     }
 
-    /// Sets the text color property (removes color if None)
     pub fn text_color_opt(mut self, color: Option<Color>) -> Self {
         self.style.text_color = color;
         self
     }
 
-    /// Convenience method to set text color from RGBA values
-    pub fn text_color_rgba(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
-        self.style.text_color = Some(Color::new(r, g, b, a));
-        self
-    }
-
-    /// Builds the FlexStyle
     pub fn build(self) -> FlexStyle {
         self.style
     }
@@ -347,6 +183,24 @@ pub enum Size {
     Shrink,
     Fixed(f32),
     Percent(f32),
+}
+
+impl Size {
+    /// Returns the fixed value if this is `Size::Fixed(v)`, otherwise `None`.
+    pub fn as_fixed(&self) -> Option<f32> {
+        match self {
+            Size::Fixed(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Returns the grow basis if this is `Size::Grow(basis)`, otherwise `0.0`.
+    pub fn grow_basis(&self) -> f32 {
+        match self {
+            Size::Grow(basis) => *basis,
+            _ => 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -416,109 +270,36 @@ pub struct TextStyleBuilder {
 }
 
 impl TextStyleBuilder {
-    /// Sets the font size
     pub fn size(mut self, size: f32) -> Self {
         self.style.size = size;
         self
     }
 
-    /// Sets the text color
     pub fn color(mut self, color: Color) -> Self {
         self.style.color = color;
         self
     }
 
-    /// Convenience method to set color from RGBA values
-    pub fn color_rgba(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
-        self.style.color = Color::new(r, g, b, a);
-        self
-    }
-
-    /// Sets the font weight
     pub fn weight(mut self, weight: FontWeight) -> Self {
         self.style.weight = weight;
         self
     }
 
-    /// Sets font weight to Normal
-    pub fn normal(mut self) -> Self {
-        self.style.weight = FontWeight::Normal;
-        self
-    }
-
-    /// Sets font weight to SemiBold
-    pub fn semi_bold(mut self) -> Self {
-        self.style.weight = FontWeight::SemiBold;
-        self
-    }
-
-    /// Sets font weight to Bold
-    pub fn bold(mut self) -> Self {
-        self.style.weight = FontWeight::Bold;
-        self
-    }
-
-    /// Sets font weight to Light
-    pub fn light(mut self) -> Self {
-        self.style.weight = FontWeight::Light;
-        self
-    }
-
-    /// Sets the text decoration
     pub fn decoration(mut self, decoration: TextDecoration) -> Self {
         self.style.decoration = decoration;
         self
     }
 
-    /// Sets text decoration to None
-    pub fn no_decoration(mut self) -> Self {
-        self.style.decoration = TextDecoration::None;
-        self
-    }
-
-    /// Sets text decoration to Underline
-    pub fn underline(mut self) -> Self {
-        self.style.decoration = TextDecoration::Underline;
-        self
-    }
-
-    /// Sets text decoration to Strikethrough
-    pub fn strikethrough(mut self) -> Self {
-        self.style.decoration = TextDecoration::Strikethrough;
-        self
-    }
-
-    /// Sets the text alignment
     pub fn align(mut self, align: TextAlign) -> Self {
         self.style.align = align;
         self
     }
 
-    /// Sets text alignment to Left
-    pub fn left(mut self) -> Self {
-        self.style.align = TextAlign::Left;
-        self
-    }
-
-    /// Sets text alignment to Center
-    pub fn center(mut self) -> Self {
-        self.style.align = TextAlign::Center;
-        self
-    }
-
-    /// Sets text alignment to Right
-    pub fn right(mut self) -> Self {
-        self.style.align = TextAlign::Right;
-        self
-    }
-
-    /// Sets the font family name (must match a registered font)
     pub fn font(mut self, name: String) -> Self {
         self.style.font = Some(name);
         self
     }
 
-    /// Builds the TextStyle
     pub fn build(self) -> TextStyle {
         self.style
     }
@@ -668,15 +449,16 @@ impl Alignment {
     }
 }
 
+/// Generic four-sided spacing (used for both padding and margin).
 #[derive(Debug, Default, Clone)]
-pub struct Padding {
+pub struct Spacing {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
     pub left: f32,
 }
 
-impl Padding {
+impl Spacing {
     pub fn identity() -> Self {
         Self {
             top: 0.0,
@@ -730,67 +512,8 @@ impl Padding {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct Margin {
-    pub top: f32,
-    pub right: f32,
-    pub bottom: f32,
-    pub left: f32,
-}
-
-impl Margin {
-    pub fn identity() -> Self {
-        Self {
-            top: 0.0,
-            right: 0.0,
-            bottom: 0.0,
-            left: 0.0,
-        }
-    }
-
-    pub fn new(top: f32, right: f32, bottom: f32, left: f32) -> Self {
-        Self {
-            top,
-            right,
-            bottom,
-            left,
-        }
-    }
-
-    pub fn all(value: f32) -> Self {
-        Self {
-            top: value,
-            right: value,
-            bottom: value,
-            left: value,
-        }
-    }
-
-    pub fn symmetric(horizontal: f32, vertical: f32) -> Self {
-        Self {
-            top: vertical,
-            right: horizontal,
-            bottom: vertical,
-            left: horizontal,
-        }
-    }
-
-    pub fn get_top(&self) -> f32 {
-        self.top
-    }
-
-    pub fn get_right(&self) -> f32 {
-        self.right
-    }
-
-    pub fn get_bottom(&self) -> f32 {
-        self.bottom
-    }
-
-    pub fn get_left(&self) -> f32 {
-        self.left
-    }
-}
+pub type Padding = Spacing;
+pub type Margin = Spacing;
 
 #[derive(Debug, Default, Clone)]
 pub struct Border {

@@ -50,6 +50,8 @@ pub enum OpCode {
     Sub,
     Mul,
     Div,
+    Mod,
+    Pow,
     Negate,
 
     // -- Comparison ---------------------------------------------------------

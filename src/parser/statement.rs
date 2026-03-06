@@ -1,4 +1,4 @@
-use super::{block::*, expression::*, function::*, identifier::*};
+use super::{block::*, expression::*, identifier::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Statement {
@@ -7,7 +7,6 @@ pub enum Statement {
     DeclareState(DeclareStateStatement),
     Assign(AssignStatement),
     Return(ReturnStatement),
-    Event(EventStatement),
     Conditional(ConditionalStatement),
     Log(LogStatement),
     ForLoop(ForLoopStatement),
@@ -33,10 +32,6 @@ impl Statement {
 
     pub fn new_return(value: Option<Expression>) -> Statement {
         Statement::Return(ReturnStatement::new(value))
-    }
-
-    pub fn new_event(identifier: &Identifier, value: Function) -> Statement {
-        Statement::Event(EventStatement::new(identifier, value))
     }
 
     pub fn new_conditional(
@@ -154,27 +149,6 @@ impl AssignStatement {
     }
 
     pub fn get_value(&self) -> Expression {
-        self.1.clone()
-    }
-}
-
-#[derive(PartialEq, Clone, Debug)]
-pub struct EventStatement(pub Identifier, pub Function);
-
-impl EventStatement {
-    pub fn new(identifier: &Identifier, value: Function) -> EventStatement {
-        EventStatement(identifier.clone(), value)
-    }
-
-    pub fn get_identifier(&self) -> Identifier {
-        self.0.clone()
-    }
-
-    pub fn get_identifier_value(&self) -> String {
-        self.0.get()
-    }
-
-    pub fn get_value(&self) -> Function {
         self.1.clone()
     }
 }

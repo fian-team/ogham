@@ -79,14 +79,7 @@ impl Scanner {
                     self.create_token(TokenType::Plus)
                 }
             }
-            '-' => {
-                if self.match_next('>') {
-                    self.consume(); // consume the '>'
-                    self.create_token(TokenType::Arrow)
-                } else {
-                    self.create_token(TokenType::Minus)
-                }
-            }
+            '-' => self.create_token(TokenType::Minus),
             '*' => self.create_token(TokenType::Multiply),
             '/' => {
                 if self.match_next('/') {

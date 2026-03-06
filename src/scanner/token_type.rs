@@ -21,7 +21,6 @@ pub enum TokenType {
     Divide,    // /
     Modulo,    // %
     Power,     // ^
-    Arrow,     // ->
     Increment, // ++
     Range,     // ..
     Spread,    // ...

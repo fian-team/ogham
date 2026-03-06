@@ -15,6 +15,8 @@ pub enum Expression {
     SpreadForLoop(ForLoopExpression), // ...for (i in 0..5) { ... }
     Spread(Box<Expression>),          // ...expr (e.g. in array literals)
     Match(MatchExpression),           // match expr { pat => body, ... }
+    PrefixIncrement(Identifier),      // ++x
+    PostfixIncrement(Identifier),     // x++
 }
 
 impl Expression {
