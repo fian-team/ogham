@@ -1,5 +1,23 @@
 use crate::tree::WidgetRef;
 
+/// Represents either the horizontal or vertical axis, used to unify
+/// row/column logic in layout calculations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+impl Axis {
+    /// Returns the perpendicular axis.
+    pub fn cross(&self) -> Axis {
+        match self {
+            Axis::Horizontal => Axis::Vertical,
+            Axis::Vertical => Axis::Horizontal,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FlexStyle {
     pub position: Position,
@@ -43,6 +61,49 @@ impl FlexStyle {
     /// Creates a new builder for constructing a FlexStyle
     pub fn builder() -> FlexStyleBuilder {
         FlexStyleBuilder::default()
+    }
+
+    /// Total inset (padding + margin + border) on the left side.
+    pub fn inset_left(&self) -> f32 {
+        self.padding.get_left() + self.margin.get_left() + self.border.get_left()
+    }
+
+    /// Total inset (padding + margin + border) on the top side.
+    pub fn inset_top(&self) -> f32 {
+        self.padding.get_top() + self.margin.get_top() + self.border.get_top()
+    }
+
+    /// Total inset (padding + margin + border) on the right side.
+    pub fn inset_right(&self) -> f32 {
+        self.padding.get_right() + self.margin.get_right() + self.border.get_right()
+    }
+
+    /// Total inset (padding + margin + border) on the bottom side.
+    pub fn inset_bottom(&self) -> f32 {
+        self.padding.get_bottom() + self.margin.get_bottom() + self.border.get_bottom()
+    }
+
+    /// Total horizontal inset (left + right).
+    pub fn horizontal_inset(&self) -> f32 {
+        self.inset_left() + self.inset_right()
+    }
+
+    /// Total vertical inset (top + bottom).
+    pub fn vertical_inset(&self) -> f32 {
+        self.inset_top() + self.inset_bottom()
+    }
+
+    /// Returns the size along the given axis.
+    pub fn size_on_axis(&self, axis: Axis) -> &Size {
+        match axis {
+            Axis::Horizontal => &self.width,
+            Axis::Vertical => &self.height,
+        }
+    }
+
+    /// Total inset (padding + margin + border) along the given axis.
+    pub fn inset_on_axis(&self, axis: Axis) -> f32 {
+        self.padding.total(axis) + self.margin.total(axis) + self.border.width_total(axis)
     }
 }
 
@@ -347,6 +408,16 @@ impl Direction {
         matches!(self, Direction::RowReverse | Direction::ColumnReverse)
     }
 
+    /// The primary axis along which children are laid out.
+    pub fn main_axis(&self) -> Axis {
+        if self.is_row() { Axis::Horizontal } else { Axis::Vertical }
+    }
+
+    /// The axis perpendicular to the main axis.
+    pub fn cross_axis(&self) -> Axis {
+        self.main_axis().cross()
+    }
+
     pub fn update_main_axis_position(&self, x: &mut f32, y: &mut f32, delta: f32) {
         match self {
             Direction::Row | Direction::RowReverse => *x += delta,
@@ -510,6 +581,27 @@ impl Spacing {
     pub fn get_left(&self) -> f32 {
         self.left
     }
+
+    /// Returns the start-side value for the given axis (left for horizontal, top for vertical).
+    pub fn start(&self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Horizontal => self.left,
+            Axis::Vertical => self.top,
+        }
+    }
+
+    /// Returns the end-side value for the given axis (right for horizontal, bottom for vertical).
+    pub fn end(&self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Horizontal => self.right,
+            Axis::Vertical => self.bottom,
+        }
+    }
+
+    /// Returns the total (start + end) for the given axis.
+    pub fn total(&self, axis: Axis) -> f32 {
+        self.start(axis) + self.end(axis)
+    }
 }
 
 pub type Padding = Spacing;
@@ -556,6 +648,27 @@ impl Border {
 
     pub fn get_left(&self) -> f32 {
         self.left.width
+    }
+
+    /// Returns the start-side width for the given axis.
+    pub fn width_start(&self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Horizontal => self.left.width,
+            Axis::Vertical => self.top.width,
+        }
+    }
+
+    /// Returns the end-side width for the given axis.
+    pub fn width_end(&self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Horizontal => self.right.width,
+            Axis::Vertical => self.bottom.width,
+        }
+    }
+
+    /// Returns the total border width for the given axis.
+    pub fn width_total(&self, axis: Axis) -> f32 {
+        self.width_start(axis) + self.width_end(axis)
     }
 }
 

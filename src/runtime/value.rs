@@ -53,3 +53,59 @@ impl fmt::Display for Value {
         }
     }
 }
+
+/// Trait for converting Rust values into Ogham `Value`s.
+pub trait IntoOghamValue {
+    fn into_ogham_value(self) -> Value;
+}
+
+impl IntoOghamValue for i32 {
+    fn into_ogham_value(self) -> Value { Value::Integer(self) }
+}
+
+impl IntoOghamValue for u32 {
+    fn into_ogham_value(self) -> Value { Value::Integer(self as i32) }
+}
+
+impl IntoOghamValue for u64 {
+    fn into_ogham_value(self) -> Value { Value::Integer(self as i32) }
+}
+
+impl IntoOghamValue for f32 {
+    fn into_ogham_value(self) -> Value { Value::Float(self as f64) }
+}
+
+impl IntoOghamValue for f64 {
+    fn into_ogham_value(self) -> Value { Value::Float(self) }
+}
+
+impl IntoOghamValue for bool {
+    fn into_ogham_value(self) -> Value { Value::Boolean(self) }
+}
+
+impl IntoOghamValue for String {
+    fn into_ogham_value(self) -> Value { Value::String(self) }
+}
+
+impl IntoOghamValue for &str {
+    fn into_ogham_value(self) -> Value { Value::String(self.to_string()) }
+}
+
+impl<T: IntoOghamValue> IntoOghamValue for Option<T> {
+    fn into_ogham_value(self) -> Value {
+        match self {
+            Some(v) => v.into_ogham_value(),
+            None => Value::Void,
+        }
+    }
+}
+
+impl<T: IntoOghamValue> IntoOghamValue for Vec<T> {
+    fn into_ogham_value(self) -> Value {
+        Value::Array(self.into_iter().map(|v| v.into_ogham_value()).collect())
+    }
+}
+
+impl IntoOghamValue for Value {
+    fn into_ogham_value(self) -> Value { self }
+}

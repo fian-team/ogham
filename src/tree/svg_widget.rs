@@ -8,7 +8,7 @@ use super::rect::*;
 use super::Widget;
 use crate::tree::event::EventContext;
 use crate::tree::style::{Color, Direction};
-use crate::tree::WidgetRef;
+use crate::tree::{LayoutContext, WidgetRef};
 
 /// Widget for rendering SVG files.
 /// Loads the SVG at creation time. If the SVG file doesn't exist or fails to load,
@@ -213,6 +213,7 @@ impl Widget for SvgWidget {
 
     fn get_dimensions(
         &self,
+        _ctx: &LayoutContext,
         _parent_direction: &Direction,
         _parent_width: f32,
         _parent_available_width: f32,
@@ -267,6 +268,7 @@ impl Widget for SvgWidget {
 
     fn layout(
         &mut self,
+        _ctx: &LayoutContext,
         cursor_x: f32,
         cursor_y: f32,
         _parent_direction: &Direction,
@@ -281,5 +283,18 @@ impl Widget for SvgWidget {
 
     fn contains_point(&self, point: &Point) -> bool {
         self.layout.as_ref().is_some_and(|r| r.contains(point))
+    }
+
+    fn render(
+        &self,
+        ctx: &mut dyn crate::tree::RenderContext,
+        _focused: bool,
+        _image_cache: &mut crate::tree::image::ImageCache,
+    ) {
+        if let Some(layout) = &self.layout {
+            if let Some(ref dom) = self.svg_dom {
+                ctx.draw_svg_dom(dom, layout.x, layout.y, layout.width, layout.height);
+            }
+        }
     }
 }

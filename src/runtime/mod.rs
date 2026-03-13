@@ -30,6 +30,142 @@ pub mod value;
 pub mod vm;
 pub mod widget;
 
+/// Built-in prelude source that defines helper functions available in all modules.
+/// Compiled and executed once when the runtime is first created via `from_source`/`from_file`.
+const PRELUDE_SOURCE: &str = r#"
+let rgb = fn (r, g, b) { { r: r, g: g, b: b, a: 255 } };
+let rgba = fn (r, g, b, a) { { r: r, g: g, b: b, a: a } };
+"#;
+
+/// Manages component state and the call stack used for state key generation.
+pub(crate) struct StateManager {
+    pub(crate) component_state: HashMap<String, Value>,
+    pub(crate) call_stack: Vec<String>,
+    pub(crate) active_state_paths: HashSet<String>,
+    pub(crate) has_branched: bool,
+    pub(crate) call_counters: HashMap<String, usize>,
+}
+
+impl StateManager {
+    fn new() -> Self {
+        Self {
+            component_state: HashMap::new(),
+            call_stack: Vec::new(),
+            active_state_paths: HashSet::new(),
+            has_branched: false,
+            call_counters: HashMap::new(),
+        }
+    }
+
+    /// Get the current call stack path as a string.
+    pub(crate) fn get_call_stack_path(&self) -> String {
+        if self.call_stack.is_empty() {
+            "".to_string()
+        } else {
+            self.call_stack.join("/")
+        }
+    }
+
+    /// Generate a state key from the current call stack path and variable name.
+    pub(crate) fn get_state_key(&self, variable_name: &str) -> String {
+        let path = self.get_call_stack_path();
+        if path.is_empty() {
+            format!(":{}", variable_name)
+        } else {
+            format!("{}:{}", path, variable_name)
+        }
+    }
+
+    /// Build a key from a given path slice and variable name.
+    fn make_key(path: &[String], variable_name: &str) -> String {
+        if path.is_empty() {
+            format!(":{}", variable_name)
+        } else {
+            format!("{}:{}", path.join("/"), variable_name)
+        }
+    }
+
+    /// Search up the call stack for an existing state key.
+    fn find_existing_key(&self, variable_name: &str) -> Option<String> {
+        let mut search_path = self.call_stack.clone();
+        loop {
+            let key = Self::make_key(&search_path, variable_name);
+            if self.component_state.contains_key(&key) {
+                return Some(key);
+            }
+            if search_path.is_empty() {
+                break;
+            }
+            search_path.pop();
+        }
+        None
+    }
+
+    /// Get state value for a variable, searching up the call stack.
+    pub(crate) fn get_state_value(&self, variable_name: &str) -> Option<Value> {
+        self.find_existing_key(variable_name)
+            .and_then(|key| self.component_state.get(&key).cloned())
+    }
+
+    /// Set state value for a variable at the most specific existing path,
+    /// or create it at the current path if it doesn't exist.
+    pub(crate) fn set_state_value(&mut self, variable_name: &str, value: Value) {
+        if let Some(key) = self.find_existing_key(variable_name) {
+            self.component_state.insert(key, value);
+        } else {
+            let key = self.get_state_key(variable_name);
+            self.component_state.insert(key, value);
+        }
+    }
+
+    /// Cleanup state for components that are no longer mounted.
+    fn cleanup_unmounted_state(&mut self) {
+        let keys_to_remove: Vec<String> = self
+            .component_state
+            .keys()
+            .filter(|key| {
+                if let Some(colon_pos) = key.find(':') {
+                    let path = &key[..colon_pos];
+                    !self.active_state_paths.contains(path)
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
+        for key in keys_to_remove {
+            self.component_state.remove(&key);
+        }
+    }
+}
+
+/// Manages import resolution, caching, and cycle detection.
+pub(crate) struct ImportResolver {
+    pub(crate) project_root: Option<PathBuf>,
+    pub(crate) import_paths: HashMap<String, PathBuf>,
+    loading_stack: Vec<PathBuf>,
+    loaded: HashSet<PathBuf>,
+    cache: HashMap<PathBuf, Environment>,
+}
+
+impl ImportResolver {
+    fn new() -> Self {
+        Self {
+            project_root: None,
+            import_paths: HashMap::new(),
+            loading_stack: Vec::new(),
+            loaded: HashSet::new(),
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Returns the canonical paths of all modules that were imported.
+    pub(crate) fn get_imported_paths(&self) -> Vec<PathBuf> {
+        self.loaded.iter().cloned().collect()
+    }
+}
+
 /// The Ogham runtime: holds module state, component state, import caches,
 /// and the environment used during execution.
 pub struct Runtime {
@@ -40,20 +176,12 @@ pub struct Runtime {
     module: Option<Function>,
     /// Compiled bytecode for the module (cached so rerenders skip compilation).
     compiled_module: Option<FunctionProto>,
-    // State management
-    pub(crate) component_state: HashMap<String, Value>, // Key format: "{call_stack_path}:{variable_name}"
-    pub(crate) call_stack: Vec<String>,                 // Current execution path
-    pub(crate) active_state_paths: HashSet<String>, // Paths that declared state in current render
-    pub(crate) has_branched: bool, // Track if branching has occurred in current function
-    pub(crate) call_counters: HashMap<String, usize>, // Track call counts per function to generate unique paths
-    // Import resolution
-    project_root: Option<PathBuf>,
-    import_paths: HashMap<String, PathBuf>,
-    import_loading_stack: Vec<PathBuf>,
-    import_loaded: HashSet<PathBuf>,
-    /// Cached environment per resolved path so re-imports (e.g. view_two importing button)
-    /// can merge that module's exports into the current scope without re-executing.
-    import_cache: HashMap<PathBuf, Environment>,
+    pub(crate) state: StateManager,
+    pub(crate) imports: ImportResolver,
+    /// Screen dimensions set from the most recent `layout()` call.
+    /// Exposed as built-in variables `screen_width` and `screen_height` in the VM.
+    pub(crate) screen_width: f32,
+    pub(crate) screen_height: f32,
 }
 
 impl Runtime {
@@ -65,29 +193,36 @@ impl Runtime {
             needs_rerender: false,
             module: None,
             compiled_module: None,
-            component_state: HashMap::new(),
-            call_stack: Vec::new(),
-            active_state_paths: HashSet::new(),
-            has_branched: false,
-            call_counters: HashMap::new(),
-            project_root: None,
-            import_paths: HashMap::new(),
-            import_loading_stack: Vec::new(),
-            import_loaded: HashSet::new(),
-            import_cache: HashMap::new(),
+            state: StateManager::new(),
+            imports: ImportResolver::new(),
+            screen_width: 0.0,
+            screen_height: 0.0,
         }
     }
 
     pub fn set_project_root(&mut self, path: PathBuf) {
-        self.project_root = Some(path);
+        self.imports.project_root = Some(path);
     }
 
     pub fn project_root(&self) -> Option<&PathBuf> {
-        self.project_root.as_ref()
+        self.imports.project_root.as_ref()
     }
 
     pub fn set_import_paths(&mut self, paths: HashMap<String, PathBuf>) {
-        self.import_paths = paths;
+        self.imports.import_paths = paths;
+    }
+
+    /// Update the screen dimensions exposed as built-in variables.
+    /// Called from `UI::layout()` each frame.
+    pub fn set_screen_size(&mut self, width: f32, height: f32) {
+        self.screen_width = width;
+        self.screen_height = height;
+    }
+
+    /// Read an Ogham state variable by name. Returns `None` if the variable
+    /// doesn't exist in the component state.
+    pub fn get_state(&self, name: &str) -> Option<Value> {
+        self.state.get_state_value(name)
     }
 
     pub fn inject_host_state(&mut self, name: String, value: Value) {
@@ -171,7 +306,7 @@ impl Runtime {
     /// execute_module/rerender. Used by the file watcher to watch every file that
     /// affects the current UI.
     pub fn get_imported_paths(&self) -> Vec<PathBuf> {
-        self.import_loaded.iter().cloned().collect()
+        self.imports.get_imported_paths()
     }
 
     pub fn rerender(&mut self) -> Result<Value, VMError> {
@@ -180,34 +315,23 @@ impl Runtime {
                 "No module stored in runtime. Cannot rerender.".to_string(),
             ));
         }
-        // Clear the rerender flag before re-executing
         self.needs_rerender = false;
-        // Reset environment to module level
         self.environment = Environment::new();
-        // Clear active state paths for new render
-        self.active_state_paths.clear();
-        // Clear call stack
-        self.call_stack.clear();
-        // Reset call counters for new render
-        self.call_counters.clear();
-        // Reuse compiled module (already cached from first execute_module).
-        // Preserve import caches so that imported files are not re-read,
-        // re-parsed, and re-executed from disk on every rerender. The file
-        // watcher handles invalidation when files change on disk.
+        self.state.active_state_paths.clear();
+        self.state.call_stack.clear();
+        self.state.call_counters.clear();
         let result = self.execute_module_cached();
-        // Cleanup state for unmounted components
-        self.cleanup_unmounted_state();
+        self.state.cleanup_unmounted_state();
         result
     }
 
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
-        // Try bytecode path first: compile the module and run it in the VM.
-        self.active_state_paths.clear();
-        self.call_stack.clear();
-        self.call_counters.clear();
-        self.import_loading_stack.clear();
-        self.import_loaded.clear();
-        self.import_cache.clear();
+        self.state.active_state_paths.clear();
+        self.state.call_stack.clear();
+        self.state.call_counters.clear();
+        self.imports.loading_stack.clear();
+        self.imports.loaded.clear();
+        self.imports.cache.clear();
 
         // Compile (or use cached compilation).
         let proto = if let Some(ref cached) = self.compiled_module {
@@ -220,26 +344,16 @@ impl Runtime {
 
         let mut vm = VM::new();
         let result = vm.run(&proto, self);
-        self.cleanup_unmounted_state();
+        self.state.cleanup_unmounted_state();
         result
     }
 
     /// Re-execute a module using cached bytecode and cached imports.
-    ///
-    /// Unlike `execute_module`, this method:
-    /// - Preserves `import_loaded` and `import_cache` so that imported `.ogh`
-    ///   files are resolved from memory instead of being re-read, re-parsed,
-    ///   and re-executed from disk.
-    /// - Requires that compiled bytecode already exists (will error otherwise).
-    /// - Does not need the module AST, avoiding an expensive deep clone.
-    ///
-    /// Used by `rerender()` for efficient re-evaluation. The file watcher
-    /// handles cache invalidation when source files change on disk.
     fn execute_module_cached(&mut self) -> Result<Value, VMError> {
-        self.active_state_paths.clear();
-        self.call_stack.clear();
-        self.call_counters.clear();
-        self.import_loading_stack.clear();
+        self.state.active_state_paths.clear();
+        self.state.call_stack.clear();
+        self.state.call_counters.clear();
+        self.imports.loading_stack.clear();
         // NOTE: import_loaded and import_cache are intentionally preserved
         // so that imports are resolved from memory rather than disk.
 
@@ -251,144 +365,22 @@ impl Runtime {
 
         let mut vm = VM::new();
         let result = vm.run(&proto, self);
-        self.cleanup_unmounted_state();
+        self.state.cleanup_unmounted_state();
         result
-    }
-
-    /// Get the current call stack path as a string
-    pub(crate) fn get_call_stack_path(&self) -> String {
-        if self.call_stack.is_empty() {
-            "".to_string()
-        } else {
-            self.call_stack.join("/")
-        }
-    }
-
-    /// Generate a state key from the current call stack path and variable name
-    pub(crate) fn get_state_key(&self, variable_name: &str) -> String {
-        let path = self.get_call_stack_path();
-        if path.is_empty() {
-            format!(":{}", variable_name)
-        } else {
-            format!("{}:{}", path, variable_name)
-        }
-    }
-
-    /// Get state value for a variable, searching up the call stack
-    pub(crate) fn get_state_value(&self, variable_name: &str) -> Option<Value> {
-        // Search up the call stack, from most specific to least specific
-        let mut search_path = self.call_stack.clone();
-
-        // First try with full path
-        loop {
-            let path_str = if search_path.is_empty() {
-                "".to_string()
-            } else {
-                search_path.join("/")
-            };
-            let key = if path_str.is_empty() {
-                format!(":{}", variable_name)
-            } else {
-                format!("{}:{}", path_str, variable_name)
-            };
-
-            if let Some(value) = self.component_state.get(&key) {
-                return Some(value.clone());
-            }
-
-            // If we've exhausted the path, break
-            if search_path.is_empty() {
-                break;
-            }
-
-            // Try with shorter path (pop one level)
-            search_path.pop();
-        }
-
-        None
-    }
-
-    /// Set state value for a variable at the current call stack path
-    /// This will update the state at the most specific path where it exists,
-    /// or create it at the current path if it doesn't exist
-    pub(crate) fn set_state_value(&mut self, variable_name: &str, value: Value) {
-        // First, try to find existing state up the call stack
-        let mut search_path = self.call_stack.clone();
-        let mut found = false;
-
-        loop {
-            let path_str = if search_path.is_empty() {
-                "".to_string()
-            } else {
-                search_path.join("/")
-            };
-            let key = if path_str.is_empty() {
-                format!(":{}", variable_name)
-            } else {
-                format!("{}:{}", path_str, variable_name)
-            };
-
-            if self.component_state.contains_key(&key) {
-                // Found existing state, update it
-                self.component_state.insert(key, value.clone());
-                found = true;
-                break;
-            }
-
-            // If we've exhausted the path, break
-            if search_path.is_empty() {
-                break;
-            }
-
-            // Try with shorter path (pop one level)
-            search_path.pop();
-        }
-
-        // If not found, create at current path
-        if !found {
-            let key = self.get_state_key(variable_name);
-            self.component_state.insert(key, value);
-        }
-    }
-
-    /// Cleanup state for components that are no longer mounted
-    fn cleanup_unmounted_state(&mut self) {
-        // Collect keys to remove
-        let keys_to_remove: Vec<String> = self
-            .component_state
-            .keys()
-            .filter(|key| {
-                // Extract path from key (format: "{path}:{variable_name}")
-                if let Some(colon_pos) = key.find(':') {
-                    let path = &key[..colon_pos];
-                    // Remove if path is not in active_state_paths
-                    !self.active_state_paths.contains(path)
-                } else {
-                    // Malformed key, remove it
-                    true
-                }
-            })
-            .cloned()
-            .collect();
-
-        // Remove the keys
-        for key in keys_to_remove {
-            self.component_state.remove(&key);
-        }
     }
 
     pub(crate) fn execute_import(
         &mut self,
         import_stmt: &ImportStatement,
     ) -> Result<Value, VMError> {
-        let project_root = self.project_root.as_ref().ok_or_else(|| {
+        let project_root = self.imports.project_root.as_ref().ok_or_else(|| {
             VMError::ImportError("project root not set; cannot resolve import path".to_string())
         })?;
 
         let path_str = import_stmt.get_path();
 
         let mut resolved = None;
-        for (prefix, base) in &self.import_paths {
+        for (prefix, base) in &self.imports.import_paths {
             if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
                 let rest = rest.strip_prefix('/').unwrap_or(rest);
                 resolved = Some(base.join(rest));
@@ -403,15 +395,13 @@ impl Runtime {
 
         let key = resolved.canonicalize().unwrap_or(resolved.clone());
 
-        if self.import_loading_stack.contains(&key) {
-            let mut cycle = self.import_loading_stack.clone();
+        if self.imports.loading_stack.contains(&key) {
+            let mut cycle = self.imports.loading_stack.clone();
             cycle.push(key.clone());
             return Err(VMError::ImportCycle(cycle));
         }
-        if self.import_loaded.contains(&key) {
-            // Module already loaded (e.g. button.ogh by view_one). Merge its exports
-            // into the current scope so this module can use them.
-            if let Some(cached_env) = self.import_cache.get(&key) {
+        if self.imports.loaded.contains(&key) {
+            if let Some(cached_env) = self.imports.cache.get(&key) {
                 let names_to_copy_opt: Option<Vec<String>> = import_stmt.get_names().clone();
                 if let Some(ref names) = names_to_copy_opt {
                     for name in names {
@@ -434,12 +424,11 @@ impl Runtime {
             return Ok(Value::Void);
         }
 
-        // Read file from disk only when not cached.
         let source = fs::read_to_string(&resolved).map_err(|e| {
             VMError::ImportError(format!("failed to read {}: {}", resolved.display(), e))
         })?;
 
-        self.import_loading_stack.push(key.clone());
+        self.imports.loading_stack.push(key.clone());
 
         let mut scanner = Scanner::new(source);
         let tokens = scanner.scan();
@@ -455,12 +444,12 @@ impl Runtime {
         })?;
 
         let (proto, local_names) = Compiler::compile_import(&imported_module).map_err(|e| {
-            self.import_loading_stack.pop();
+            self.imports.loading_stack.pop();
             e
         })?;
         let mut vm = VM::new();
         let _result = vm.run(&proto, self).map_err(|e| {
-            self.import_loading_stack.pop();
+            self.imports.loading_stack.pop();
             e
         })?;
         let exports_map = vm.read_stack_locals(&local_names);
@@ -474,7 +463,7 @@ impl Runtime {
         if let Some(ref names) = names_to_copy {
             for name in names {
                 if temp_env.get(name).is_none() {
-                    self.import_loading_stack.pop();
+                    self.imports.loading_stack.pop();
                     return Err(VMError::ImportError(format!(
                         "export '{}' not found in {}",
                         name,
@@ -484,24 +473,40 @@ impl Runtime {
             }
         }
 
-        // Cache this module's env so later re-imports (e.g. view_two importing button)
-        // can merge its exports into their scope without re-executing.
-        self.import_cache.insert(key.clone(), temp_env.clone());
+        self.imports.cache.insert(key.clone(), temp_env.clone());
 
-        // Use check_conflict = false so re-exported names (e.g. button from multiple
-        // view files that each import button.ogh) overwrite instead of conflicting.
         if let Err(conflict_name) =
             self.environment
                 .copy_from(&temp_env, names_to_copy.as_deref(), false)
         {
-            self.import_loading_stack.pop();
+            self.imports.loading_stack.pop();
             return Err(VMError::ImportConflict(conflict_name));
         }
 
-        self.import_loading_stack.pop();
-        self.import_loaded.insert(key);
+        self.imports.loading_stack.pop();
+        self.imports.loaded.insert(key);
 
         Ok(Value::Void)
+    }
+
+    /// Execute the built-in prelude, injecting `rgb` and `rgba` helpers into host state.
+    fn execute_prelude(&mut self) -> Result<(), VMError> {
+        let mut scanner = Scanner::new(PRELUDE_SOURCE.to_string());
+        let tokens = scanner.scan();
+        let mut parser = Parser::new(tokens);
+        let prelude_module = parser.parse().map_err(|e| {
+            VMError::InvalidOperation(format!("prelude parse error: {}", e.message))
+        })?;
+        let proto = Compiler::compile_module(&prelude_module)?;
+        let mut vm = VM::new();
+        vm.run(&proto, self)?;
+        // Move any prelude bindings from environment into host_state
+        let env_vars = self.environment.top_level_variables().clone();
+        for (name, value) in env_vars {
+            self.inject_host_state(name, value);
+        }
+        self.environment = Environment::new();
+        Ok(())
     }
 
     /// Call a bytecode closure (produced by the bytecode compiler).
@@ -551,6 +556,10 @@ pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtim
 
     // Step 3: Execute in Runtime (kept alive for UI event handlers)
     let mut runtime = Runtime::new();
+
+    if let Err(e) = runtime.execute_prelude() {
+        eprintln!("[ogham] prelude error: {:?}", e);
+    }
 
     // Inject host state and config if provided
     if let Some(config) = config.as_ref() {

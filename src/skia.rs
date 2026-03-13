@@ -14,10 +14,7 @@ use crate::tree::{
     flex_widget::FlexWidget,
     image::ImageCache,
     style::{Border, BorderSide, CornerRadii, FontWeight, TextAlign},
-    svg_widget::SvgWidget,
-    text_input_widget::TextInputWidget,
-    text_widget::TextWidget,
-    Surface, WidgetRef, UI,
+    RenderContext, Surface, WidgetRef, UI,
 };
 
 pub struct SkiaEnv {
@@ -290,16 +287,185 @@ impl SkiaEnv {
         );
     }
 
-    fn draw_text_input_borders(
+}
+
+impl RenderContext for SkiaEnv {
+    fn fill_rect(
         &mut self,
-        widget: &TextInputWidget,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: &crate::tree::style::Color,
+    ) {
+        let sx = self.scale_coord(x);
+        let sy = self.scale_coord(y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+        self.paint.set_style(PaintStyle::Fill);
+        self.paint
+            .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
+        self.surface
+            .canvas()
+            .draw_rect(Rect::new(sx, sy, sx + sw, sy + sh), &self.paint);
+    }
+
+    fn fill_rounded_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: &CornerRadii,
+        color: &crate::tree::style::Color,
+    ) {
+        let sx = self.scale_coord(x);
+        let sy = self.scale_coord(y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+        self.paint.set_style(PaintStyle::Fill);
+        self.paint
+            .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
+        let rect = Rect::new(sx, sy, sx + sw, sy + sh);
+        let rrect = self.make_scaled_rrect(rect, radii);
+        self.surface.canvas().draw_rrect(rrect, &self.paint);
+    }
+
+    fn draw_border(
+        &mut self,
+        border: &Border,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: &CornerRadii,
+    ) {
+        let has_border = border.top.width > 0.0
+            || border.right.width > 0.0
+            || border.bottom.width > 0.0
+            || border.left.width > 0.0;
+        if !has_border {
+            return;
+        }
+
+        let sx = self.scale_coord(x);
+        let sy = self.scale_coord(y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+
+        let has_radii = radii.top_left > 0.0
+            || radii.top_right > 0.0
+            || radii.bottom_left > 0.0
+            || radii.bottom_right > 0.0;
+
+        if has_radii {
+            let border_width = border.top.width;
+            let border_color = border.top.color;
+            self.paint.set_style(PaintStyle::Stroke);
+            self.paint
+                .set_stroke_width(self.scale_stroke(border_width));
+            self.paint.set_color(Color::from_argb(
+                border_color.a,
+                border_color.r,
+                border_color.g,
+                border_color.b,
+            ));
+            let half = self.scale_stroke(border_width) / 2.0;
+            let rect = Rect::new(sx + half, sy + half, sx + sw - half, sy + sh - half);
+            let rrect = self.make_scaled_rrect(rect, radii);
+            self.surface.canvas().draw_rrect(rrect, &self.paint);
+        } else {
+            self.draw_border_sides(border, sx, sy, sw, sh);
+        }
+    }
+
+    fn draw_image(
+        &mut self,
+        path: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        image_cache: &mut ImageCache,
+    ) {
+        if let Some(image) = image_cache.get(path) {
+            let sx = self.scale_coord(x);
+            let sy = self.scale_coord(y);
+            let sw = self.scale_dim(w);
+            let sh = self.scale_dim(h);
+            let mut image_paint = Paint::default();
+            image_paint.set_anti_alias(true);
+            let image_rect = Rect::new(sx, sy, sx + sw, sy + sh);
+            self.surface
+                .canvas()
+                .draw_image_rect(image, None, image_rect, &image_paint);
+        }
+    }
+
+    fn draw_text(
+        &mut self,
+        text: &str,
+        style: &crate::tree::style::TextStyle,
         x: f32,
         y: f32,
         width: f32,
-        height: f32,
     ) {
-        let style = widget.effective_style();
-        self.draw_border_sides(&style.border, x, y, width, height);
+        self.apply_text_style(style);
+        let mut paragraph_builder =
+            ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
+        paragraph_builder.push_style(&self.text_style);
+        paragraph_builder.add_text(text);
+        let mut paragraph = paragraph_builder.build();
+        let scaled_width = self.scale_dim(width);
+        paragraph.layout(f32::INFINITY);
+        let intrinsic = paragraph.max_intrinsic_width();
+        if scaled_width < intrinsic - 0.5 {
+            paragraph.layout(scaled_width);
+        }
+        let scaled_x = self.scale_coord(x);
+        let scaled_y = self.scale_coord(y);
+        paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
+    }
+
+    fn draw_line(
+        &mut self,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        width: f32,
+        color: &crate::tree::style::Color,
+    ) {
+        self.paint.set_style(PaintStyle::Stroke);
+        self.paint
+            .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
+        self.paint.set_stroke_width(self.scale_stroke(width));
+        self.move_to(self.scale_coord(x1), self.scale_coord(y1));
+        self.line_to(self.scale_coord(x2), self.scale_coord(y2));
+        self.stroke();
+    }
+
+    fn draw_svg_dom(
+        &mut self,
+        dom: &skia_safe::svg::Dom,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) {
+        let sx = self.scale_coord(x);
+        let sy = self.scale_coord(y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+
+        self.save();
+        self.translate(sx, sy);
+
+        let mut dom_mut = dom.clone();
+        dom_mut.set_container_size((sw, sh));
+        dom_mut.render(self.canvas());
+
+        self.canvas().restore();
     }
 }
 
@@ -317,369 +483,35 @@ impl Surface for SkiaEnv {
             None
         };
 
-        let focused = ui.get_focused().map(|f| f.clone());
-        self.draw_widget(&ui.root, focused.as_ref(), &mut ui.image_cache);
+        let focused = ui.get_focused().cloned();
+        Self::draw_widget_recursive(self, &ui.root, focused.as_ref(), &mut ui.image_cache);
 
         if let Some(old) = saved_fc {
             self.font_collection = old;
         }
         self.default_font = saved_default_font;
     }
+}
 
-    fn draw_widget(
-        &mut self,
+impl SkiaEnv {
+    fn draw_widget_recursive(
+        env: &mut SkiaEnv,
         widget: &WidgetRef,
         focused: Option<&WidgetRef>,
         image_cache: &mut ImageCache,
     ) {
-        let is_focused = if let Some(ref focused) = focused {
-            let focused_ptr = Arc::as_ptr(focused);
-            let widget_ptr = Arc::as_ptr(widget);
-            let is_eq = std::ptr::eq(focused_ptr, widget_ptr);
-            is_eq
-        } else {
-            false
-        };
+        let is_focused = focused
+            .map(|f| std::ptr::eq(Arc::as_ptr(f), Arc::as_ptr(widget)))
+            .unwrap_or(false);
+
         let widget = widget.lock().expect("widget lock poisoned");
-        if let Some(box_widget) = widget.downcast_ref::<FlexWidget>() {
-            self.draw_box(box_widget, image_cache);
-            for child in box_widget.children.iter() {
-                self.draw_widget(child, focused, image_cache);
-            }
-        } else if let Some(text_widget) = widget.downcast_ref::<TextWidget>() {
-            self.draw_text(text_widget);
-        } else if let Some(text_input_widget) = widget.downcast_ref::<TextInputWidget>() {
-            self.draw_text_input(text_input_widget, is_focused);
-        } else if let Some(svg_widget) = widget.downcast_ref::<SvgWidget>() {
-            self.draw_svg(svg_widget);
-        } else {
-            println!("Failed to match downcast.");
-        }
-    }
+        widget.render(env, is_focused, image_cache);
 
-    fn draw_box(&mut self, widget: &FlexWidget, image_cache: &mut ImageCache) {
-        if let Some(layout) = &widget.layout {
-            let style = widget.effective_style();
+        let children = widget.get_children();
+        drop(widget);
 
-            let border_box_x = layout.x + style.margin.get_left();
-            let border_box_y = layout.y + style.margin.get_top();
-            let border_box_width =
-                layout.width - style.margin.get_left() - style.margin.get_right();
-            let border_box_height =
-                layout.height - style.margin.get_top() - style.margin.get_bottom();
-
-            let box_x = self.scale_coord(border_box_x);
-            let box_y = self.scale_coord(border_box_y);
-            let box_width = self.scale_dim(border_box_width);
-            let box_height = self.scale_dim(border_box_height);
-
-            if let Some(background_image_path) = &style.background_image {
-                if let Some(image) = image_cache.get(background_image_path) {
-                    let mut image_paint = Paint::default();
-                    image_paint.set_anti_alias(true);
-                    let image_rect = Rect::new(box_x, box_y, box_x + box_width, box_y + box_height);
-                    self.surface.canvas().draw_image_rect(
-                        image,
-                        None,
-                        image_rect,
-                        &image_paint,
-                    );
-                }
-            }
-
-            if let Some(background_color) = &style.background_color {
-                self.paint.set_style(PaintStyle::Fill);
-                self.paint.set_color(Color::from_argb(
-                    background_color.a,
-                    background_color.r,
-                    background_color.g,
-                    background_color.b,
-                ));
-
-                if style.corner_radii.top_left > 0.0
-                    || style.corner_radii.top_right > 0.0
-                    || style.corner_radii.bottom_left > 0.0
-                    || style.corner_radii.bottom_right > 0.0
-                {
-                    let rect = Rect::new(box_x, box_y, box_x + box_width, box_y + box_height);
-                    let rounded_rect =
-                        self.make_scaled_rrect(rect, &style.corner_radii);
-                    self.surface.canvas().draw_rrect(rounded_rect, &self.paint);
-                } else {
-                    self.surface.canvas().draw_rect(
-                        Rect::new(box_x, box_y, box_x + box_width, box_y + box_height),
-                        &self.paint,
-                    );
-                }
-            }
-
-            self.draw_borders(widget, box_x, box_y, box_width, box_height);
-        }
-    }
-
-    fn draw_borders(&mut self, widget: &FlexWidget, x: f32, y: f32, width: f32, height: f32) {
-        let style = widget.effective_style();
-
-        let has_border = style.border.top.width > 0.0
-            || style.border.right.width > 0.0
-            || style.border.bottom.width > 0.0
-            || style.border.left.width > 0.0;
-
-        if !has_border {
-            return;
-        }
-
-        let border_width = style.border.top.width;
-        let border_color = style.border.top.color;
-
-        self.paint.set_style(PaintStyle::Stroke);
-        self.paint.set_stroke_width(self.scale_stroke(border_width));
-        self.paint.set_color(Color::from_argb(
-            border_color.a,
-            border_color.r,
-            border_color.g,
-            border_color.b,
-        ));
-
-        if style.corner_radii.top_left > 0.0
-            || style.corner_radii.top_right > 0.0
-            || style.corner_radii.bottom_left > 0.0
-            || style.corner_radii.bottom_right > 0.0
-        {
-            let half = self.scale_stroke(border_width) / 2.0;
-            let rect = Rect::new(x + half, y + half, x + width - half, y + height - half);
-            let rounded_rect = self.make_scaled_rrect(rect, &style.corner_radii);
-            self.surface.canvas().draw_rrect(rounded_rect, &self.paint);
-        } else {
-            self.draw_rectangular_borders(widget, x, y, width, height);
-        }
-    }
-
-    fn draw_text(&mut self, widget: &TextWidget) {
-        if let Some(layout) = &widget.layout {
-            let style = widget.effective_style();
-            self.apply_text_style(style);
-            let mut paragraph_builder =
-                ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
-            paragraph_builder.push_style(&self.text_style);
-            paragraph_builder.add_text(widget.text.clone());
-            let mut paragraph = paragraph_builder.build();
-            paragraph.layout(self.scale_dim(layout.width));
-            let scaled_x = self.scale_coord(layout.x);
-            let scaled_y = self.scale_coord(layout.y);
-            paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
-        }
-    }
-
-    fn draw_text_input(&mut self, widget: &TextInputWidget) {
-        if let Some(layout) = &widget.layout {
-            let style = widget.effective_style();
-            let x = self.scale_coord(layout.x);
-            let y = self.scale_coord(layout.y);
-            let width = self.scale_dim(layout.width);
-            let height = self.scale_dim(layout.height);
-
-            if let Some(background_color) = &style.background_color {
-                self.paint.set_style(PaintStyle::Fill);
-                self.paint.set_color(Color::from_argb(
-                    background_color.a,
-                    background_color.r,
-                    background_color.g,
-                    background_color.b,
-                ));
-                self.surface
-                    .canvas()
-                    .draw_rect(Rect::new(x, y, x + width, y + height), &self.paint);
-            }
-
-            self.draw_text_input_borders(widget, x, y, width, height);
-
-            self.paint.set_style(PaintStyle::Fill);
-            let text_color = style
-                .text_color
-                .unwrap_or(crate::tree::style::Color::new(0, 0, 0, 255));
-            self.paint.set_color(Color::from_argb(
-                text_color.a,
-                text_color.r,
-                text_color.g,
-                text_color.b,
-            ));
-            self.text_style.set_foreground_paint(&self.paint);
-
-            let text_size = style.text_size.unwrap_or(16.0);
-            self.text_style.set_font_size(text_size);
-            self.text_style.set_font_style(FontStyle::new(
-                Weight::NORMAL,
-                Width::NORMAL,
-                Slant::Upright,
-            ));
-            if let Some(ref default) = self.default_font {
-                self.text_style.set_font_families(&[default.as_str()]);
-            } else {
-                self.text_style.set_font_families(&[] as &[&str]);
-            }
-
-            self.paragraph_style.set_text_align(SkiaTextAlign::Left);
-            let mut paragraph_builder =
-                ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
-            paragraph_builder.push_style(&self.text_style);
-
-            let display_text = if widget.value.is_empty() {
-                "".to_string()
-            } else {
-                widget.value.clone()
-            };
-
-            paragraph_builder.add_text(display_text);
-            let mut paragraph = paragraph_builder.build();
-
-            paragraph.layout(self.scale_dim(layout.width) - 8.0);
-
-            let text_x = self.scale_coord(layout.x) + 4.0;
-            let text_y = self.scale_coord(layout.y) + text_size * 0.8;
-            paragraph.paint(self.canvas(), Point::new(text_x, text_y - text_size));
-        }
-    }
-
-    fn draw_svg(&mut self, widget: &SvgWidget) {
-        if let Some(layout) = &widget.layout {
-            let x = self.scale_coord(layout.x);
-            let y = self.scale_coord(layout.y);
-            let width = self.scale_dim(layout.width);
-            let height = self.scale_dim(layout.height);
-
-            // Save the canvas state
-            self.save();
-
-            // Translate to the widget position
-            self.translate(x, y);
-
-            // Scale the SVG to fit the widget dimensions
-            // The SVG will be rendered in its own coordinate space
-            if let Some(dom) = &widget.svg_dom {
-                // Set the container size to the widget dimensions
-                // This tells the SVG how large its viewport should be
-                // Note: We need to clone to get a mutable reference since the widget's dom is immutable
-                let mut dom_mut = dom.clone();
-                dom_mut.set_container_size((width, height));
-
-                // Render the SVG (color is already applied to the DOM during loading)
-                dom_mut.render(self.canvas());
-            }
-            // If svg_dom is None, we just leave it blank (no rendering)
-
-            // Restore the canvas state
-            self.canvas().restore();
-        }
-    }
-}
-
-impl SkiaEnv {
-    fn draw_rectangular_borders(
-        &mut self,
-        widget: &FlexWidget,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-    ) {
-        let style = widget.effective_style();
-        self.draw_border_sides(&style.border, x, y, width, height);
-    }
-
-    fn draw_text(&mut self, widget: &TextWidget) {
-        if let Some(layout) = &widget.layout {
-            let style = widget.effective_style();
-            self.apply_text_style(style);
-            let mut paragraph_builder =
-                ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
-            paragraph_builder.push_style(&self.text_style);
-            paragraph_builder.add_text(widget.text.clone());
-            let mut paragraph = paragraph_builder.build();
-            let scaled_width = self.scale_dim(layout.width);
-            paragraph.layout(f32::INFINITY);
-            let intrinsic = paragraph.max_intrinsic_width();
-            if scaled_width < intrinsic - 0.5 {
-                paragraph.layout(scaled_width);
-            }
-            let scaled_x = self.scale_coord(layout.x);
-            let scaled_y = self.scale_coord(layout.y);
-            paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
-        }
-    }
-
-    fn draw_text_input(&mut self, widget: &TextInputWidget, is_focused: bool) {
-        if let Some(layout) = &widget.layout {
-            let style = widget.effective_style();
-            let text_style = widget.effective_text_style();
-
-            if let Some(background_color) = &style.background_color {
-                self.paint.set_style(PaintStyle::Fill);
-                self.paint.set_color(Color::from_argb(
-                    background_color.a,
-                    background_color.r,
-                    background_color.g,
-                    background_color.b,
-                ));
-            } else {
-                self.paint.set_style(PaintStyle::Fill);
-                self.paint.set_color(Color::WHITE);
-            }
-
-            let box_x = self.scale_coord(layout.x + style.margin.get_left());
-            let box_y = self.scale_coord(layout.y + style.margin.get_top());
-            let box_width = self.scale_dim(
-                layout.width - style.margin.get_left() - style.margin.get_right(),
-            );
-            let box_height = self.scale_dim(
-                layout.height - style.margin.get_top() - style.margin.get_bottom(),
-            );
-
-            let padding_left = self.scale_dim(style.padding.get_left());
-            let padding_right = self.scale_dim(style.padding.get_right());
-            let padding_top = self.scale_dim(style.padding.get_top());
-
-            self.surface.canvas().draw_rect(
-                Rect::new(box_x, box_y, box_x + box_width, box_y + box_height),
-                &self.paint,
-            );
-
-            self.draw_text_input_borders(widget, box_x, box_y, box_width, box_height);
-
-            let font_size = self.apply_text_style(text_style);
-            let mut paragraph_builder =
-                ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
-            paragraph_builder.push_style(&self.text_style);
-
-            let display_text = if widget.value.is_empty() {
-                "".to_string()
-            } else {
-                widget.value.clone()
-            };
-
-            paragraph_builder.add_text(display_text);
-            let mut paragraph = paragraph_builder.build();
-
-            paragraph.layout(box_width - padding_left - padding_right);
-
-            let text_x = box_x + padding_left;
-            let text_y = box_y + padding_top + font_size * 0.8;
-            paragraph.paint(self.canvas(), Point::new(text_x, text_y - font_size));
-
-            if is_focused {
-                self.paint.set_style(PaintStyle::Stroke);
-                self.paint.set_color(Color::BLACK);
-                self.paint.set_stroke_width(self.scale_stroke(1.0));
-
-                let char_width = font_size * 0.55;
-                let cursor_x = text_x + (widget.cursor_position as f32 * char_width);
-                let cursor_y1 = text_y - font_size;
-                let cursor_y2 = text_y;
-
-                self.move_to(cursor_x, cursor_y1);
-                self.line_to(cursor_x, cursor_y2);
-                self.stroke();
-            }
+        for child in &children {
+            Self::draw_widget_recursive(env, child, focused, image_cache);
         }
     }
 }

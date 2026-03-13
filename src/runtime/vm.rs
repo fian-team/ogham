@@ -330,12 +330,16 @@ impl VM {
                 // -- State ---------------------------------------------------
                 OpCode::GetState(name_idx) => {
                     let name = self.read_string_constant(name_idx)?;
-                    // Lookup order: state → host state. If neither, it's
-                    // an undefined variable.
-                    if let Some(val) = runtime.get_state_value(&name) {
+                    // Lookup order: state → host state → built-in screen
+                    // variables. If none match, it's an undefined variable.
+                    if let Some(val) = runtime.state.get_state_value(&name) {
                         self.push(val)?;
                     } else if let Some(val) = runtime.get_host_state(&name) {
                         self.push(val)?;
+                    } else if name == "screen_width" {
+                        self.push(Value::Float(runtime.screen_width as f64))?;
+                    } else if name == "screen_height" {
+                        self.push(Value::Float(runtime.screen_height as f64))?;
                     } else {
                         return Err(VMError::UndefinedVariable(name));
                     }
@@ -348,20 +352,20 @@ impl VM {
                     // Check if state already exists at the current call-stack
                     // path. If so, use the persisted value; otherwise
                     // initialise.
-                    let state_key = runtime.get_state_key(&name);
-                    let value = if let Some(existing) = runtime.component_state.get(&state_key) {
+                    let state_key = runtime.state.get_state_key(&name);
+                    let value = if let Some(existing) = runtime.state.component_state.get(&state_key) {
                         existing.clone()
                     } else {
-                        runtime
+                        runtime.state
                             .component_state
                             .insert(state_key.clone(), init_value.clone());
                         init_value
                     };
 
                     // Record active path.
-                    let path = runtime.get_call_stack_path();
+                    let path = runtime.state.get_call_stack_path();
                     if !path.is_empty() {
-                        runtime.active_state_paths.insert(path);
+                        runtime.state.active_state_paths.insert(path);
                     }
 
                     // Push the value as a local.
@@ -370,7 +374,7 @@ impl VM {
                 OpCode::SetState(name_idx) => {
                     let name = self.read_string_constant(name_idx)?;
                     let value = self.peek(0).clone();
-                    runtime.set_state_value(&name, value);
+                    runtime.state.set_state_value(&name, value);
                     runtime.request_rerender();
                 }
 
@@ -536,10 +540,10 @@ impl VM {
                     self.close_upvalues(frame_offset);
                     self.frames.pop();
                     if let Some(cs) = saved_cs {
-                        runtime.call_stack = cs;
+                        runtime.state.call_stack = cs;
                     }
                     if let Some(hb) = saved_hb {
-                        runtime.has_branched = hb;
+                        runtime.state.has_branched = hb;
                     }
                     if self.frames.is_empty() {
                         return Ok(result);
@@ -569,7 +573,7 @@ impl VM {
                         };
                         upvalues.push(uv);
                     }
-                    let captured_path = runtime.call_stack.clone();
+                    let captured_path = runtime.state.call_stack.clone();
                     let vm_closure = Rc::new(VMClosure {
                         proto,
                         upvalues,
@@ -585,24 +589,24 @@ impl VM {
                         Value::BytecodeClosure(closure) => {
                             // Save and set up the call stack path in the
                             // runtime for state management.
-                            let old_call_stack = runtime.call_stack.clone();
-                            let old_has_branched = runtime.has_branched;
-                            runtime.call_stack = closure.captured_path.clone();
+                            let old_call_stack = runtime.state.call_stack.clone();
+                            let old_has_branched = runtime.state.has_branched;
+                            runtime.state.call_stack = closure.captured_path.clone();
 
                             // Generate unique call identifier.
                             let func_name = &closure.proto.name;
-                            let call_site_key = if runtime.call_stack.is_empty() {
+                            let call_site_key = if runtime.state.call_stack.is_empty() {
                                 func_name.clone()
                             } else {
-                                format!("{}/{}", runtime.call_stack.join("/"), func_name)
+                                format!("{}/{}", runtime.state.call_stack.join("/"), func_name)
                             };
                             let call_index =
-                                runtime.call_counters.entry(call_site_key).or_insert(0);
+                                runtime.state.call_counters.entry(call_site_key).or_insert(0);
                             *call_index += 1;
                             let current_idx = *call_index;
                             let unique_id = format!("{}@{}", func_name, current_idx);
-                            runtime.call_stack.push(unique_id);
-                            runtime.has_branched = false;
+                            runtime.state.call_stack.push(unique_id);
+                            runtime.state.has_branched = false;
 
                             self.call_vm_closure(&closure, arg_count)?;
 
@@ -790,7 +794,7 @@ impl VM {
 
                 // -- Branching flag ------------------------------------------
                 OpCode::MarkBranched => {
-                    runtime.has_branched = true;
+                    runtime.state.has_branched = true;
                 }
 
                 // -- Import --------------------------------------------------

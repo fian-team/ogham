@@ -8,7 +8,7 @@ use super::style::*;
 use super::Widget;
 use crate::tree::event::EventContext;
 use crate::tree::style::Direction;
-use crate::tree::WidgetRef;
+use crate::tree::{LayoutContext, WidgetRef};
 
 /// Flexbox-like layout widget. Supports rendering child elements in either a row or a column with styling applied to the surrounding box.
 pub struct FlexWidget {
@@ -60,6 +60,22 @@ impl FlexWidget {
 
     pub fn add_child(&mut self, child: WidgetRef) {
         self.children.push(child);
+    }
+
+    fn get_children_fixed_on_axis(&self, axis: Axis) -> f32 {
+        self.children
+            .iter()
+            .filter_map(|child| {
+                let child = child.lock().expect("widget lock poisoned");
+                if child.is_absolute_positioned() {
+                    return None;
+                }
+                match axis {
+                    Axis::Horizontal => child.get_fixed_width(),
+                    Axis::Vertical => child.get_fixed_height(),
+                }
+            })
+            .sum()
     }
 }
 
@@ -121,12 +137,9 @@ impl Widget for FlexWidget {
     fn get_children_basis(&self) -> f32 {
         let mut basis = 0.0;
         for child in self.children.iter() {
-            // Skip absolute positioned children as they don't contribute to flex basis
             let child = child.lock().expect("widget lock poisoned");
-            if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                    continue;
-                }
+            if child.is_absolute_positioned() {
+                continue;
             }
             basis += child.get_basis(&self.style.direction);
         }
@@ -135,6 +148,7 @@ impl Widget for FlexWidget {
 
     fn get_dimensions(
         &self,
+        ctx: &LayoutContext,
         parent_direction: &Direction,
         parent_width: f32,
         parent_available_width: f32,
@@ -149,28 +163,22 @@ impl Widget for FlexWidget {
                 let occupied_height = self.get_children_fixed_height();
                 let children_basis = self.get_children_basis();
                 let get_dimensions = |child: &WidgetRef| {
-                    // Skip absolute positioned children in dimension calculations
                     let child = child.lock().expect("widget lock poisoned");
-                    if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                        if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                            return (0.0, 0.0);
-                        }
+                    if child.is_absolute_positioned() {
+                        return (0.0, 0.0);
                     }
-                    // If parent has Shrink along child's main axis, clamp Grow children by passing 0.0 as available space
                     let child_available_width = if self.style.direction.is_row() {
-                        // Parent is shrinking along row axis, so no available space for Grow children
                         0.0
                     } else {
-                        // In column direction, width is the cross axis. Don't subtract sibling widths.
                         parent_available_width
                     };
                     let child_available_height = if !self.style.direction.is_row() {
-                        // Parent is shrinking along column axis, so no available space for Grow children
                         0.0
                     } else {
                         parent_available_height - occupied_height
                     };
                     child.get_dimensions(
+                        ctx,
                         &self.style.direction,
                         parent_width,
                         child_available_width,
@@ -189,17 +197,12 @@ impl Widget for FlexWidget {
                         .get_shrink_max_size(&self.children, get_dimensions)
                 };
 
-                // Calculate gap space between children (gap * (number_of_children - 1))
                 let non_absolute_count = self
                     .children
                     .iter()
                     .filter(|child| {
                         let child = child.lock().expect("widget lock poisoned");
-                        if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                            !matches!(box_widget.style.position, Position::Absolute(_, _))
-                        } else {
-                            true
-                        }
+                        !child.is_absolute_positioned()
                     })
                     .count();
                 let gap_size = if non_absolute_count > 1 && self.style.direction.is_row() {
@@ -208,15 +211,16 @@ impl Widget for FlexWidget {
                     0.0
                 };
 
-                // Add parent's own padding, margins, borders, and gap to the child size
-                child_size
-                    + self.style.padding.get_left()
-                    + self.style.padding.get_right()
-                    + self.style.margin.get_left()
-                    + self.style.margin.get_right()
-                    + self.style.border.get_left()
-                    + self.style.border.get_right()
-                    + gap_size
+                let unclamped = child_size + self.style.horizontal_inset() + gap_size;
+
+                // Clamp shrink width to parent constraints so it can't exceed
+                // the space the parent offers.
+                let max_width = if parent_direction.is_row() {
+                    parent_available_width // main axis — share of available
+                } else {
+                    parent_width // cross axis — full parent width
+                };
+                if max_width > 0.0 { unclamped.min(max_width) } else { unclamped }
             }
             Size::Grow(basis) => {
                 // A child's own `direction` should not affect how its size is allocated by its parent.
@@ -235,27 +239,22 @@ impl Widget for FlexWidget {
             Size::Shrink => {
                 let children_basis = self.get_children_basis();
                 let get_dimensions = |child: &WidgetRef| {
-                    // Skip absolute positioned children in dimension calculations
                     let child = child.lock().expect("widget lock poisoned");
-                    if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                        if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                            return (0.0, 0.0);
-                        }
+                    if child.is_absolute_positioned() {
+                        return (0.0, 0.0);
                     }
-                    // If parent has Shrink along child's main axis, clamp Grow children by passing 0.0 as available space
                     let child_available_width = if self.style.direction.is_row() {
-                        // Parent is shrinking along row axis, so no available space for Grow children
                         0.0
                     } else {
                         parent_available_width
                     };
                     let child_available_height = if !self.style.direction.is_row() {
-                        // Parent is shrinking along column axis, so no available space for Grow children
                         0.0
                     } else {
                         parent_available_height
                     };
                     child.get_dimensions(
+                        ctx,
                         &self.style.direction,
                         parent_width,
                         child_available_width,
@@ -274,17 +273,12 @@ impl Widget for FlexWidget {
                         .get_shrink_size(&self.children, get_dimensions)
                 };
 
-                // Calculate gap space between children (gap * (number_of_children - 1))
                 let non_absolute_count = self
                     .children
                     .iter()
                     .filter(|child| {
                         let child = child.lock().expect("widget lock poisoned");
-                        if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                            !matches!(box_widget.style.position, Position::Absolute(_, _))
-                        } else {
-                            true
-                        }
+                        !child.is_absolute_positioned()
                     })
                     .count();
                 let gap_size = if non_absolute_count > 1 && !self.style.direction.is_row() {
@@ -293,15 +287,16 @@ impl Widget for FlexWidget {
                     0.0
                 };
 
-                // Add parent's own padding, margins, borders, and gap to the child size
-                child_size
-                    + self.style.padding.get_top()
-                    + self.style.padding.get_bottom()
-                    + self.style.margin.get_top()
-                    + self.style.margin.get_bottom()
-                    + self.style.border.get_top()
-                    + self.style.border.get_bottom()
-                    + gap_size
+                let unclamped = child_size + self.style.vertical_inset() + gap_size;
+
+                // Clamp shrink height to parent constraints so it can't exceed
+                // the space the parent offers.
+                let max_height = if parent_direction.is_row() {
+                    parent_height // cross axis — full parent height
+                } else {
+                    parent_available_height // main axis — share of available
+                };
+                if max_height > 0.0 { unclamped.min(max_height) } else { unclamped }
             }
             Size::Grow(basis) => {
                 if parent_direction.is_row() {
@@ -382,6 +377,7 @@ impl Widget for FlexWidget {
 
     fn layout(
         &mut self,
+        ctx: &LayoutContext,
         cursor_x: f32,
         cursor_y: f32,
         parent_direction: &Direction,
@@ -392,6 +388,7 @@ impl Widget for FlexWidget {
         sibling_basis: f32,
     ) {
         let (width, height) = self.get_dimensions(
+            ctx,
             parent_direction,
             parent_width,
             parent_available_width,
@@ -407,11 +404,7 @@ impl Widget for FlexWidget {
             .iter()
             .filter(|child| {
                 let child = child.lock().expect("widget lock poisoned");
-                if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                    !matches!(box_widget.style.position, Position::Absolute(_, _))
-                } else {
-                    true
-                }
+                !child.is_absolute_positioned()
             })
             .count();
 
@@ -422,41 +415,23 @@ impl Widget for FlexWidget {
             0.0
         };
 
+        // Calculate the content area by subtracting padding, margin, and border
+        let content_width = width - self.style.horizontal_inset();
+        let content_height = height - self.style.vertical_inset();
+
         // Available space should only subtract fixed-size children along the *main* axis.
-        let available_width = width
-            - (self.style.margin.get_left() + self.style.margin.get_right())
-            - (self.style.padding.get_left() + self.style.padding.get_right())
-            - (self.style.border.get_left() + self.style.border.get_right())
+        let available_width = content_width
             - if self.style.direction.is_row() {
                 self.get_children_fixed_width() + gap_space
             } else {
                 0.0
             };
-        let available_height = height
-            - (self.style.margin.get_top() + self.style.margin.get_bottom())
-            - (self.style.padding.get_top() + self.style.padding.get_bottom())
-            - (self.style.border.get_top() + self.style.border.get_bottom())
+        let available_height = content_height
             - if self.style.direction.is_row() {
                 0.0
             } else {
                 self.get_children_fixed_height() + gap_space
             };
-
-        // Calculate the content area by subtracting padding and margin
-        let content_width = width
-            - (self.style.padding.get_left()
-                + self.style.padding.get_right()
-                + self.style.margin.get_left()
-                + self.style.margin.get_right()
-                + self.style.border.get_left()
-                + self.style.border.get_right());
-        let content_height = height
-            - (self.style.padding.get_top()
-                + self.style.padding.get_bottom()
-                + self.style.margin.get_top()
-                + self.style.margin.get_bottom()
-                + self.style.border.get_top()
-                + self.style.border.get_bottom());
 
         self.layout = Some(Rect::new(cursor_x, cursor_y, width, height));
 
@@ -468,12 +443,11 @@ impl Widget for FlexWidget {
             .iter()
             .map(|child| {
                 let child = child.lock().expect("widget lock poisoned");
-                if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                    if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                        return None;
-                    }
+                if child.is_absolute_positioned() {
+                    return None;
                 }
                 Some(child.get_dimensions(
+                    ctx,
                     &self.style.direction,
                     content_width,
                     available_width,
@@ -517,14 +491,8 @@ impl Widget for FlexWidget {
         let initial_offset = self.style.main_alignment.get_space_around_offset(spacing);
 
         // Start positioning children from the content area with initial offset
-        let mut current_x = cursor_x
-            + self.style.margin.get_left() as f32
-            + self.style.padding.get_left() as f32
-            + self.style.border.get_left();
-        let mut current_y = cursor_y
-            + self.style.margin.get_top() as f32
-            + self.style.padding.get_top() as f32
-            + self.style.border.get_top();
+        let mut current_x = cursor_x + self.style.inset_left();
+        let mut current_y = cursor_y + self.style.inset_top();
 
         if self.style.direction.is_reverse() {
             if self.style.direction.is_row() {
@@ -602,6 +570,7 @@ impl Widget for FlexWidget {
             }
 
             child.layout(
+                ctx,
                 child_x,
                 child_y,
                 &self.style.direction,
@@ -646,71 +615,31 @@ impl Widget for FlexWidget {
         // Now layout absolute positioned children
         for child in self.children.iter_mut() {
             let mut child = child.lock().expect("widget lock poisoned");
-            if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                if let Position::Absolute(offset_x, offset_y) = box_widget.style.position {
-                    // Position absolute children at their specified coordinates relative to parent
-                    let child_x = cursor_x
-                        + self.style.margin.get_left() as f32
-                        + self.style.padding.get_left() as f32
-                        + self.style.border.get_left()
-                        + offset_x;
-                    let child_y = cursor_y
-                        + self.style.margin.get_top() as f32
-                        + self.style.padding.get_top() as f32
-                        + self.style.border.get_top()
-                        + offset_y;
+            if let Some((offset_x, offset_y)) = child.get_absolute_offset() {
+                let child_x = cursor_x + self.style.inset_left() + offset_x;
+                let child_y = cursor_y + self.style.inset_top() + offset_y;
 
-                    child.layout(
-                        child_x,
-                        child_y,
-                        &self.style.direction,
-                        content_width,
-                        available_width,
-                        content_height,
-                        available_height,
-                        children_basis,
-                    );
-                }
+                child.layout(
+                    ctx,
+                    child_x,
+                    child_y,
+                    &self.style.direction,
+                    content_width,
+                    available_width,
+                    content_height,
+                    available_height,
+                    children_basis,
+                );
             }
         }
     }
 
     fn get_children_fixed_width(&self) -> f32 {
-        self.children
-            .iter()
-            .filter_map(|child| {
-                // Skip absolute positioned children
-                let child = child.lock().expect("widget lock poisoned");
-                if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                    if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                        return None;
-                    }
-                }
-                match child.get_fixed_width() {
-                    Some(w) => Some(w),
-                    None => None,
-                }
-            })
-            .sum()
+        self.get_children_fixed_on_axis(Axis::Horizontal)
     }
 
     fn get_children_fixed_height(&self) -> f32 {
-        self.children
-            .iter()
-            .filter_map(|child| {
-                // Skip absolute positioned children
-                let child = child.lock().expect("widget lock poisoned");
-                if let Some(box_widget) = child.downcast_ref::<FlexWidget>() {
-                    if matches!(box_widget.style.position, Position::Absolute(_, _)) {
-                        return None;
-                    }
-                }
-                match child.get_fixed_height() {
-                    Some(h) => Some(h),
-                    None => None,
-                }
-            })
-            .sum()
+        self.get_children_fixed_on_axis(Axis::Vertical)
     }
 
     fn get_fixed_width(&self) -> Option<f32> {
@@ -755,6 +684,80 @@ impl Widget for FlexWidget {
     fn is_hovered(&self) -> bool {
         self.hovered
     }
+
+    fn is_absolute_positioned(&self) -> bool {
+        matches!(self.style.position, Position::Absolute(_, _))
+    }
+
+    fn get_absolute_offset(&self) -> Option<(f32, f32)> {
+        match self.style.position {
+            Position::Absolute(x, y) => Some((x, y)),
+            _ => None,
+        }
+    }
+
+    fn render(
+        &self,
+        ctx: &mut dyn crate::tree::RenderContext,
+        _focused: bool,
+        image_cache: &mut crate::tree::image::ImageCache,
+    ) {
+        if let Some(layout) = &self.layout {
+            let style = self.effective_style();
+
+            let border_box_x = layout.x + style.margin.get_left();
+            let border_box_y = layout.y + style.margin.get_top();
+            let border_box_width =
+                layout.width - style.margin.get_left() - style.margin.get_right();
+            let border_box_height =
+                layout.height - style.margin.get_top() - style.margin.get_bottom();
+
+            if let Some(background_image_path) = &style.background_image {
+                ctx.draw_image(
+                    background_image_path,
+                    border_box_x,
+                    border_box_y,
+                    border_box_width,
+                    border_box_height,
+                    image_cache,
+                );
+            }
+
+            if let Some(background_color) = &style.background_color {
+                if style.corner_radii.top_left > 0.0
+                    || style.corner_radii.top_right > 0.0
+                    || style.corner_radii.bottom_left > 0.0
+                    || style.corner_radii.bottom_right > 0.0
+                {
+                    ctx.fill_rounded_rect(
+                        border_box_x,
+                        border_box_y,
+                        border_box_width,
+                        border_box_height,
+                        &style.corner_radii,
+                        background_color,
+                    );
+                } else {
+                    ctx.fill_rect(
+                        border_box_x,
+                        border_box_y,
+                        border_box_width,
+                        border_box_height,
+                        background_color,
+                    );
+                }
+            }
+
+            ctx.draw_border(
+                &style.border,
+                border_box_x,
+                border_box_y,
+                border_box_width,
+                border_box_height,
+                &style.corner_radii,
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -786,6 +789,7 @@ mod tests {
 
         fn get_dimensions(
             &self,
+            _ctx: &LayoutContext,
             _parent_direction: &Direction,
             _parent_width: f32,
             _parent_available_width: f32,
@@ -827,6 +831,7 @@ mod tests {
 
         fn layout(
             &mut self,
+            _ctx: &LayoutContext,
             cursor_x: f32,
             cursor_y: f32,
             _parent_direction: &Direction,
@@ -848,8 +853,16 @@ mod tests {
         }
     }
 
+    fn test_ctx() -> LayoutContext<'static> {
+        LayoutContext {
+            font_collection: None,
+            default_font: None,
+        }
+    }
+
     #[test]
     fn test_gap_in_row_layout() {
+        let ctx = test_ctx();
         // Create a parent with fixed width and gap
         let gap = 10.0;
         let parent_width = 200.0;
@@ -877,6 +890,7 @@ mod tests {
         {
             let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
+                &ctx,
                 0.0,
                 0.0,
                 &Direction::Row,
@@ -923,6 +937,7 @@ mod tests {
 
     #[test]
     fn test_gap_in_column_layout() {
+        let ctx = test_ctx();
         // Create a parent with fixed height and gap
         let gap = 15.0;
         let parent_width = 100.0;
@@ -950,6 +965,7 @@ mod tests {
         {
             let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
+                &ctx,
                 0.0,
                 0.0,
                 &Direction::Column,
@@ -996,6 +1012,7 @@ mod tests {
 
     #[test]
     fn test_gap_with_shrink_width() {
+        let ctx = test_ctx();
         // Test that gap is properly accounted for when parent has Shrink width
         let gap = 20.0;
         let parent_height = 100.0;
@@ -1022,6 +1039,7 @@ mod tests {
         {
             let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
+                &ctx,
                 0.0,
                 0.0,
                 &Direction::Row,
@@ -1047,6 +1065,7 @@ mod tests {
 
     #[test]
     fn test_gap_with_shrink_height() {
+        let ctx = test_ctx();
         // Test that gap is properly accounted for when parent has Shrink height
         let gap = 25.0;
         let parent_width = 100.0;
@@ -1073,6 +1092,7 @@ mod tests {
         {
             let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
+                &ctx,
                 0.0,
                 0.0,
                 &Direction::Column,
@@ -1098,6 +1118,7 @@ mod tests {
 
     #[test]
     fn test_gap_with_single_child() {
+        let ctx = test_ctx();
         // Gap should not affect layout when there's only one child
         let gap = 10.0;
         let parent_width = 200.0;
@@ -1122,6 +1143,7 @@ mod tests {
         {
             let mut parent = parent_ref.lock().expect("widget lock poisoned");
             parent.layout(
+                &ctx,
                 0.0,
                 0.0,
                 &Direction::Row,
@@ -1148,6 +1170,75 @@ mod tests {
         assert!(
             child_width <= content_width,
             "Single child should fit in parent even with gap set"
+        );
+    }
+
+    #[test]
+    fn test_shrink_height_clamped_to_parent() {
+        let ctx = test_ctx();
+        // A Shrink-height column child whose children total more than the
+        // parent's fixed height should be clamped to the parent's content area.
+        let parent_height = 200.0;
+        let parent_width = 300.0;
+
+        // Inner shrink widget with children totalling 400px (exceeds parent)
+        let mut shrink_child = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Grow(1.0))
+                .height(Size::Shrink)
+                .direction(Direction::Column)
+                .build(),
+        );
+        for _ in 0..4 {
+            let item = Arc::new(Mutex::new(TestWidget::new(100.0, 100.0)));
+            shrink_child.add_child(item);
+        }
+
+        // Parent with fixed height
+        let mut parent = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(parent_width))
+                .height(Size::Fixed(parent_height))
+                .direction(Direction::Column)
+                .build(),
+        );
+        parent.add_child(Arc::new(Mutex::new(shrink_child)));
+
+        // Layout
+        let parent_ref = Arc::new(Mutex::new(parent));
+        {
+            let mut p = parent_ref.lock().expect("widget lock poisoned");
+            p.layout(
+                &ctx,
+                0.0,
+                0.0,
+                &Direction::Column,
+                parent_width,
+                parent_width,
+                parent_height,
+                parent_height,
+                0.0,
+            );
+        }
+
+        // The shrink child's height should be clamped to the parent's content height
+        let p = parent_ref.lock().expect("widget lock poisoned");
+        let shrink_ref = &p.children[0];
+        let shrink = shrink_ref.lock().expect("widget lock poisoned");
+        let (_, shrink_height) = shrink.get_dimensions(
+            &ctx,
+            &Direction::Column,
+            parent_width,
+            parent_width,
+            parent_height,
+            parent_height,
+            0.0,
+        );
+        assert!(
+            shrink_height <= parent_height + 0.001,
+            "Shrink child height ({}) should be clamped to parent height ({})",
+            shrink_height,
+            parent_height
         );
     }
 }

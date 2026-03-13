@@ -18,7 +18,11 @@
 
 /// Flexbox-like layout widget.
 pub mod flex_widget;
+/// Grid layout widget.
+pub mod grid_widget;
 pub mod image;
+/// Image rendering widget.
+pub mod image_widget;
 /// Convenience macros for working with widgets.
 #[macro_use]
 pub mod event;
@@ -35,43 +39,23 @@ pub mod text_widget;
 /// Bridge between the AST and the UI tree.
 pub mod ast_bridge;
 
-use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use skia_safe::textlayout::FontCollection;
 
 use crate::tree::{
     event::{Event, EventContext},
-    flex_widget::FlexWidget,
     image::ImageCache,
     point::Point,
-    style::Direction,
-    svg_widget::SvgWidget,
-    text_input_widget::TextInputWidget,
-    text_widget::TextWidget,
+    style::{Border, Color, CornerRadii, Direction, TextStyle},
 };
 
-thread_local! {
-    static ACTIVE_FONT_COLLECTION: RefCell<Option<FontCollection>> = RefCell::new(None);
-    static ACTIVE_DEFAULT_FONT: RefCell<Option<String>> = RefCell::new(None);
-}
-
-/// Run a closure with access to the font collection that was set for the
-/// current layout pass. Returns `None` when no collection has been set.
-pub fn with_active_font_collection<R>(f: impl FnOnce(&FontCollection) -> R) -> Option<R> {
-    ACTIVE_FONT_COLLECTION.with(|cell| {
-        let borrow = cell.borrow();
-        borrow.as_ref().map(f)
-    })
-}
-
-/// Run a closure with the default font family name that was set for the
-/// current layout pass. Returns `None` when no default has been set.
-pub fn with_active_default_font<R>(f: impl FnOnce(&str) -> R) -> Option<R> {
-    ACTIVE_DEFAULT_FONT.with(|cell| {
-        let borrow = cell.borrow();
-        borrow.as_deref().map(f)
-    })
+/// Context passed through the layout tree during a layout pass.
+/// Carries the font collection and default font so that text widgets
+/// can measure text without relying on thread-locals.
+pub struct LayoutContext<'a> {
+    pub font_collection: Option<&'a FontCollection>,
+    pub default_font: Option<&'a str>,
 }
 
 /// The UI root containing the widget tree and global state.
@@ -205,21 +189,14 @@ impl UI {
 
     /// Updates the bounds of widgets in the hierarchy within the constraints provided (typically the screen size).
     pub fn layout(&mut self, width: f32, height: f32) {
-        if let Some(ref fc) = self.font_collection {
-            let fc_clone = fc.clone();
-            ACTIVE_FONT_COLLECTION.with(|cell| {
-                *cell.borrow_mut() = Some(fc_clone);
-            });
-        }
-        if let Some(ref name) = self.default_font {
-            let name_clone = name.clone();
-            ACTIVE_DEFAULT_FONT.with(|cell| {
-                *cell.borrow_mut() = Some(name_clone);
-            });
-        }
+        let ctx = LayoutContext {
+            font_collection: self.font_collection.as_ref(),
+            default_font: self.default_font.as_deref(),
+        };
 
         let mut root = self.root.lock().expect("widget lock poisoned");
         root.layout(
+            &ctx,
             0.0,
             0.0,
             &Direction::Column,
@@ -229,14 +206,6 @@ impl UI {
             height,
             0.0,
         );
-        drop(root);
-
-        ACTIVE_FONT_COLLECTION.with(|cell| {
-            *cell.borrow_mut() = None;
-        });
-        ACTIVE_DEFAULT_FONT.with(|cell| {
-            *cell.borrow_mut() = None;
-        });
     }
 
     /// Reconcile the current hierarchy with a newly-provided hierarchy.
@@ -286,17 +255,50 @@ impl UI {
 /// The Surface trait must be implemented for a given renderer (such as Skia) to draw the widget tree to a bitmap.
 pub trait Surface {
     fn draw(&mut self, ui: &mut UI);
-    fn draw_widget(
+}
+
+/// Abstraction over renderer primitives. Widgets call these methods from
+/// their `render` implementation. All coordinates are in logical (pre-DPI)
+/// space; the implementation is responsible for any scaling.
+pub trait RenderContext {
+    fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: &Color);
+    fn fill_rounded_rect(
         &mut self,
-        widget: &WidgetRef,
-        focused: Option<&WidgetRef>,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: &CornerRadii,
+        color: &Color,
+    );
+    fn draw_border(
+        &mut self,
+        border: &Border,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: &CornerRadii,
+    );
+    fn draw_image(
+        &mut self,
+        path: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
         image_cache: &mut ImageCache,
     );
-    fn draw_box(&mut self, widget: &FlexWidget, image_cache: &mut ImageCache);
-    fn draw_borders(&mut self, widget: &FlexWidget, x: f32, y: f32, width: f32, height: f32);
-    fn draw_text(&mut self, widget: &TextWidget);
-    fn draw_text_input(&mut self, widget: &TextInputWidget);
-    fn draw_svg(&mut self, widget: &SvgWidget);
+    fn draw_text(&mut self, text: &str, style: &TextStyle, x: f32, y: f32, width: f32);
+    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: &Color);
+    fn draw_svg_dom(
+        &mut self,
+        dom: &skia_safe::svg::Dom,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    );
 }
 
 use downcast_rs::{impl_downcast, Downcast};
@@ -308,6 +310,7 @@ pub trait Widget: Downcast {
     fn get_type(&self) -> &str;
     fn get_dimensions(
         &self,
+        ctx: &LayoutContext,
         parent_direction: &Direction,
         parent_width: f32,
         parent_available_width: f32,
@@ -330,6 +333,7 @@ pub trait Widget: Downcast {
         -> bool;
     fn layout(
         &mut self,
+        ctx: &LayoutContext,
         cursor_x: f32,
         cursor_y: f32,
         parent_direction: &Direction,
@@ -352,6 +356,18 @@ pub trait Widget: Downcast {
         Vec::new()
     }
 
+    /// Returns `true` if this widget uses absolute positioning and should be
+    /// excluded from the normal flex flow.
+    fn is_absolute_positioned(&self) -> bool {
+        false
+    }
+
+    /// For absolute-positioned widgets, returns the `(offset_x, offset_y)`.
+    /// Returns `None` for non-absolute widgets.
+    fn get_absolute_offset(&self) -> Option<(f32, f32)> {
+        None
+    }
+
     /// Mark this widget as hovered or not. Widgets that store a `hover_style`
     /// use this flag to decide whether to merge the override into their
     /// effective style.
@@ -360,6 +376,16 @@ pub trait Widget: Downcast {
     /// Returns whether this widget is currently hovered.
     fn is_hovered(&self) -> bool {
         false
+    }
+
+    /// Render this widget using the provided render context. The default
+    /// implementation is a no-op; widgets override this to draw themselves.
+    fn render(
+        &self,
+        _ctx: &mut dyn RenderContext,
+        _focused: bool,
+        _image_cache: &mut ImageCache,
+    ) {
     }
 }
 impl_downcast!(Widget);

@@ -29,6 +29,7 @@ pub mod runtime;
 pub mod scanner;
 pub mod skia;
 pub mod tree;
+mod macros;
 
 /// Top-level Ogham instance that owns the runtime, widget tree, and
 /// optional file watcher.
@@ -292,6 +293,18 @@ impl Ogham {
         }
         self.with_runtime_mut(inject);
         self.update()
+    }
+
+    /// Read an Ogham state variable by name from the runtime.
+    pub fn get_state(&self, name: &str) -> Option<runtime::value::Value> {
+        self.with_runtime_mut(|rt| rt.get_state(name))
+    }
+
+    /// Update the screen dimensions exposed as built-in variables
+    /// (`screen_width`, `screen_height`). Call this before `tick()` or
+    /// whenever the window size changes.
+    pub fn set_screen_size(&self, width: f32, height: f32) {
+        self.with_runtime_mut(|rt| rt.set_screen_size(width, height));
     }
 
     /// If the runtime has flagged a rerender, re-execute the module,

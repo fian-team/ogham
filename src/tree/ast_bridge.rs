@@ -1,7 +1,8 @@
 use crate::runtime::{error::VMError, value::Value, widget::RuntimeWidget, Runtime};
 use crate::tree::{
-    flex_widget::FlexWidget, style::*, svg_widget::SvgWidget, text_input_widget::TextInputWidget,
-    text_widget::TextWidget, WidgetRef,
+    flex_widget::FlexWidget, grid_widget::{GridPlacement, GridStyle, GridWidget},
+    image_widget::ImageWidget, style::*, svg_widget::SvgWidget,
+    text_input_widget::TextInputWidget, text_widget::TextWidget, WidgetRef,
 };
 use crate::tree::event::Event;
 use std::collections::HashMap;
@@ -129,6 +130,8 @@ pub fn widget_value_to_widget_ref(
             "text" => create_text_widget(runtime, runtime_widget),
             "textinput" => create_text_input_widget(runtime, runtime_widget),
             "svg" => create_svg_widget(runtime, runtime_widget),
+            "image" => create_image_widget(runtime, runtime_widget),
+            "grid" => create_grid_widget(runtime, runtime_widget),
             _ => Err(BridgeError::InvalidWidgetType(format!(
                 "Unknown widget type: {}",
                 identifier
@@ -158,144 +161,163 @@ fn optional_hover_style_map<'a>(
     }
 }
 
-/// Clone the base `FlexStyle` and apply hover overrides from the map on top.
-fn apply_flex_hover_style(base: &FlexStyle, style_map: &HashMap<String, Value>) -> FlexStyle {
-    let mut s = base.clone();
-    for (key, value) in style_map {
+/// Apply flex style properties from a map onto a mutable `FlexStyle`.
+fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>) {
+    for (key, value) in map {
         match key.as_str() {
             "direction" => {
                 if let Value::String(dir_str) = value {
-                    s.direction = match dir_str.to_lowercase().as_str() {
-                        "row" => Direction::Row,
-                        "column" => Direction::Column,
-                        "row_reverse" => Direction::RowReverse,
-                        "column_reverse" => Direction::ColumnReverse,
-                        _ => continue,
-                    };
+                    match dir_str.to_lowercase().as_str() {
+                        "row" => style.direction = Direction::Row,
+                        "column" => style.direction = Direction::Column,
+                        "row_reverse" => style.direction = Direction::RowReverse,
+                        "column_reverse" => style.direction = Direction::ColumnReverse,
+                        _ => {}
+                    }
                 }
             }
             "main_alignment" => {
                 if let Value::String(v) = value {
                     if let Some(a) = parse_flex_alignment(v) {
-                        s.main_alignment = a;
+                        style.main_alignment = a;
                     }
                 }
             }
             "cross_alignment" => {
                 if let Value::String(v) = value {
                     if let Some(a) = parse_flex_alignment(v) {
-                        s.cross_alignment = a;
+                        style.cross_alignment = a;
                     }
                 }
             }
             "width" => {
                 if let Some(sz) = parse_size_value(value) {
-                    s.width = sz;
+                    style.width = sz;
                 }
             }
             "height" => {
                 if let Some(sz) = parse_size_value(value) {
-                    s.height = sz;
+                    style.height = sz;
                 }
             }
             "gap" => {
                 if let Some(g) = value_to_f32(value) {
-                    s.gap = g;
+                    style.gap = g;
                 }
             }
             "padding" => {
-                if let Some(p) = parse_padding_value(value) {
-                    s.padding = p;
+                if let Some(p) = parse_spacing_value(value) {
+                    style.padding = p;
                 }
             }
             "margin" => {
-                if let Some(m) = parse_margin_value(value) {
-                    s.margin = m;
+                if let Some(m) = parse_spacing_value(value) {
+                    style.margin = m;
                 }
             }
             "background_color" => {
                 if let Some(color) = parse_color_value(value) {
-                    s.background_color = Some(color);
+                    style.background_color = Some(color);
                 }
             }
             "border" => {
                 if let Some(border) = parse_border_value(value) {
-                    s.border = border;
+                    style.border = border;
                 }
             }
             "corner_radius" => {
                 if let Some(cr) = parse_corner_radii_value(value) {
-                    s.corner_radii = cr;
+                    style.corner_radii = cr;
+                }
+            }
+            "background_image" => {
+                if let Value::String(path) = value {
+                    style.background_image = Some(path.clone());
+                }
+            }
+            "position" => {
+                match value {
+                    Value::String(s) if s == "static" => style.position = Position::Static,
+                    Value::Map(map) => {
+                        let pos_type = map.get("type").and_then(|v| {
+                            if let Value::String(s) = v { Some(s.as_str()) } else { None }
+                        }).unwrap_or("static");
+                        let x = get_float_from_map(map, "x", 0.0);
+                        let y = get_float_from_map(map, "y", 0.0);
+                        match pos_type {
+                            "absolute" => style.position = Position::Absolute(x, y),
+                            "relative" => style.position = Position::Relative(x, y),
+                            _ => {}
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
         }
     }
-    s
 }
 
-/// Clone the base `TextStyle` and apply hover overrides from the map on top.
-fn apply_text_hover_style(base: &TextStyle, style_map: &HashMap<String, Value>) -> TextStyle {
-    let mut s = base.clone();
-    for (key, value) in style_map {
+/// Apply text style properties from a map onto a mutable `TextStyle`.
+fn apply_text_style_from_map(style: &mut TextStyle, map: &HashMap<String, Value>) {
+    for (key, value) in map {
         match key.as_str() {
             "size" => {
                 if let Some(sz) = value_to_f32(value) {
-                    s.size = sz;
+                    style.size = sz;
                 }
             }
             "color" => {
                 if let Some(c) = parse_color_value(value) {
-                    s.color = c;
+                    style.color = c;
                 }
             }
             "align" => {
                 if let Value::String(v) = value {
                     if let Some(a) = parse_text_align(v) {
-                        s.align = a;
+                        style.align = a;
                     }
                 }
             }
             "weight" => {
                 if let Value::String(v) = value {
-                    s.weight = match v.to_lowercase().as_str() {
-                        "normal" => FontWeight::Normal,
-                        "bold" => FontWeight::Bold,
-                        "semi_bold" => FontWeight::SemiBold,
-                        "light" => FontWeight::Light,
-                        _ => continue,
-                    };
+                    match v.to_lowercase().as_str() {
+                        "normal" => style.weight = FontWeight::Normal,
+                        "bold" => style.weight = FontWeight::Bold,
+                        "semi_bold" => style.weight = FontWeight::SemiBold,
+                        "light" => style.weight = FontWeight::Light,
+                        _ => {}
+                    }
                 }
             }
             "decoration" => {
                 if let Value::String(v) = value {
-                    s.decoration = match v.to_lowercase().as_str() {
-                        "none" => TextDecoration::None,
-                        "underline" => TextDecoration::Underline,
-                        "strikethrough" => TextDecoration::Strikethrough,
-                        _ => continue,
-                    };
+                    match v.to_lowercase().as_str() {
+                        "none" => style.decoration = TextDecoration::None,
+                        "underline" => style.decoration = TextDecoration::Underline,
+                        "strikethrough" => style.decoration = TextDecoration::Strikethrough,
+                        _ => {}
+                    }
                 }
             }
             "width" => {
                 if let Some(sz) = parse_size_value(value) {
-                    s.width = sz;
+                    style.width = sz;
                 }
             }
             "height" => {
                 if let Some(sz) = parse_size_value(value) {
-                    s.height = sz;
+                    style.height = sz;
                 }
             }
             "font" => {
                 if let Value::String(v) = value {
-                    s.font = Some(v.clone());
+                    style.font = Some(v.clone());
                 }
             }
             _ => {}
         }
     }
-    s
 }
 
 pub(crate) fn parse_size_value(value: &Value) -> Option<Size> {
@@ -311,31 +333,16 @@ pub(crate) fn parse_size_value(value: &Value) -> Option<Size> {
     }
 }
 
-pub(crate) fn parse_padding_value(value: &Value) -> Option<Padding> {
+pub(crate) fn parse_spacing_value(value: &Value) -> Option<Spacing> {
     match value {
-        Value::Float(f) => Some(Padding::all(*f as f32)),
-        Value::Integer(i) => Some(Padding::all(*i as f32)),
+        Value::Float(f) => Some(Spacing::all(*f as f32)),
+        Value::Integer(i) => Some(Spacing::all(*i as f32)),
         Value::Map(map) => {
             let top = get_float_from_map(map, "top", 0.0);
             let right = get_float_from_map(map, "right", 0.0);
             let bottom = get_float_from_map(map, "bottom", 0.0);
             let left = get_float_from_map(map, "left", 0.0);
-            Some(Padding::new(top, right, bottom, left))
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn parse_margin_value(value: &Value) -> Option<Margin> {
-    match value {
-        Value::Float(f) => Some(Margin::all(*f as f32)),
-        Value::Integer(i) => Some(Margin::all(*i as f32)),
-        Value::Map(map) => {
-            let top = get_float_from_map(map, "top", 0.0);
-            let right = get_float_from_map(map, "right", 0.0);
-            let bottom = get_float_from_map(map, "bottom", 0.0);
-            let left = get_float_from_map(map, "left", 0.0);
-            Some(Margin::new(top, right, bottom, left))
+            Some(Spacing::new(top, right, bottom, left))
         }
         _ => None,
     }
@@ -352,8 +359,7 @@ fn create_flex_widget(
         flex_widget.block_interactions = *b;
     }
 
-    // Build style from properties
-    let mut style_builder = FlexStyle::builder();
+    let mut style = FlexStyle::default();
 
     let mut children = Vec::new();
 
@@ -387,90 +393,16 @@ fn create_flex_widget(
         }
     }
 
-    let style_props = optional_style_map(parser_widget);
-    if let Some(style_map) = style_props {
-        for (key, value) in style_map {
-            // Properties have already been evaluated by the Runtime when the widget expression was evaluated.
-            match key.as_str() {
-                "direction" => {
-                    if let Value::String(dir_str) = value {
-                        let dir = match dir_str.to_lowercase().as_str() {
-                            "row" => Some(Direction::Row),
-                            "column" => Some(Direction::Column),
-                            "row_reverse" => Some(Direction::RowReverse),
-                            "column_reverse" => Some(Direction::ColumnReverse),
-                            _ => None,
-                        };
-                        if let Some(d) = dir {
-                            style_builder = style_builder.direction(d);
-                        }
-                    }
-                }
-                "main_alignment" => {
-                    if let Value::String(s) = value {
-                        if let Some(alignment) = parse_flex_alignment(s) {
-                            style_builder = style_builder.main_alignment(alignment);
-                        }
-                    }
-                }
-                "cross_alignment" => {
-                    if let Value::String(s) = value {
-                        if let Some(alignment) = parse_flex_alignment(s) {
-                            style_builder = style_builder.cross_alignment(alignment);
-                        }
-                    }
-                }
-                "width" => {
-                    if let Some(sz) = parse_size_value(value) {
-                        style_builder = style_builder.width(sz);
-                    }
-                }
-                "height" => {
-                    if let Some(sz) = parse_size_value(value) {
-                        style_builder = style_builder.height(sz);
-                    }
-                }
-                "gap" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.gap(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.gap(*i as f32);
-                    }
-                }
-                "padding" => {
-                    if let Some(p) = parse_padding_value(value) {
-                        style_builder = style_builder.padding(p);
-                    }
-                }
-                "margin" => {
-                    if let Some(m) = parse_margin_value(value) {
-                        style_builder = style_builder.margin(m);
-                    }
-                }
-                "background_color" => {
-                    if let Some(color) = parse_color_value(value) {
-                        style_builder = style_builder.background_color(color);
-                    }
-                }
-                "border" => {
-                    if let Some(border) = parse_border_value(value) {
-                        style_builder = style_builder.border(border);
-                    }
-                }
-                "corner_radius" => {
-                    if let Some(corner_radii) = parse_corner_radii_value(value) {
-                        style_builder = style_builder.corner_radii(corner_radii);
-                    }
-                }
-                _ => {}
-            }
-        }
+    if let Some(style_map) = optional_style_map(parser_widget) {
+        apply_flex_style_from_map(&mut style, style_map);
     }
 
-    flex_widget.style = style_builder.build();
+    flex_widget.style = style;
 
     if let Some(hover_map) = optional_hover_style_map(parser_widget) {
-        flex_widget.hover_style = Some(apply_flex_hover_style(&flex_widget.style, hover_map));
+        let mut hover_style = flex_widget.style.clone();
+        apply_flex_style_from_map(&mut hover_style, hover_map);
+        flex_widget.hover_style = Some(hover_style);
     }
 
     // Add children
@@ -505,66 +437,21 @@ fn create_text_widget(
         }
     };
 
-    // Build text style (also carries minimal width/height sizing for Text widgets).
-    // Default to shrink along both axes (and thus along the parent's main axis).
-    let mut style_builder = TextStyle::builder();
-    let mut width_override: Option<Size> = Some(Size::Shrink);
-    let mut height_override: Option<Size> = Some(Size::Shrink);
+    let mut text_widget = TextWidget::new(text);
+    // Default to shrink along both axes for text widgets.
+    let mut style = TextStyle::default();
+    style.width = Size::Shrink;
+    style.height = Size::Shrink;
 
     if let Some(style_map) = style_props {
-        for (key, value) in style_map {
-            match key.as_str() {
-                "size" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.size(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.size(*i as f32);
-                    }
-                }
-                "color" => {
-                    if let Some(c) = parse_color_value(value) {
-                        style_builder = style_builder.color(c);
-                    }
-                }
-                "align" => {
-                    if let Value::String(s) = value {
-                        if let Some(align) = parse_text_align(&s) {
-                            style_builder = style_builder.align(align);
-                        }
-                    }
-                }
-                "width" => {
-                    if let Some(sz) = parse_size_value(value) {
-                        width_override = Some(sz);
-                    }
-                }
-                "height" => {
-                    if let Some(sz) = parse_size_value(value) {
-                        height_override = Some(sz);
-                    }
-                }
-                "font" => {
-                    if let Value::String(s) = value {
-                        style_builder = style_builder.font(s.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let mut text_widget = TextWidget::new(text);
-    let mut style = style_builder.build();
-    if let Some(w) = width_override {
-        style.width = w;
-    }
-    if let Some(h) = height_override {
-        style.height = h;
+        apply_text_style_from_map(&mut style, style_map);
     }
     text_widget.style = style;
 
     if let Some(hover_map) = optional_hover_style_map(parser_widget) {
-        text_widget.hover_style = Some(apply_text_hover_style(&text_widget.style, hover_map));
+        let mut hover_style = text_widget.style.clone();
+        apply_text_style_from_map(&mut hover_style, hover_map);
+        text_widget.hover_style = Some(hover_style);
     }
 
     Ok(Arc::new(Mutex::new(text_widget)))
@@ -577,8 +464,8 @@ fn create_text_input_widget(
     let mut text_input = TextInputWidget::new();
 
     // Build styles
-    let mut style_builder = FlexStyle::builder();
-    let mut text_style_builder = TextStyle::builder();
+    let mut style = FlexStyle::default();
+    let mut text_style = TextStyle::default();
 
     // `value` is required and lives at the root (not in `style`).
     let value_value = parser_widget
@@ -615,132 +502,21 @@ fn create_text_input_widget(
         "mouse_up",
     )?;
 
-    let style_props = optional_style_map(parser_widget);
-    if let Some(style_map) = style_props {
-        for (key, value) in style_map {
-            match key.as_str() {
-                // FlexStyle properties
-                "width" => {
-                    if let Some(sz) = parse_size_value(value) {
-                        style_builder = style_builder.width(sz);
-                    }
-                }
-                "height" => {
-                    if let Some(sz) = parse_size_value(value) {
-                        style_builder = style_builder.height(sz);
-                    }
-                }
-                "padding" => {
-                    if let Some(p) = parse_padding_value(value) {
-                        style_builder = style_builder.padding(p);
-                    }
-                }
-                "margin" => {
-                    if let Some(m) = parse_margin_value(value) {
-                        style_builder = style_builder.margin(m);
-                    }
-                }
-                "background_color" => {
-                    if let Some(color) = parse_color_value(value) {
-                        style_builder = style_builder.background_color(color);
-                    }
-                }
-                "border" => {
-                    if let Some(border) = parse_border_value(value) {
-                        style_builder = style_builder.border(border);
-                    }
-                }
-                "corner_radius" => {
-                    if let Some(corner_radii) = parse_corner_radii_value(value) {
-                        style_builder = style_builder.corner_radii(corner_radii);
-                    }
-                }
-                "gap" => {
-                    if let Value::Float(f) = value {
-                        style_builder = style_builder.gap(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        style_builder = style_builder.gap(*i as f32);
-                    }
-                }
-                "direction" => {
-                    if let Value::String(dir_str) = value {
-                        let dir = match dir_str.to_lowercase().as_str() {
-                            "row" => Some(Direction::Row),
-                            "column" => Some(Direction::Column),
-                            "row_reverse" => Some(Direction::RowReverse),
-                            "column_reverse" => Some(Direction::ColumnReverse),
-                            _ => None,
-                        };
-                        if let Some(d) = dir {
-                            style_builder = style_builder.direction(d);
-                        }
-                    }
-                }
-                // TextStyle properties
-                "size" => {
-                    if let Value::Float(f) = value {
-                        text_style_builder = text_style_builder.size(*f as f32);
-                    } else if let Value::Integer(i) = value {
-                        text_style_builder = text_style_builder.size(*i as f32);
-                    }
-                }
-                "color" => {
-                    if let Some(c) = parse_color_value(value) {
-                        text_style_builder = text_style_builder.color(c);
-                    }
-                }
-                "weight" => {
-                    if let Value::String(s) = value {
-                        let w = match s.to_lowercase().as_str() {
-                            "normal" => Some(FontWeight::Normal),
-                            "bold" => Some(FontWeight::Bold),
-                            "semi_bold" => Some(FontWeight::SemiBold),
-                            "light" => Some(FontWeight::Light),
-                            _ => None,
-                        };
-                        if let Some(w) = w {
-                            text_style_builder = text_style_builder.weight(w);
-                        }
-                    }
-                }
-                "align" => {
-                    if let Value::String(s) = value {
-                        if let Some(align) = parse_text_align(s) {
-                            text_style_builder = text_style_builder.align(align);
-                        }
-                    }
-                }
-                "decoration" => {
-                    if let Value::String(s) = value {
-                        let d = match s.to_lowercase().as_str() {
-                            "none" => Some(TextDecoration::None),
-                            "underline" => Some(TextDecoration::Underline),
-                            "strikethrough" => Some(TextDecoration::Strikethrough),
-                            _ => None,
-                        };
-                        if let Some(d) = d {
-                            text_style_builder = text_style_builder.decoration(d);
-                        }
-                    }
-                }
-                "font" => {
-                    if let Value::String(s) = value {
-                        text_style_builder = text_style_builder.font(s.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
+    if let Some(style_map) = optional_style_map(parser_widget) {
+        apply_flex_style_from_map(&mut style, style_map);
+        apply_text_style_from_map(&mut text_style, style_map);
     }
 
-    text_input.style = style_builder.build();
-    text_input.text_style = text_style_builder.build();
+    text_input.style = style;
+    text_input.text_style = text_style;
 
     if let Some(hover_map) = optional_hover_style_map(parser_widget) {
-        text_input.hover_style =
-            Some(apply_flex_hover_style(&text_input.style, hover_map));
-        text_input.hover_text_style =
-            Some(apply_text_hover_style(&text_input.text_style, hover_map));
+        let mut hover_style = text_input.style.clone();
+        apply_flex_style_from_map(&mut hover_style, hover_map);
+        text_input.hover_style = Some(hover_style);
+        let mut hover_text_style = text_input.text_style.clone();
+        apply_text_style_from_map(&mut hover_text_style, hover_map);
+        text_input.hover_text_style = Some(hover_text_style);
     }
 
     Ok(Arc::new(Mutex::new(text_input)))
@@ -806,6 +582,153 @@ fn create_svg_widget(
     Ok(Arc::new(Mutex::new(svg_widget)))
 }
 
+fn create_image_widget(
+    runtime: &Arc<Mutex<Runtime>>,
+    parser_widget: &RuntimeWidget,
+) -> Result<WidgetRef, BridgeError> {
+    // Required: path, width, height
+    let path = match parser_widget.properties.get("path") {
+        Some(Value::String(s)) => s.clone(),
+        _ => return Err(BridgeError::MissingProperty("path".to_string())),
+    };
+
+    let width = parser_widget
+        .properties
+        .get("width")
+        .and_then(value_to_f32)
+        .ok_or_else(|| BridgeError::MissingProperty("width".to_string()))?;
+    let height = parser_widget
+        .properties
+        .get("height")
+        .and_then(value_to_f32)
+        .ok_or_else(|| BridgeError::MissingProperty("height".to_string()))?;
+
+    let mut image_widget = ImageWidget::new(path, width, height);
+
+    register_event_listener(
+        &mut image_widget.event_listeners,
+        &parser_widget.properties,
+        runtime,
+        "mouse_down",
+    )?;
+
+    Ok(Arc::new(Mutex::new(image_widget)))
+}
+
+fn create_grid_widget(
+    runtime: &Arc<Mutex<Runtime>>,
+    parser_widget: &RuntimeWidget,
+) -> Result<WidgetRef, BridgeError> {
+    let mut grid = GridWidget::new();
+
+    // Parse grid style
+    if let Some(style_map) = optional_style_map(parser_widget) {
+        apply_grid_style_from_map(&mut grid.style, style_map);
+    }
+
+    // Parse children with grid placement metadata
+    if let Some(Value::Array(children_array)) = parser_widget.properties.get("children") {
+        for child_value in children_array {
+            if let Value::Widget(child_widget) = child_value {
+                let placement = extract_grid_placement(&child_widget.properties);
+                let child_ref =
+                    widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
+                grid.children.push((placement, child_ref));
+            }
+        }
+    }
+
+    register_event_listener(
+        &mut grid.event_listeners,
+        &parser_widget.properties,
+        runtime,
+        "mouse_down",
+    )?;
+
+    Ok(Arc::new(Mutex::new(grid)))
+}
+
+/// Apply grid-specific style properties from a map.
+fn apply_grid_style_from_map(style: &mut GridStyle, map: &HashMap<String, Value>) {
+    for (key, value) in map {
+        match key.as_str() {
+            "columns" => {
+                if let Some(v) = value_to_f32(value) {
+                    style.columns = v as u32;
+                }
+            }
+            "rows" => {
+                if let Some(v) = value_to_f32(value) {
+                    style.rows = v as u32;
+                }
+            }
+            "cell_width" => {
+                if let Some(v) = value_to_f32(value) {
+                    style.cell_width = v;
+                }
+            }
+            "cell_height" => {
+                if let Some(v) = value_to_f32(value) {
+                    style.cell_height = v;
+                }
+            }
+            "gap" => {
+                if let Some(v) = value_to_f32(value) {
+                    style.gap = v;
+                }
+            }
+            "padding" => {
+                if let Some(p) = parse_spacing_value(value) {
+                    style.padding = p;
+                }
+            }
+            "margin" => {
+                if let Some(m) = parse_spacing_value(value) {
+                    style.margin = m;
+                }
+            }
+            "background_color" => {
+                if let Some(c) = parse_color_value(value) {
+                    style.background_color = Some(c);
+                }
+            }
+            "cell_color" => {
+                if let Some(c) = parse_color_value(value) {
+                    style.cell_color = Some(c);
+                }
+            }
+            "corner_radius" => {
+                if let Some(cr) = parse_corner_radii_value(value) {
+                    style.corner_radii = cr;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extract grid placement properties from a widget's property map.
+fn extract_grid_placement(properties: &HashMap<String, Value>) -> GridPlacement {
+    GridPlacement {
+        col: properties
+            .get("grid_col")
+            .and_then(value_to_f32)
+            .unwrap_or(0.0) as u32,
+        row: properties
+            .get("grid_row")
+            .and_then(value_to_f32)
+            .unwrap_or(0.0) as u32,
+        col_span: properties
+            .get("grid_col_span")
+            .and_then(value_to_f32)
+            .unwrap_or(1.0) as u32,
+        row_span: properties
+            .get("grid_row_span")
+            .and_then(value_to_f32)
+            .unwrap_or(1.0) as u32,
+    }
+}
+
 // Helper functions
 pub(crate) fn get_float_from_map(map: &HashMap<String, Value>, key: &str, default: f32) -> f32 {
     if let Some(value) = map.get(key) {
@@ -847,6 +770,25 @@ pub(crate) fn parse_color_value(value: &Value) -> Option<Color> {
             let b = get_integer_from_map(map, "b", 0).clamp(0, 255) as u8;
             let a = get_integer_from_map(map, "a", 255).clamp(0, 255) as u8;
             Some(Color::new(r, g, b, a))
+        }
+        Value::String(s) if s.starts_with('#') => {
+            let hex = s.trim_start_matches('#');
+            match hex.len() {
+                6 => {
+                    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                    Some(Color::new(r, g, b, 255))
+                }
+                8 => {
+                    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                    let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+                    Some(Color::new(r, g, b, a))
+                }
+                _ => None,
+            }
         }
         _ => None,
     }

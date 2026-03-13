@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::tree::event::EventContext;
-use crate::tree::WidgetRef;
+use crate::tree::{LayoutContext, WidgetRef};
 
 use skia_safe::{
     font_style::{Slant, Weight, Width},
@@ -81,9 +81,7 @@ impl TextWidget {
         &self.style
     }
 
-    fn build_paragraph(&self) -> skia_safe::textlayout::Paragraph {
-        use crate::tree::{with_active_default_font, with_active_font_collection};
-
+    fn build_paragraph(&self, ctx: &LayoutContext) -> skia_safe::textlayout::Paragraph {
         TEXT_LAYOUT_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
 
@@ -115,16 +113,15 @@ impl TextWidget {
                 cache
                     .skia_text_style
                     .set_font_families(&[family.as_str()]);
-            } else if let Some(default) = with_active_default_font(|f| f.to_string()) {
+            } else if let Some(default) = ctx.default_font {
                 cache
                     .skia_text_style
-                    .set_font_families(&[default.as_str()]);
+                    .set_font_families(&[default]);
             } else {
                 cache.skia_text_style.set_font_families(&[] as &[&str]);
             }
 
-            let fc = with_active_font_collection(|fc| fc.clone());
-            let font_collection = fc.as_ref().unwrap_or(&cache.font_collection);
+            let font_collection = ctx.font_collection.unwrap_or(&cache.font_collection);
 
             let mut paragraph_builder =
                 ParagraphBuilder::new(&cache.paragraph_style, font_collection);
@@ -160,6 +157,7 @@ impl Widget for TextWidget {
 
     fn get_dimensions(
         &self,
+        ctx: &LayoutContext,
         parent_direction: &Direction,
         parent_width: f32,
         parent_available_width: f32,
@@ -172,7 +170,7 @@ impl Widget for TextWidget {
             matches!(self.style.width, Size::Shrink) || matches!(self.style.height, Size::Shrink);
 
         let mut measured_paragraph = if needs_measurement {
-            Some(self.build_paragraph())
+            Some(self.build_paragraph(ctx))
         } else {
             None
         };
@@ -293,6 +291,7 @@ impl Widget for TextWidget {
 
     fn layout(
         &mut self,
+        ctx: &LayoutContext,
         cursor_x: f32,
         cursor_y: f32,
         parent_direction: &Direction,
@@ -303,6 +302,7 @@ impl Widget for TextWidget {
         sibling_basis: f32,
     ) {
         let (width, height) = self.get_dimensions(
+            ctx,
             parent_direction,
             parent_width,
             parent_available_width,
@@ -323,5 +323,17 @@ impl Widget for TextWidget {
 
     fn is_hovered(&self) -> bool {
         self.hovered
+    }
+
+    fn render(
+        &self,
+        ctx: &mut dyn crate::tree::RenderContext,
+        _focused: bool,
+        _image_cache: &mut crate::tree::image::ImageCache,
+    ) {
+        if let Some(layout) = &self.layout {
+            let style = self.effective_style();
+            ctx.draw_text(&self.text, style, layout.x, layout.y, layout.width);
+        }
     }
 }

@@ -7,7 +7,7 @@ use super::style::*;
 use super::Widget;
 use crate::tree::event::EventContext;
 use crate::tree::style::Direction;
-use crate::tree::WidgetRef;
+use crate::tree::{LayoutContext, WidgetRef};
 
 pub struct TextInputWidget {
     pub value: String,
@@ -179,6 +179,7 @@ impl Widget for TextInputWidget {
 
     fn get_dimensions(
         &self,
+        _ctx: &LayoutContext,
         parent_direction: &Direction,
         parent_width: f32,
         parent_available_width: f32,
@@ -345,6 +346,7 @@ impl Widget for TextInputWidget {
 
     fn layout(
         &mut self,
+        ctx: &LayoutContext,
         cursor_x: f32,
         cursor_y: f32,
         parent_direction: &Direction,
@@ -355,6 +357,7 @@ impl Widget for TextInputWidget {
         sibling_basis: f32,
     ) {
         let (width, height) = self.get_dimensions(
+            ctx,
             parent_direction,
             parent_width,
             parent_available_width,
@@ -384,5 +387,70 @@ impl Widget for TextInputWidget {
 
     fn is_hovered(&self) -> bool {
         self.hovered
+    }
+
+    fn render(
+        &self,
+        ctx: &mut dyn crate::tree::RenderContext,
+        focused: bool,
+        _image_cache: &mut crate::tree::image::ImageCache,
+    ) {
+        if let Some(layout) = &self.layout {
+            let style = self.effective_style();
+            let text_style = self.effective_text_style();
+
+            let box_x = layout.x + style.margin.get_left();
+            let box_y = layout.y + style.margin.get_top();
+            let box_width = layout.width - style.margin.get_left() - style.margin.get_right();
+            let box_height = layout.height - style.margin.get_top() - style.margin.get_bottom();
+
+            // Background
+            let bg = style
+                .background_color
+                .unwrap_or(crate::tree::style::Color::new(255, 255, 255, 255));
+            ctx.fill_rect(box_x, box_y, box_width, box_height, &bg);
+
+            // Borders
+            ctx.draw_border(
+                &style.border,
+                box_x,
+                box_y,
+                box_width,
+                box_height,
+                &style.corner_radii,
+            );
+
+            // Text
+            let padding_left = style.padding.get_left();
+            let padding_right = style.padding.get_right();
+            let padding_top = style.padding.get_top();
+            let font_size = text_style.get_size();
+            let text_x = box_x + padding_left;
+            let text_y = box_y + padding_top - font_size * 0.2;
+            let text_width = box_width - padding_left - padding_right;
+
+            let display_text = if self.value.is_empty() {
+                ""
+            } else {
+                &self.value
+            };
+            ctx.draw_text(display_text, text_style, text_x, text_y, text_width);
+
+            // Cursor
+            if focused {
+                let char_width = font_size * 0.55;
+                let cursor_x = text_x + (self.cursor_position as f32 * char_width);
+                let cursor_y1 = text_y;
+                let cursor_y2 = text_y + font_size;
+                ctx.draw_line(
+                    cursor_x,
+                    cursor_y1,
+                    cursor_x,
+                    cursor_y2,
+                    1.0,
+                    &crate::tree::style::Color::new(0, 0, 0, 255),
+                );
+            }
+        }
     }
 }
