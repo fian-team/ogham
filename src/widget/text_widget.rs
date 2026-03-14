@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::tree::event::EventContext;
-use crate::tree::{LayoutContext, WidgetRef};
+use crate::widget::event::EventContext;
+use crate::widget::{LayoutContext, WidgetRef};
 
 use skia_safe::{
     font_style::{Slant, Weight, Width},
@@ -327,9 +327,9 @@ impl Widget for TextWidget {
 
     fn render(
         &self,
-        ctx: &mut dyn crate::tree::RenderContext,
+        ctx: &mut dyn crate::widget::RenderContext,
         _focused: bool,
-        _image_cache: &mut crate::tree::image::ImageCache,
+        _image_cache: &mut crate::widget::image::ImageCache,
     ) {
         if let Some(layout) = &self.layout {
             let style = self.effective_style();

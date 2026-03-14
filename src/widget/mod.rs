@@ -36,14 +36,14 @@ pub mod text_input_widget;
 /// Text rendering widget.
 pub mod text_widget;
 
-/// Bridge between the AST and the UI tree.
-pub mod ast_bridge;
+/// Constructs UI widgets from runtime `Value::Widget` descriptors.
+pub mod builder;
 
 use std::sync::{Arc, Mutex};
 
 use skia_safe::textlayout::FontCollection;
 
-use crate::tree::{
+use crate::widget::{
     event::{Event, EventContext},
     image::ImageCache,
     point::Point,

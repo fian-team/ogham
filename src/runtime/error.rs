@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::{parser::SyntaxError, runtime::Value, tree::ast_bridge};
+use crate::{parser::SyntaxError, runtime::Value, widget::builder};
 
 /// Errors that can occur during bytecode compilation or VM execution.
 #[derive(Debug)]
@@ -29,8 +29,8 @@ pub enum RuntimeError {
     SyntaxError(SyntaxError),
     /// Runtime error during execution
     VmError(VMError),
-    /// Error during AST to UI bridge conversion
-    BridgeError(ast_bridge::BridgeError),
+    /// Error during widget builder conversion
+    BridgeError(builder::BridgeError),
 }
 
 impl From<std::io::Error> for RuntimeError {
@@ -51,8 +51,8 @@ impl From<VMError> for RuntimeError {
     }
 }
 
-impl From<ast_bridge::BridgeError> for RuntimeError {
-    fn from(err: ast_bridge::BridgeError) -> Self {
+impl From<builder::BridgeError> for RuntimeError {
+    fn from(err: builder::BridgeError) -> Self {
         RuntimeError::BridgeError(err)
     }
 }

@@ -2,8 +2,8 @@ use crate::app::{ClientUI, ClientUpdate};
 use crate::home_page::HOME_PAGE;
 use crate::input::Input;
 use ogham::runtime::config::RuntimeConfig;
-use ogham::tree::event::Event;
-use ogham::tree::UI;
+use ogham::widget::event::Event;
+use ogham::widget::UI;
 use ogham::Ogham;
 use skia_safe::Surface as SkiaSurface;
 use winit::keyboard::NamedKey;
@@ -121,7 +121,7 @@ impl Client {
             if let Some(widget_value) = widget_value {
                 // Convert the widget value to a WidgetRef
                 let new_root =
-                    ogham::tree::ast_bridge::widget_value_to_widget_ref(&runtime, &widget_value)
+                    ogham::widget::builder::widget_value_to_widget_ref(&runtime, &widget_value)
                         .map_err(|e| {
                             eprintln!("[ogham] Bridge error during rerender: {:?}", e);
                             e

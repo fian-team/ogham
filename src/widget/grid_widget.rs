@@ -4,10 +4,10 @@ use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::Widget;
-use crate::tree::event::EventContext;
-use crate::tree::image::ImageCache;
-use crate::tree::style::{Color, CornerRadii, Direction, Spacing};
-use crate::tree::{LayoutContext, RenderContext, WidgetRef};
+use crate::widget::event::EventContext;
+use crate::widget::image::ImageCache;
+use crate::widget::style::{Color, CornerRadii, Direction, Spacing};
+use crate::widget::{LayoutContext, RenderContext, WidgetRef};
 
 /// Grid placement metadata for a child within a GridWidget.
 #[derive(Debug, Clone)]

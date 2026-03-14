@@ -4,7 +4,7 @@ use glutin::{
 };
 use ogham::{
     skia::SkiaEnv,
-    tree::{
+    widget::{
         event::{Event, KeyModifiers},
         point::Point,
         Surface, UI,

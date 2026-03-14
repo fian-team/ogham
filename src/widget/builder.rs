@@ -1,10 +1,10 @@
-use crate::runtime::{error::VMError, value::Value, widget::RuntimeWidget, Runtime};
-use crate::tree::{
+use crate::runtime::{descriptor::WidgetDescriptor, error::VMError, value::Value, Runtime};
+use crate::widget::{
     flex_widget::FlexWidget, grid_widget::{GridPlacement, GridStyle, GridWidget},
     image_widget::ImageWidget, style::*, svg_widget::SvgWidget,
     text_input_widget::TextInputWidget, text_widget::TextWidget, WidgetRef,
 };
-use crate::tree::event::Event;
+use crate::widget::event::Event;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -145,17 +145,17 @@ pub fn widget_value_to_widget_ref(
     }
 }
 
-fn optional_style_map<'a>(parser_widget: &'a RuntimeWidget) -> Option<&'a HashMap<String, Value>> {
-    match parser_widget.properties.get("style") {
+fn optional_style_map<'a>(descriptor: &'a WidgetDescriptor) -> Option<&'a HashMap<String, Value>> {
+    match descriptor.properties.get("style") {
         Some(Value::Map(map)) => Some(map),
         _ => None,
     }
 }
 
 fn optional_hover_style_map<'a>(
-    parser_widget: &'a RuntimeWidget,
+    descriptor: &'a WidgetDescriptor,
 ) -> Option<&'a HashMap<String, Value>> {
-    match parser_widget.properties.get("hover_style") {
+    match descriptor.properties.get("hover_style") {
         Some(Value::Map(map)) => Some(map),
         _ => None,
     }
@@ -350,12 +350,12 @@ pub(crate) fn parse_spacing_value(value: &Value) -> Option<Spacing> {
 
 fn create_flex_widget(
     runtime: &Arc<Mutex<Runtime>>,
-    parser_widget: &RuntimeWidget,
+    descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
     let mut flex_widget = FlexWidget::new();
 
     // block_interactions: when false, clicks are only "handled" if a child or listener handled them
-    if let Some(Value::Boolean(b)) = parser_widget.properties.get("block_interactions") {
+    if let Some(Value::Boolean(b)) = descriptor.properties.get("block_interactions") {
         flex_widget.block_interactions = *b;
     }
 
@@ -366,12 +366,12 @@ fn create_flex_widget(
     // Event handlers (e.g. `mouse_down: fn () { ... }`)
     register_event_listener(
         &mut flex_widget.event_listeners,
-        &parser_widget.properties,
+        &descriptor.properties,
         runtime,
         "mouse_down",
     )?;
 
-    if let Some(value) = parser_widget.properties.get("children") {
+    if let Some(value) = descriptor.properties.get("children") {
         // Children can be:
         // 1. An array of widgets
         // 2. A map containing widgets (with numeric or string keys)
@@ -393,13 +393,13 @@ fn create_flex_widget(
         }
     }
 
-    if let Some(style_map) = optional_style_map(parser_widget) {
+    if let Some(style_map) = optional_style_map(descriptor) {
         apply_flex_style_from_map(&mut style, style_map);
     }
 
     flex_widget.style = style;
 
-    if let Some(hover_map) = optional_hover_style_map(parser_widget) {
+    if let Some(hover_map) = optional_hover_style_map(descriptor) {
         let mut hover_style = flex_widget.style.clone();
         apply_flex_style_from_map(&mut hover_style, hover_map);
         flex_widget.hover_style = Some(hover_style);
@@ -415,12 +415,12 @@ fn create_flex_widget(
 
 fn create_text_widget(
     _runtime: &Arc<Mutex<Runtime>>,
-    parser_widget: &RuntimeWidget,
+    descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
-    let style_props = optional_style_map(parser_widget);
+    let style_props = optional_style_map(descriptor);
 
     // Get text property (required)
-    let text_value = parser_widget
+    let text_value = descriptor
         .properties
         .get("text")
         .ok_or_else(|| BridgeError::MissingProperty("text".to_string()))?;
@@ -448,7 +448,7 @@ fn create_text_widget(
     }
     text_widget.style = style;
 
-    if let Some(hover_map) = optional_hover_style_map(parser_widget) {
+    if let Some(hover_map) = optional_hover_style_map(descriptor) {
         let mut hover_style = text_widget.style.clone();
         apply_text_style_from_map(&mut hover_style, hover_map);
         text_widget.hover_style = Some(hover_style);
@@ -459,7 +459,7 @@ fn create_text_widget(
 
 fn create_text_input_widget(
     runtime: &Arc<Mutex<Runtime>>,
-    parser_widget: &RuntimeWidget,
+    descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
     let mut text_input = TextInputWidget::new();
 
@@ -468,7 +468,7 @@ fn create_text_input_widget(
     let mut text_style = TextStyle::default();
 
     // `value` is required and lives at the root (not in `style`).
-    let value_value = parser_widget
+    let value_value = descriptor
         .properties
         .get("value")
         .ok_or_else(|| BridgeError::MissingProperty("value".to_string()))?;
@@ -485,24 +485,24 @@ fn create_text_input_widget(
     // Event handlers (e.g. `on_change: fn (value) { ... }`, `mouse_down: fn () { ... }`)
     register_event_listener_with_arg(
         &mut text_input.event_listeners,
-        &parser_widget.properties,
+        &descriptor.properties,
         runtime,
         "on_change",
     )?;
     register_event_listener(
         &mut text_input.event_listeners,
-        &parser_widget.properties,
+        &descriptor.properties,
         runtime,
         "mouse_down",
     )?;
     register_event_listener(
         &mut text_input.event_listeners,
-        &parser_widget.properties,
+        &descriptor.properties,
         runtime,
         "mouse_up",
     )?;
 
-    if let Some(style_map) = optional_style_map(parser_widget) {
+    if let Some(style_map) = optional_style_map(descriptor) {
         apply_flex_style_from_map(&mut style, style_map);
         apply_text_style_from_map(&mut text_style, style_map);
     }
@@ -510,7 +510,7 @@ fn create_text_input_widget(
     text_input.style = style;
     text_input.text_style = text_style;
 
-    if let Some(hover_map) = optional_hover_style_map(parser_widget) {
+    if let Some(hover_map) = optional_hover_style_map(descriptor) {
         let mut hover_style = text_input.style.clone();
         apply_flex_style_from_map(&mut hover_style, hover_map);
         text_input.hover_style = Some(hover_style);
@@ -524,12 +524,12 @@ fn create_text_input_widget(
 
 fn create_svg_widget(
     _runtime: &Arc<Mutex<Runtime>>,
-    parser_widget: &RuntimeWidget,
+    descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
-    let style_props = optional_style_map(parser_widget);
+    let style_props = optional_style_map(descriptor);
 
     // Get required properties
-    let path_value = parser_widget
+    let path_value = descriptor
         .properties
         .get("path")
         .ok_or_else(|| BridgeError::MissingProperty("path".to_string()))?;
@@ -543,7 +543,7 @@ fn create_svg_widget(
         }
     };
 
-    let width_value = parser_widget
+    let width_value = descriptor
         .properties
         .get("width")
         .ok_or_else(|| BridgeError::MissingProperty("width".to_string()))?;
@@ -558,7 +558,7 @@ fn create_svg_widget(
         }
     };
 
-    let height_value = parser_widget
+    let height_value = descriptor
         .properties
         .get("height")
         .ok_or_else(|| BridgeError::MissingProperty("height".to_string()))?;
@@ -584,20 +584,20 @@ fn create_svg_widget(
 
 fn create_image_widget(
     runtime: &Arc<Mutex<Runtime>>,
-    parser_widget: &RuntimeWidget,
+    descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
     // Required: path, width, height
-    let path = match parser_widget.properties.get("path") {
+    let path = match descriptor.properties.get("path") {
         Some(Value::String(s)) => s.clone(),
         _ => return Err(BridgeError::MissingProperty("path".to_string())),
     };
 
-    let width = parser_widget
+    let width = descriptor
         .properties
         .get("width")
         .and_then(value_to_f32)
         .ok_or_else(|| BridgeError::MissingProperty("width".to_string()))?;
-    let height = parser_widget
+    let height = descriptor
         .properties
         .get("height")
         .and_then(value_to_f32)
@@ -607,7 +607,7 @@ fn create_image_widget(
 
     register_event_listener(
         &mut image_widget.event_listeners,
-        &parser_widget.properties,
+        &descriptor.properties,
         runtime,
         "mouse_down",
     )?;
@@ -617,17 +617,17 @@ fn create_image_widget(
 
 fn create_grid_widget(
     runtime: &Arc<Mutex<Runtime>>,
-    parser_widget: &RuntimeWidget,
+    descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
     let mut grid = GridWidget::new();
 
     // Parse grid style
-    if let Some(style_map) = optional_style_map(parser_widget) {
+    if let Some(style_map) = optional_style_map(descriptor) {
         apply_grid_style_from_map(&mut grid.style, style_map);
     }
 
     // Parse children with grid placement metadata
-    if let Some(Value::Array(children_array)) = parser_widget.properties.get("children") {
+    if let Some(Value::Array(children_array)) = descriptor.properties.get("children") {
         for child_value in children_array {
             if let Value::Widget(child_widget) = child_value {
                 let placement = extract_grid_placement(&child_widget.properties);
@@ -640,7 +640,7 @@ fn create_grid_widget(
 
     register_event_listener(
         &mut grid.event_listeners,
-        &parser_widget.properties,
+        &descriptor.properties,
         runtime,
         "mouse_down",
     )?;

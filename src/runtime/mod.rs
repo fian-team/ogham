@@ -28,10 +28,11 @@ pub mod opcode;
 pub mod ops;
 pub mod value;
 pub mod vm;
-pub mod widget;
+pub mod descriptor;
 
 /// Built-in prelude source that defines helper functions available in all modules.
-/// Compiled and executed once when the runtime is first created via `from_source`/`from_file`.
+/// Compiled and executed once when the runtime is first created via
+/// `Runtime::from_source`/`Runtime::from_file`.
 const PRELUDE_SOURCE: &str = r#"
 let rgb = fn (r, g, b) { { r: r, g: g, b: b, a: 255 } };
 let rgba = fn (r, g, b, a) { { r: r, g: g, b: b, a: a } };
@@ -519,6 +520,65 @@ impl Runtime {
         let mut vm = VM::new();
         vm.call_closure(closure, args, self)
     }
+
+    pub fn from_file<P: AsRef<Path>>(
+        path: P,
+        config: Option<RuntimeConfig>,
+    ) -> Result<Runtime, RuntimeError> {
+        let path_buf = path.as_ref().to_path_buf();
+        let source = fs::read_to_string(&path_buf)?;
+        let mut runtime = Self::from_source(&source, config)?;
+        if runtime.project_root().is_none() {
+            runtime.set_project_root(
+                path_buf
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from(".")),
+            );
+        }
+        Ok(runtime)
+    }
+
+    pub fn from_source(
+        source: &str,
+        config: Option<RuntimeConfig>,
+    ) -> Result<Runtime, RuntimeError> {
+        let mut scanner = Scanner::new(source.to_string());
+        let tokens = scanner.scan();
+
+        let mut parser = Parser::new(tokens);
+        let module = parser.parse()?;
+
+        let mut runtime = Runtime::new();
+
+        if let Err(e) = runtime.execute_prelude() {
+            eprintln!("[ogham] prelude error: {:?}", e);
+        }
+
+        if let Some(config) = config.as_ref() {
+            if let Some(ref state) = config.host_state.as_ref() {
+                for (name, value) in state.iter() {
+                    runtime.inject_host_state(name.clone(), value.clone());
+                }
+            }
+
+            for (name, handler) in config.event_handlers.iter() {
+                runtime.register_event_handler_arc(name.clone(), handler.clone());
+            }
+
+            if let Some(ref project_root) = config.project_root {
+                runtime.set_project_root(project_root.clone());
+            }
+
+            if !config.import_paths.is_empty() {
+                runtime.set_import_paths(config.import_paths.clone());
+            }
+        }
+
+        runtime.set_module(module.clone());
+
+        Ok(runtime)
+    }
 }
 
 impl Default for Runtime {
@@ -527,74 +587,13 @@ impl Default for Runtime {
     }
 }
 
-pub fn from_file<P: AsRef<Path>>(
-    path: P,
-    config: Option<RuntimeConfig>,
-) -> Result<Runtime, RuntimeError> {
-    let path_buf = path.as_ref().to_path_buf();
-    let source = fs::read_to_string(&path_buf)?;
-    let mut runtime = from_source(&source, config)?;
-    if runtime.project_root().is_none() {
-        runtime.set_project_root(
-            path_buf
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(".")),
-        );
-    }
-    Ok(runtime)
-}
-
-pub fn from_source(source: &str, config: Option<RuntimeConfig>) -> Result<Runtime, RuntimeError> {
-    // Step 1: Scan source into tokens
-    let mut scanner = Scanner::new(source.to_string());
-    let tokens = scanner.scan();
-
-    // Step 2: Parse tokens into AST
-    let mut parser = Parser::new(tokens);
-    let module = parser.parse()?;
-
-    // Step 3: Execute in Runtime (kept alive for UI event handlers)
-    let mut runtime = Runtime::new();
-
-    if let Err(e) = runtime.execute_prelude() {
-        eprintln!("[ogham] prelude error: {:?}", e);
-    }
-
-    // Inject host state and config if provided
-    if let Some(config) = config.as_ref() {
-        if let Some(ref state) = config.host_state.as_ref() {
-            for (name, value) in state.iter() {
-                runtime.inject_host_state(name.clone(), value.clone());
-            }
-        }
-
-        // Register per-event handlers (for `event("name", ...)`).
-        for (name, handler) in config.event_handlers.iter() {
-            runtime.register_event_handler_arc(name.clone(), handler.clone());
-        }
-
-        if let Some(ref project_root) = config.project_root {
-            runtime.set_project_root(project_root.clone());
-        }
-
-        if !config.import_paths.is_empty() {
-            runtime.set_import_paths(config.import_paths.clone());
-        }
-    }
-
-    // Store the module in the runtime for potential rerendering
-    runtime.set_module(module.clone());
-
-    Ok(runtime)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn run(source: &str) -> Value {
-        let mut runtime = from_source(source, None).expect("parse and create runtime");
+        let mut runtime =
+            Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         runtime.execute_module(&module).expect("execute")
     }
@@ -703,7 +702,8 @@ let main = fn () {
     return count;
 };
 "#;
-        let mut runtime = from_source(source, None).expect("parse and create runtime");
+        let mut runtime =
+            Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         let first = runtime.execute_module(&module).expect("first execute");
         assert_eq!(first, Value::Integer(1));
@@ -743,7 +743,8 @@ let main = fn () {
   value
 };
 "#;
-        let mut runtime = from_source(source, None).expect("parse and create runtime");
+        let mut runtime =
+            Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         let result = runtime.execute_module(&module).expect("execute");
         assert_eq!(result, Value::Integer(5));

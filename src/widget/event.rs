@@ -1,7 +1,7 @@
 use super::point::Point;
 use std::sync::{Arc, Mutex};
 
-use crate::tree::Widget;
+use crate::widget::Widget;
 
 /// EventContext is used to communicate UI-level state changes from widgets
 /// back to the root UI during event handling. This allows widgets to request

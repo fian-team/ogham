@@ -6,9 +6,9 @@ use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::Widget;
-use crate::tree::event::EventContext;
-use crate::tree::style::{Color, Direction};
-use crate::tree::{LayoutContext, WidgetRef};
+use crate::widget::event::EventContext;
+use crate::widget::style::{Color, Direction};
+use crate::widget::{LayoutContext, WidgetRef};
 
 /// Widget for rendering SVG files.
 /// Loads the SVG at creation time. If the SVG file doesn't exist or fails to load,
@@ -44,8 +44,8 @@ impl SvgWidget {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ogham::tree::style::Color;
-    /// use ogham::tree::svg_widget::SvgWidget;
+    /// use ogham::widget::style::Color;
+    /// use ogham::widget::svg_widget::SvgWidget;
     ///
     /// let svg_widget = SvgWidget::new("assets/icons/select.svg".to_string(), 24.0, 24.0, None);
     /// let red_svg = SvgWidget::new(
@@ -287,9 +287,9 @@ impl Widget for SvgWidget {
 
     fn render(
         &self,
-        ctx: &mut dyn crate::tree::RenderContext,
+        ctx: &mut dyn crate::widget::RenderContext,
         _focused: bool,
-        _image_cache: &mut crate::tree::image::ImageCache,
+        _image_cache: &mut crate::widget::image::ImageCache,
     ) {
         if let Some(layout) = &self.layout {
             if let Some(ref dom) = self.svg_dom {

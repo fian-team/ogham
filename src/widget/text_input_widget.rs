@@ -5,9 +5,9 @@ use super::point::*;
 use super::rect::*;
 use super::style::*;
 use super::Widget;
-use crate::tree::event::EventContext;
-use crate::tree::style::Direction;
-use crate::tree::{LayoutContext, WidgetRef};
+use crate::widget::event::EventContext;
+use crate::widget::style::Direction;
+use crate::widget::{LayoutContext, WidgetRef};
 
 pub struct TextInputWidget {
     pub value: String,
@@ -391,9 +391,9 @@ impl Widget for TextInputWidget {
 
     fn render(
         &self,
-        ctx: &mut dyn crate::tree::RenderContext,
+        ctx: &mut dyn crate::widget::RenderContext,
         focused: bool,
-        _image_cache: &mut crate::tree::image::ImageCache,
+        _image_cache: &mut crate::widget::image::ImageCache,
     ) {
         if let Some(layout) = &self.layout {
             let style = self.effective_style();
@@ -407,7 +407,7 @@ impl Widget for TextInputWidget {
             // Background
             let bg = style
                 .background_color
-                .unwrap_or(crate::tree::style::Color::new(255, 255, 255, 255));
+                .unwrap_or(crate::widget::style::Color::new(255, 255, 255, 255));
             ctx.fill_rect(box_x, box_y, box_width, box_height, &bg);
 
             // Borders
@@ -448,7 +448,7 @@ impl Widget for TextInputWidget {
                     cursor_x,
                     cursor_y2,
                     1.0,
-                    &crate::tree::style::Color::new(0, 0, 0, 255),
+                    &crate::widget::style::Color::new(0, 0, 0, 255),
                 );
             }
         }

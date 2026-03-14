@@ -28,13 +28,13 @@ pub mod parser;
 pub mod runtime;
 pub mod scanner;
 pub mod skia;
-pub mod tree;
+pub mod widget;
 mod macros;
 
 /// Top-level Ogham instance that owns the runtime, widget tree, and
 /// optional file watcher.
 pub struct Ogham {
-    ui: tree::UI,
+    ui: widget::UI,
     watcher: Option<file_watcher::FileWatcher>,
     config: runtime::config::RuntimeConfig,
     runtime: Arc<Mutex<runtime::Runtime>>,
@@ -55,7 +55,7 @@ impl Ogham {
         path: String,
         config: runtime::config::RuntimeConfig,
     ) -> Result<Self, runtime::error::RuntimeError> {
-        let runtime = Arc::new(Mutex::new(runtime::from_file(&path, Some(config.clone()))?));
+        let runtime = Arc::new(Mutex::new(runtime::Runtime::from_file(&path, Some(config.clone()))?));
         let ui = Self::create_ui_from_runtime(&runtime)?;
         let watch_paths = Self::paths_to_watch(&path, &runtime);
         let watcher = file_watcher::FileWatcher::new(watch_paths)?;
@@ -78,7 +78,7 @@ impl Ogham {
         source: &str,
         config: runtime::config::RuntimeConfig,
     ) -> Result<Self, runtime::error::RuntimeError> {
-        let runtime = Arc::new(Mutex::new(runtime::from_source(
+        let runtime = Arc::new(Mutex::new(runtime::Runtime::from_source(
             source,
             Some(config.clone()),
         )?));
@@ -111,7 +111,7 @@ impl Ogham {
     /// Helper function to create UI from a runtime
     fn create_ui_from_runtime(
         runtime: &Arc<Mutex<runtime::Runtime>>,
-    ) -> Result<tree::UI, runtime::error::RuntimeError> {
+    ) -> Result<widget::UI, runtime::error::RuntimeError> {
         let module = {
             let rt = runtime.lock().expect("runtime lock poisoned");
             rt.get_module().cloned().ok_or_else(|| {
@@ -126,9 +126,9 @@ impl Ogham {
             rt.execute_module(&module)?
         };
 
-        let widget_ref = tree::ast_bridge::widget_value_to_widget_ref(runtime, &widget_value)
+        let widget_ref = widget::builder::widget_value_to_widget_ref(runtime, &widget_value)
             .map_err(|e| runtime::error::RuntimeError::BridgeError(e))?;
-        Ok(tree::UI::new(widget_ref))
+        Ok(widget::UI::new(widget_ref))
     }
 
     /// Check if the watched file has changed
@@ -166,7 +166,7 @@ impl Ogham {
 
     /// Reload a specific file (internal helper)
     fn reload_file(&mut self, path: &str) -> Result<(), runtime::error::RuntimeError> {
-        let new_runtime = Arc::new(Mutex::new(runtime::from_file(
+        let new_runtime = Arc::new(Mutex::new(runtime::Runtime::from_file(
             path,
             Some(self.config.clone()),
         )?));
@@ -187,7 +187,7 @@ impl Ogham {
         &mut self,
         source: &str,
     ) -> Result<(), runtime::error::RuntimeError> {
-        let new_runtime = Arc::new(Mutex::new(runtime::from_source(
+        let new_runtime = Arc::new(Mutex::new(runtime::Runtime::from_source(
             source,
             Some(self.config.clone()),
         )?));
@@ -204,12 +204,12 @@ impl Ogham {
     }
 
     /// Get a reference to the UI
-    pub fn get_ui(&self) -> &tree::UI {
+    pub fn get_ui(&self) -> &widget::UI {
         &self.ui
     }
 
     /// Get a mutable reference to the UI
-    pub fn get_ui_mut(&mut self) -> &mut tree::UI {
+    pub fn get_ui_mut(&mut self) -> &mut widget::UI {
         &mut self.ui
     }
 
@@ -320,7 +320,7 @@ impl Ogham {
         };
 
         let widget_ref =
-            tree::ast_bridge::widget_value_to_widget_ref(&self.runtime, &widget_value)?;
+            widget::builder::widget_value_to_widget_ref(&self.runtime, &widget_value)?;
 
         self.ui.reconcile(widget_ref);
         Ok(true)

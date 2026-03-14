@@ -119,7 +119,7 @@ let main = fn () {
 
 #[test]
 fn pipeline_parse_evaluate_bridge_flex_style_maps() {
-    let mut runtime = ogham::runtime::from_source(FULL_PROGRAM_WITH_STYLE_MAPS, None)
+    let mut runtime = ogham::runtime::Runtime::from_source(FULL_PROGRAM_WITH_STYLE_MAPS, None)
         .expect("from_source should succeed");
     let module = runtime.get_module().expect("module").clone();
     let widget_value = runtime
@@ -174,12 +174,12 @@ fn pipeline_parse_evaluate_bridge_flex_style_maps() {
     // Bridge: widget_value_to_widget_ref should succeed and apply style
     let runtime_ref = std::sync::Arc::new(std::sync::Mutex::new(runtime));
     let widget_ref =
-        ogham::tree::ast_bridge::widget_value_to_widget_ref(&runtime_ref, &widget_value)
+        ogham::widget::builder::widget_value_to_widget_ref(&runtime_ref, &widget_value)
             .expect("bridge should succeed");
     // Downcast to FlexWidget and check style was applied
     let guard = widget_ref.lock().expect("widget lock poisoned");
     let flex = guard
-        .downcast_ref::<ogham::tree::flex_widget::FlexWidget>()
+        .downcast_ref::<ogham::widget::flex_widget::FlexWidget>()
         .expect("should be FlexWidget");
     assert!(
         flex.style.background_color.is_some(),

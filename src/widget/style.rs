@@ -1,4 +1,4 @@
-use crate::tree::WidgetRef;
+use crate::widget::WidgetRef;
 
 /// Represents either the horizontal or vertical axis, used to unify
 /// row/column logic in layout calculations.

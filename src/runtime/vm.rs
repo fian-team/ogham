@@ -10,7 +10,7 @@ use crate::runtime::error::VMError;
 use crate::runtime::opcode::{FunctionProto, OpCode, Upvalue, UpvalueDescriptor, VMClosure};
 use crate::runtime::ops;
 use crate::runtime::value::Value;
-use crate::runtime::widget::RuntimeWidget;
+use crate::runtime::descriptor::WidgetDescriptor;
 use crate::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -742,7 +742,7 @@ impl VM {
                         i += 2;
                     }
                     self.stack.truncate(start);
-                    self.push(Value::Widget(RuntimeWidget {
+                    self.push(Value::Widget(WidgetDescriptor {
                         identifier: Identifier::new(&ident_name),
                         properties: props,
                     }))?;

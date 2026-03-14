@@ -6,9 +6,9 @@ use super::point::*;
 use super::rect::*;
 use super::style::*;
 use super::Widget;
-use crate::tree::event::EventContext;
-use crate::tree::style::Direction;
-use crate::tree::{LayoutContext, WidgetRef};
+use crate::widget::event::EventContext;
+use crate::widget::style::Direction;
+use crate::widget::{LayoutContext, WidgetRef};
 
 /// Flexbox-like layout widget. Supports rendering child elements in either a row or a column with styling applied to the surrounding box.
 pub struct FlexWidget {
@@ -698,9 +698,9 @@ impl Widget for FlexWidget {
 
     fn render(
         &self,
-        ctx: &mut dyn crate::tree::RenderContext,
+        ctx: &mut dyn crate::widget::RenderContext,
         _focused: bool,
-        image_cache: &mut crate::tree::image::ImageCache,
+        image_cache: &mut crate::widget::image::ImageCache,
     ) {
         if let Some(layout) = &self.layout {
             let style = self.effective_style();

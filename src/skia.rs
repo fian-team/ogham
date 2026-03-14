@@ -10,7 +10,7 @@ use skia_safe::{
 };
 use std::sync::Arc;
 
-use crate::tree::{
+use crate::widget::{
     flex_widget::FlexWidget,
     image::ImageCache,
     style::{Border, BorderSide, CornerRadii, FontWeight, TextAlign},
@@ -173,7 +173,7 @@ impl SkiaEnv {
 
     /// Configures `self.paint` and `self.text_style` from an Ogham `TextStyle`,
     /// and sets the paragraph text alignment. Returns the DPI-scaled font size.
-    fn apply_text_style(&mut self, style: &crate::tree::style::TextStyle) -> f32 {
+    fn apply_text_style(&mut self, style: &crate::widget::style::TextStyle) -> f32 {
         self.paint.set_style(PaintStyle::Fill);
         let color = style.get_color();
         self.paint
@@ -296,7 +296,7 @@ impl RenderContext for SkiaEnv {
         y: f32,
         w: f32,
         h: f32,
-        color: &crate::tree::style::Color,
+        color: &crate::widget::style::Color,
     ) {
         let sx = self.scale_coord(x);
         let sy = self.scale_coord(y);
@@ -317,7 +317,7 @@ impl RenderContext for SkiaEnv {
         w: f32,
         h: f32,
         radii: &CornerRadii,
-        color: &crate::tree::style::Color,
+        color: &crate::widget::style::Color,
     ) {
         let sx = self.scale_coord(x);
         let sy = self.scale_coord(y);
@@ -405,7 +405,7 @@ impl RenderContext for SkiaEnv {
     fn draw_text(
         &mut self,
         text: &str,
-        style: &crate::tree::style::TextStyle,
+        style: &crate::widget::style::TextStyle,
         x: f32,
         y: f32,
         width: f32,
@@ -434,7 +434,7 @@ impl RenderContext for SkiaEnv {
         x2: f32,
         y2: f32,
         width: f32,
-        color: &crate::tree::style::Color,
+        color: &crate::widget::style::Color,
     ) {
         self.paint.set_style(PaintStyle::Stroke);
         self.paint
@@ -518,7 +518,7 @@ impl SkiaEnv {
 
 impl SkiaEnv {
     /// Draw debug outlines for FlexWidget boundaries
-    pub fn draw_debug_outlines(&mut self, widget: &FlexWidget, layout: &crate::tree::rect::Rect) {
+    pub fn draw_debug_outlines(&mut self, widget: &FlexWidget, layout: &crate::widget::rect::Rect) {
         let es = widget.effective_style();
 
         let margin_left = self.scale_coord(es.margin.get_left());

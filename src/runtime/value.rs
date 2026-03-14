@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-use crate::runtime::{opcode::VMClosure, widget::RuntimeWidget};
+use crate::runtime::{descriptor::WidgetDescriptor, opcode::VMClosure};
 
 /// A dynamically-typed value produced and consumed by the Ogham runtime.
 #[derive(Clone, Debug)]
@@ -17,7 +17,7 @@ pub enum Value {
     BytecodeClosure(Rc<VMClosure>),
     Map(HashMap<String, Value>),
     Array(Vec<Value>),
-    Widget(RuntimeWidget),
+    Widget(WidgetDescriptor),
     Void,
 }
 

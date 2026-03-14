@@ -4,10 +4,10 @@ use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::Widget;
-use crate::tree::event::EventContext;
-use crate::tree::image::ImageCache;
-use crate::tree::style::Direction;
-use crate::tree::{LayoutContext, RenderContext, WidgetRef};
+use crate::widget::event::EventContext;
+use crate::widget::image::ImageCache;
+use crate::widget::style::Direction;
+use crate::widget::{LayoutContext, RenderContext, WidgetRef};
 
 /// Widget for rendering raster images (PNG).
 /// Uses the shared `ImageCache` to avoid reloading images every frame.

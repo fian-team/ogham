@@ -24,8 +24,8 @@ Source (.ogh)
   -> Compiler (src/runtime/compiler.rs) -- compiles AST to bytecode
   -> VM       (src/runtime/vm.rs)       -- stack-based execution
   -> Widget values                      -- runtime widget representations
-  -> ast_bridge (src/tree/ast_bridge.rs) -- converts to widget tree nodes
-  -> UI (src/tree/mod.rs)               -- layout, reconciliation, events
+  -> builder (src/widget/builder.rs)     -- converts to widget tree nodes
+  -> UI (src/widget/mod.rs)             -- layout, reconciliation, events
   -> Surface (src/skia.rs or custom)    -- rendering
 ```
 
@@ -43,13 +43,14 @@ Source (.ogh)
 | `src/runtime/config.rs` | `RuntimeConfig` builder |
 | `src/runtime/environment.rs` | Variable scoping |
 | `src/runtime/error.rs` | `RuntimeError`, `VMError` |
-| `src/tree/mod.rs` | `UI` struct, `Surface` trait, `Widget` trait |
-| `src/tree/ast_bridge.rs` | Converts runtime widget values to tree nodes |
-| `src/tree/flex_widget.rs` | Flexbox container widget |
-| `src/tree/text_widget.rs` | Text display widget |
-| `src/tree/text_input_widget.rs` | Text input widget |
-| `src/tree/svg_widget.rs` | SVG widget |
-| `src/tree/event.rs` | Event types (`Event`, `EventContext`) |
+| `src/runtime/descriptor.rs` | `WidgetDescriptor` -- runtime widget representation |
+| `src/widget/mod.rs` | `UI` struct, `Surface` trait, `Widget` trait |
+| `src/widget/builder.rs` | Converts runtime widget values to widget tree nodes |
+| `src/widget/flex_widget.rs` | Flexbox container widget |
+| `src/widget/text_widget.rs` | Text display widget |
+| `src/widget/text_input_widget.rs` | Text input widget |
+| `src/widget/svg_widget.rs` | SVG widget |
+| `src/widget/event.rs` | Event types (`Event`, `EventContext`) |
 | `src/skia.rs` | Skia rendering backend (implements `Surface`) |
 | `src/client/` | Standalone browser binary |
 | `src/file_watcher.rs` | File watching for hot-reload |
@@ -77,7 +78,7 @@ The `Value` enum (`src/runtime/value.rs`) represents all dynamic types:
 | `Map(HashMap<String, Value>)` | `HashMap` | Object-like key-value maps |
 | `Array(Vec<Value>)` | `Vec` | Ordered collections |
 | `BytecodeClosure(Rc<VMClosure>)` | | Compiled closure |
-| `Widget(RuntimeWidget)` | | A widget produced during execution |
+| `Widget(WidgetDescriptor)` | | A widget produced during execution |
 | `Void` | | Unit / no value |
 
 When injecting state from Rust, build values using these constructors directly, e.g. `Value::String("hello".to_string())`, `Value::Integer(42)`, `Value::Array(vec![...])`, `Value::Map(map)`.
@@ -321,7 +322,7 @@ surface.draw(ogham.get_ui_mut());
 Route input events (clicks, keyboard) to the UI tree:
 
 ```rust
-use ogham::tree::event::Event;
+use ogham::widget::event::Event;
 
 let event = Event::new("click".to_string())
     .with_point(x, y);
@@ -331,7 +332,7 @@ ogham.get_ui_mut().call_event(&event);
 
 ### 7. Custom rendering backends
 
-Implement the `Surface` trait (`src/tree/mod.rs`) to use a renderer other than Skia:
+Implement the `Surface` trait (`src/widget/mod.rs`) to use a renderer other than Skia:
 
 ```rust
 pub trait Surface {
@@ -369,10 +370,10 @@ ogham/
       error.rs              -- error types
       opcode.rs             -- bytecode opcodes
       ops.rs                -- arithmetic/comparison operations
-      widget.rs             -- runtime widget representation
-    tree/
+      descriptor.rs         -- WidgetDescriptor (runtime widget representation)
+    widget/
       mod.rs                -- UI struct, Surface trait, Widget trait
-      ast_bridge.rs         -- runtime values -> widget tree nodes
+      builder.rs            -- runtime values -> widget tree nodes
       flex_widget.rs        -- Flex container
       text_widget.rs        -- Text display
       text_input_widget.rs  -- Text input

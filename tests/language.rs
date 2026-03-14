@@ -48,7 +48,7 @@ let main = fn () {
     count
 };
 "#;
-    let mut runtime = ogham::runtime::from_source(source, None).expect("from_source");
+    let mut runtime = ogham::runtime::Runtime::from_source(source, None).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
     let first = runtime.execute_module(&module).expect("first execute");
     assert_eq!(first, Value::Integer(1));
@@ -826,7 +826,7 @@ let main = fn () {
     event("my_event", 99);
 };
 "#;
-    let mut runtime = ogham::runtime::from_source(source, Some(config)).expect("from_source");
+    let mut runtime = ogham::runtime::Runtime::from_source(source, Some(config)).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
     runtime.execute_module(&module).expect("execute");
 
@@ -964,7 +964,7 @@ let main = fn () {
     return a + b;
 };
 "#;
-    let mut runtime = ogham::runtime::from_source(source, None).expect("from_source");
+    let mut runtime = ogham::runtime::Runtime::from_source(source, None).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
     let first = runtime.execute_module(&module).expect("first");
     assert_eq!(first, Value::Integer(3));
@@ -982,7 +982,7 @@ let main = fn () {
     greeting
 };
 "#;
-    let mut runtime = ogham::runtime::from_source(source, Some(config)).expect("from_source");
+    let mut runtime = ogham::runtime::Runtime::from_source(source, Some(config)).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
     let result = runtime.execute_module(&module).expect("execute");
     assert_eq!(result, Value::String("Hello".to_string()));
@@ -1054,7 +1054,7 @@ let main = fn () {
     x
 };
 "#;
-    let mut runtime = ogham::runtime::from_source(source, None).expect("from_source");
+    let mut runtime = ogham::runtime::Runtime::from_source(source, None).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
     runtime.execute_module(&module).expect("first");
     assert!(runtime.needs_rerender());
