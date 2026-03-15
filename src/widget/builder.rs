@@ -8,6 +8,59 @@ use crate::widget::event::Event;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// A factory function that constructs a `WidgetRef` from a runtime descriptor.
+pub type WidgetFactory = Arc<
+    dyn Fn(&WidgetRegistry, &Arc<Mutex<Runtime>>, &WidgetDescriptor) -> Result<WidgetRef, BridgeError>
+        + Send
+        + Sync,
+>;
+
+/// Maps widget type names (lowercased) to their factory functions. Populated
+/// with the built-in types by default; host applications can register
+/// additional widgets via [`RuntimeConfig::with_widget`].
+#[derive(Clone, Default)]
+pub struct WidgetRegistry {
+    pub(crate) factories: HashMap<String, WidgetFactory>,
+}
+
+impl WidgetRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a registry pre-populated with every built-in widget type.
+    pub fn with_defaults() -> Self {
+        let mut reg = Self::new();
+        reg.register("flex", |reg, rt, desc| create_flex_widget(reg, rt, desc));
+        reg.register("text", |_reg, rt, desc| create_text_widget(rt, desc));
+        reg.register("textinput", |_reg, rt, desc| {
+            create_text_input_widget(rt, desc)
+        });
+        reg.register("svg", |_reg, rt, desc| create_svg_widget(rt, desc));
+        reg.register("image", |_reg, rt, desc| create_image_widget(rt, desc));
+        reg.register("grid", |reg, rt, desc| create_grid_widget(reg, rt, desc));
+        reg
+    }
+
+    /// Register a widget factory under the given type name. Names are
+    /// lowercased so that lookups are case-insensitive.
+    pub fn register<S, F>(&mut self, name: S, factory: F)
+    where
+        S: Into<String>,
+        F: Fn(&WidgetRegistry, &Arc<Mutex<Runtime>>, &WidgetDescriptor) -> Result<WidgetRef, BridgeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.factories
+            .insert(name.into().to_lowercase(), Arc::new(factory));
+    }
+
+    pub fn get(&self, name: &str) -> Option<&WidgetFactory> {
+        self.factories.get(name)
+    }
+}
+
 #[derive(Debug)]
 pub enum BridgeError {
     InvalidWidgetType(String),
@@ -117,26 +170,19 @@ fn register_event_listener_with_arg(
     Ok(())
 }
 
-/// Converts a Value::Widget from the Runtime to a WidgetRef for use in the UI
+/// Converts a `Value::Widget` from the Runtime to a `WidgetRef` for use in the
+/// UI. The `registry` is used to look up the factory for the widget's type name.
 pub fn widget_value_to_widget_ref(
+    registry: &WidgetRegistry,
     runtime: &Arc<Mutex<Runtime>>,
     widget_value: &Value,
 ) -> Result<WidgetRef, BridgeError> {
     if let Value::Widget(runtime_widget) = widget_value {
         let identifier = runtime_widget.identifier.get().to_lowercase();
-
-        match identifier.as_str() {
-            "flex" => create_flex_widget(runtime, runtime_widget),
-            "text" => create_text_widget(runtime, runtime_widget),
-            "textinput" => create_text_input_widget(runtime, runtime_widget),
-            "svg" => create_svg_widget(runtime, runtime_widget),
-            "image" => create_image_widget(runtime, runtime_widget),
-            "grid" => create_grid_widget(runtime, runtime_widget),
-            _ => Err(BridgeError::InvalidWidgetType(format!(
-                "Unknown widget type: {}",
-                identifier
-            ))),
-        }
+        let factory = registry.get(&identifier).ok_or_else(|| {
+            BridgeError::InvalidWidgetType(format!("Unknown widget type: {}", identifier))
+        })?;
+        factory(registry, runtime, runtime_widget)
     } else {
         Err(BridgeError::InvalidPropertyType(
             "widget".to_string(),
@@ -349,6 +395,7 @@ pub(crate) fn parse_spacing_value(value: &Value) -> Option<Spacing> {
 }
 
 fn create_flex_widget(
+    registry: &WidgetRegistry,
     runtime: &Arc<Mutex<Runtime>>,
     descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
@@ -372,23 +419,23 @@ fn create_flex_widget(
     )?;
 
     if let Some(value) = descriptor.properties.get("children") {
-        // Children can be:
-        // 1. An array of widgets
-        // 2. A map containing widgets (with numeric or string keys)
-        // 3. A single widget
         if let Value::Array(children_array) = value {
-            // Array of widgets - iterate in order
             for child_value in children_array {
                 if let Value::Widget(child_widget) = child_value {
-                    let child_ref =
-                        widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
+                    let child_ref = widget_value_to_widget_ref(
+                        registry,
+                        runtime,
+                        &Value::Widget(child_widget.clone()),
+                    )?;
                     children.push(child_ref);
                 }
             }
         } else if let Value::Widget(child_widget) = value {
-            // Single child widget
-            let child_ref =
-                widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
+            let child_ref = widget_value_to_widget_ref(
+                registry,
+                runtime,
+                &Value::Widget(child_widget.clone()),
+            )?;
             children.push(child_ref);
         }
     }
@@ -405,7 +452,6 @@ fn create_flex_widget(
         flex_widget.hover_style = Some(hover_style);
     }
 
-    // Add children
     for child in children {
         flex_widget.add_child(child);
     }
@@ -616,23 +662,25 @@ fn create_image_widget(
 }
 
 fn create_grid_widget(
+    registry: &WidgetRegistry,
     runtime: &Arc<Mutex<Runtime>>,
     descriptor: &WidgetDescriptor,
 ) -> Result<WidgetRef, BridgeError> {
     let mut grid = GridWidget::new();
 
-    // Parse grid style
     if let Some(style_map) = optional_style_map(descriptor) {
         apply_grid_style_from_map(&mut grid.style, style_map);
     }
 
-    // Parse children with grid placement metadata
     if let Some(Value::Array(children_array)) = descriptor.properties.get("children") {
         for child_value in children_array {
             if let Value::Widget(child_widget) = child_value {
                 let placement = extract_grid_placement(&child_widget.properties);
-                let child_ref =
-                    widget_value_to_widget_ref(runtime, &Value::Widget(child_widget.clone()))?;
+                let child_ref = widget_value_to_widget_ref(
+                    registry,
+                    runtime,
+                    &Value::Widget(child_widget.clone()),
+                )?;
                 grid.children.push((placement, child_ref));
             }
         }

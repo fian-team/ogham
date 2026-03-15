@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::runtime::value::Value;
+use crate::widget::builder::WidgetFactory;
 
 /// A named font family with one or more file paths.
 #[derive(Clone, Debug)]
@@ -18,6 +19,10 @@ pub struct RuntimeConfig {
     pub import_paths: HashMap<String, PathBuf>,
     pub fonts: Vec<FontEntry>,
     pub default_font: Option<String>,
+    /// Custom widget factories keyed by lowercased type name. These are merged
+    /// into the runtime's [`WidgetRegistry`] on creation, overriding built-in
+    /// types if the names collide.
+    pub custom_widgets: HashMap<String, WidgetFactory>,
 }
 
 impl RuntimeConfig {
@@ -64,6 +69,27 @@ impl RuntimeConfig {
     /// specify their own `font` style property.
     pub fn with_default_font(mut self, family: impl Into<String>) -> Self {
         self.default_font = Some(family.into());
+        self
+    }
+
+    /// Register a custom widget type. The factory receives the widget
+    /// registry (for building child widgets), the runtime, and the
+    /// descriptor containing the widget's properties as declared in the
+    /// `.ogh` source. Names are lowercased so lookups are case-insensitive.
+    pub fn with_widget<S, F>(mut self, name: S, factory: F) -> Self
+    where
+        S: Into<String>,
+        F: Fn(
+                &crate::widget::builder::WidgetRegistry,
+                &std::sync::Arc<std::sync::Mutex<crate::runtime::Runtime>>,
+                &crate::runtime::descriptor::WidgetDescriptor,
+            ) -> Result<crate::widget::WidgetRef, crate::widget::builder::BridgeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.custom_widgets
+            .insert(name.into().to_lowercase(), Arc::new(factory));
         self
     }
 }

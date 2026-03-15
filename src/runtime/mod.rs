@@ -19,6 +19,7 @@ use crate::runtime::opcode::FunctionProto;
 use crate::runtime::value::Value;
 use crate::runtime::vm::VM;
 use crate::scanner::Scanner;
+use crate::widget::builder::WidgetRegistry;
 
 pub mod compiler;
 pub mod config;
@@ -183,6 +184,10 @@ pub struct Runtime {
     /// Exposed as built-in variables `screen_width` and `screen_height` in the VM.
     pub(crate) screen_width: f32,
     pub(crate) screen_height: f32,
+    /// Registry of widget type names to factory functions. Populated with
+    /// built-in types by default; host applications can add custom widgets
+    /// via [`RuntimeConfig::with_widget`].
+    pub widget_registry: WidgetRegistry,
 }
 
 impl Runtime {
@@ -197,6 +202,7 @@ impl Runtime {
             state: StateManager::new(),
             imports: ImportResolver::new(),
             screen_width: 0.0,
+            widget_registry: WidgetRegistry::with_defaults(),
             screen_height: 0.0,
         }
     }
@@ -572,6 +578,13 @@ impl Runtime {
 
             if !config.import_paths.is_empty() {
                 runtime.set_import_paths(config.import_paths.clone());
+            }
+
+            for (name, factory) in &config.custom_widgets {
+                runtime
+                    .widget_registry
+                    .factories
+                    .insert(name.clone(), factory.clone());
             }
         }
 

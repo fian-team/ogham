@@ -112,13 +112,14 @@ impl Ogham {
     fn create_ui_from_runtime(
         runtime: &Arc<Mutex<runtime::Runtime>>,
     ) -> Result<widget::UI, runtime::error::RuntimeError> {
-        let module = {
+        let (module, registry) = {
             let rt = runtime.lock().expect("runtime lock poisoned");
-            rt.get_module().cloned().ok_or_else(|| {
+            let module = rt.get_module().cloned().ok_or_else(|| {
                 runtime::error::RuntimeError::VmError(runtime::error::VMError::InvalidOperation(
                     "No module stored in runtime".to_string(),
                 ))
-            })?
+            })?;
+            (module, rt.widget_registry.clone())
         };
 
         let widget_value = {
@@ -126,8 +127,9 @@ impl Ogham {
             rt.execute_module(&module)?
         };
 
-        let widget_ref = widget::builder::widget_value_to_widget_ref(runtime, &widget_value)
-            .map_err(|e| runtime::error::RuntimeError::BridgeError(e))?;
+        let widget_ref =
+            widget::builder::widget_value_to_widget_ref(&registry, runtime, &widget_value)
+                .map_err(|e| runtime::error::RuntimeError::BridgeError(e))?;
         Ok(widget::UI::new(widget_ref))
     }
 
@@ -311,16 +313,17 @@ impl Ogham {
     /// bridge the resulting widget values into the widget tree, and
     /// reconcile. Returns `true` if a rerender was performed.
     pub fn update(&mut self) -> Result<bool, runtime::error::RuntimeError> {
-        let widget_value = {
+        let (widget_value, registry) = {
             let mut rt = self.runtime.lock().expect("runtime lock poisoned");
             if !rt.needs_rerender() {
                 return Ok(false);
             }
-            rt.rerender()?
+            let value = rt.rerender()?;
+            (value, rt.widget_registry.clone())
         };
 
         let widget_ref =
-            widget::builder::widget_value_to_widget_ref(&self.runtime, &widget_value)?;
+            widget::builder::widget_value_to_widget_ref(&registry, &self.runtime, &widget_value)?;
 
         self.ui.reconcile(widget_ref);
         Ok(true)

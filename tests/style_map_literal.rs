@@ -173,8 +173,9 @@ fn pipeline_parse_evaluate_bridge_flex_style_maps() {
 
     // Bridge: widget_value_to_widget_ref should succeed and apply style
     let runtime_ref = std::sync::Arc::new(std::sync::Mutex::new(runtime));
+    let registry = ogham::widget::builder::WidgetRegistry::with_defaults();
     let widget_ref =
-        ogham::widget::builder::widget_value_to_widget_ref(&runtime_ref, &widget_value)
+        ogham::widget::builder::widget_value_to_widget_ref(&registry, &runtime_ref, &widget_value)
             .expect("bridge should succeed");
     // Downcast to FlexWidget and check style was applied
     let guard = widget_ref.lock().expect("widget lock poisoned");

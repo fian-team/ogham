@@ -106,11 +106,11 @@ impl Client {
         };
 
         if needs_rerender {
-            // Rerender the module to get updated widget tree
             let runtime = self.ogham.get_runtime().clone();
-            let widget_value = {
+            let result = {
                 let mut rt = runtime.lock().expect("runtime lock poisoned");
                 rt.rerender()
+                    .map(|v| (v, rt.widget_registry.clone()))
                     .map_err(|e| {
                         eprintln!("[ogham] Rerender error: {:?}", e);
                         e
@@ -118,15 +118,17 @@ impl Client {
                     .ok()
             };
 
-            if let Some(widget_value) = widget_value {
-                // Convert the widget value to a WidgetRef
-                let new_root =
-                    ogham::widget::builder::widget_value_to_widget_ref(&runtime, &widget_value)
-                        .map_err(|e| {
-                            eprintln!("[ogham] Bridge error during rerender: {:?}", e);
-                            e
-                        })
-                        .ok();
+            if let Some((widget_value, registry)) = result {
+                let new_root = ogham::widget::builder::widget_value_to_widget_ref(
+                    &registry,
+                    &runtime,
+                    &widget_value,
+                )
+                .map_err(|e| {
+                    eprintln!("[ogham] Bridge error during rerender: {:?}", e);
+                    e
+                })
+                .ok();
 
                 if let Some(new_root) = new_root {
                     self.ogham.get_ui_mut().reconcile(new_root);
