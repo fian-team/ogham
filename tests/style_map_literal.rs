@@ -45,10 +45,19 @@ fn parse_flex_style_with_nested_map_literals() {
 
     assert_eq!(widget.identifier.get(), "Flex");
 
+    fn find_prop<'a>(
+        props: &'a [(ogham::parser::Identifier, Expression)],
+        key: &str,
+    ) -> Option<&'a Expression> {
+        props.iter().find(|(k, _)| k.get() == key).map(|(_, v)| v)
+    }
+
+    fn has_prop(props: &[(ogham::parser::Identifier, Expression)], key: &str) -> bool {
+        props.iter().any(|(k, _)| k.get() == key)
+    }
+
     // style property must be present and be a map literal
-    let style_expr = widget
-        .properties
-        .get("style")
+    let style_expr = find_prop(&widget.properties, "style")
         .expect("Flex should have a 'style' property");
     let style_map = match style_expr {
         Expression::Literal(Literal::Map(m)) => m,
@@ -56,46 +65,40 @@ fn parse_flex_style_with_nested_map_literals() {
     };
 
     // background_color: map with r, g, b, a
-    let bg = style_map
-        .properties
-        .get("background_color")
+    let bg = find_prop(&style_map.properties, "background_color")
         .expect("style should have background_color");
     let bg_map = match bg {
         Expression::Literal(Literal::Map(m)) => m,
         _ => panic!("background_color should be a map literal, got {:?}", bg),
     };
-    assert!(bg_map.properties.contains_key("r"));
-    assert!(bg_map.properties.contains_key("g"));
-    assert!(bg_map.properties.contains_key("b"));
-    assert!(bg_map.properties.contains_key("a"));
+    assert!(has_prop(&bg_map.properties, "r"));
+    assert!(has_prop(&bg_map.properties, "g"));
+    assert!(has_prop(&bg_map.properties, "b"));
+    assert!(has_prop(&bg_map.properties, "a"));
 
     // padding: map with top, right, bottom, left
-    let pad = style_map
-        .properties
-        .get("padding")
+    let pad = find_prop(&style_map.properties, "padding")
         .expect("style should have padding");
     let pad_map = match pad {
         Expression::Literal(Literal::Map(m)) => m,
         _ => panic!("padding should be a map literal, got {:?}", pad),
     };
-    assert!(pad_map.properties.contains_key("top"));
-    assert!(pad_map.properties.contains_key("right"));
-    assert!(pad_map.properties.contains_key("bottom"));
-    assert!(pad_map.properties.contains_key("left"));
+    assert!(has_prop(&pad_map.properties, "top"));
+    assert!(has_prop(&pad_map.properties, "right"));
+    assert!(has_prop(&pad_map.properties, "bottom"));
+    assert!(has_prop(&pad_map.properties, "left"));
 
     // margin: map with top, right, bottom, left
-    let margin = style_map
-        .properties
-        .get("margin")
+    let margin = find_prop(&style_map.properties, "margin")
         .expect("style should have margin");
     let margin_map = match margin {
         Expression::Literal(Literal::Map(m)) => m,
         _ => panic!("margin should be a map literal, got {:?}", margin),
     };
-    assert!(margin_map.properties.contains_key("top"));
-    assert!(margin_map.properties.contains_key("right"));
-    assert!(margin_map.properties.contains_key("bottom"));
-    assert!(margin_map.properties.contains_key("left"));
+    assert!(has_prop(&margin_map.properties, "top"));
+    assert!(has_prop(&margin_map.properties, "right"));
+    assert!(has_prop(&margin_map.properties, "bottom"));
+    assert!(has_prop(&margin_map.properties, "left"));
 }
 
 /// Full program that defines main() returning the Flex with nested style maps.

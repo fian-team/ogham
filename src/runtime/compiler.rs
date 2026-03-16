@@ -751,8 +751,9 @@ impl Compiler {
                 let prop_count = widget.properties.len() as u16;
 
                 // Push each property: key constant, then value.
-                for (key, value_expr) in &widget.properties {
-                    let key_const = self.chunk().add_constant(Value::String(key.clone()));
+                for (key_ident, value_expr) in &widget.properties {
+                    let key_const =
+                        self.chunk().add_constant(Value::String(key_ident.get()));
                     self.emit(OpCode::Constant(key_const));
                     self.compile_expression(value_expr)?;
                 }
@@ -886,8 +887,9 @@ impl Compiler {
             }
             Literal::Map(map) => {
                 let n = map.properties.len() as u16;
-                for (key, value_expr) in &map.properties {
-                    let key_const = self.chunk().add_constant(Value::String(key.clone()));
+                for (key_ident, value_expr) in &map.properties {
+                    let key_const =
+                        self.chunk().add_constant(Value::String(key_ident.get()));
                     self.emit(OpCode::Constant(key_const));
                     self.compile_expression(value_expr)?;
                 }

@@ -12,6 +12,10 @@ categories = ["gui"]
 name = "client"
 path = "src/client/main.rs"
 
+[[bin]]
+name = "ogham-lsp"
+path = "src/lsp/main.rs"
+
 [lib]
 name = "ogham"
 path = "src/lib.rs"
@@ -28,3 +32,5 @@ gl-rs = { version = "0.14.0", package = "gl" }
 raw-window-handle = "0.6.0"
 rfd = "0.14"
 notify = "6.1"
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }

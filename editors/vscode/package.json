@@ -1,0 +1,59 @@
+{
+  "name": "ogham-lang",
+  "displayName": "Ogham Language",
+  "description": "Language support for the Ogham UI language (.ogh files)",
+  "version": "0.1.0",
+  "publisher": "fian",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fian-team/ogham"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:ogham"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ogham",
+        "aliases": ["Ogham", "ogham"],
+        "extensions": [".ogh"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ogham",
+        "scopeName": "source.ogham",
+        "path": "./syntaxes/ogham.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Ogham",
+      "properties": {
+        "ogham.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ogham-lsp binary. Leave empty to use 'ogham-lsp' from PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0"
+  }
+}
