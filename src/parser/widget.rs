@@ -1,10 +1,11 @@
-use super::{expression::*, identifier::*};
+use super::{expression::*, identifier::*, span::Span};
 use std::collections::HashMap;
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct Widget {
     pub identifier: Identifier,
     pub properties: HashMap<String, Expression>,
+    pub span: Span,
 }
 
 impl Widget {
@@ -12,6 +13,7 @@ impl Widget {
         Widget {
             identifier,
             properties: HashMap::new(),
+            span: Span::zero(),
         }
     }
 

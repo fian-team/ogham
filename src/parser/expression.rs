@@ -1,4 +1,4 @@
-use super::{block::*, call::*, identifier::*, literal::*, operator::*, widget::*};
+use super::{block::*, call::*, identifier::*, literal::*, operator::*, span::Span, widget::*};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expression {
@@ -13,18 +13,23 @@ pub enum Expression {
     Range(RangeExpression),           // 0..5
     ForLoop(ForLoopExpression),       // for (i in 0..5) { ... }
     SpreadForLoop(ForLoopExpression), // ...for (i in 0..5) { ... }
-    Spread(Box<Expression>),          // ...expr (e.g. in array literals)
+    Spread(SpreadExpression),         // ...expr (e.g. in array literals)
     Match(MatchExpression),           // match expr { pat => body, ... }
-    PrefixIncrement(Identifier),      // ++x
-    PostfixIncrement(Identifier),     // x++
+    PrefixIncrement(IncrementExpression),  // ++x
+    PostfixIncrement(IncrementExpression), // x++
 }
 
 impl Expression {
-    pub fn new_unary(operator: Operator, value: Expression) -> Expression {
-        Expression::Unary(Unary::new(operator, value))
+    pub fn new_unary(operator: Operator, value: Expression, span: Span) -> Expression {
+        Expression::Unary(Unary::new(operator, value, span))
     }
-    pub fn new_binary(left: Expression, operator: Operator, right: Expression) -> Expression {
-        Expression::Binary(Binary::new(left, operator, right))
+    pub fn new_binary(
+        left: Expression,
+        operator: Operator,
+        right: Expression,
+        span: Span,
+    ) -> Expression {
+        Expression::Binary(Binary::new(left, operator, right, span))
     }
     pub fn new_literal(literal: Literal) -> Expression {
         Expression::Literal(literal)
@@ -33,20 +38,20 @@ impl Expression {
         Expression::Widget(widget)
     }
 
-    pub fn new_member_access(object: Expression, property: Identifier) -> Expression {
-        Expression::MemberAccess(MemberAccess::new(object, property))
+    pub fn new_member_access(object: Expression, property: Identifier, span: Span) -> Expression {
+        Expression::MemberAccess(MemberAccess::new(object, property, span))
     }
 
-    pub fn new_call(callee: Expression, arguments: Vec<Expression>) -> Expression {
-        Expression::Call(Call::new(callee, arguments))
+    pub fn new_call(callee: Expression, arguments: Vec<Expression>, span: Span) -> Expression {
+        Expression::Call(Call::new(callee, arguments, span))
     }
 
-    pub fn new_index_access(object: Expression, index: Expression) -> Expression {
-        Expression::IndexAccess(IndexAccess::new(object, index))
+    pub fn new_index_access(object: Expression, index: Expression, span: Span) -> Expression {
+        Expression::IndexAccess(IndexAccess::new(object, index, span))
     }
 
-    pub fn new_range(start: Expression, end: Expression) -> Expression {
-        Expression::Range(RangeExpression::new(start, end))
+    pub fn new_range(start: Expression, end: Expression, span: Span) -> Expression {
+        Expression::Range(RangeExpression::new(start, end, span))
     }
 
     pub fn new_for_loop(
@@ -54,12 +59,14 @@ impl Expression {
         range_start: Expression,
         range_end: Expression,
         body: Block,
+        span: Span,
     ) -> Expression {
         Expression::ForLoop(ForLoopExpression::new(
             variable,
             range_start,
             range_end,
             body,
+            span,
         ))
     }
 
@@ -68,21 +75,50 @@ impl Expression {
         range_start: Expression,
         range_end: Expression,
         body: Block,
+        span: Span,
     ) -> Expression {
         Expression::SpreadForLoop(ForLoopExpression::new(
             variable,
             range_start,
             range_end,
             body,
+            span,
         ))
     }
 
-    pub fn new_spread(expr: Expression) -> Expression {
-        Expression::Spread(Box::new(expr))
+    pub fn new_spread(expr: Expression, span: Span) -> Expression {
+        Expression::Spread(SpreadExpression {
+            inner: Box::new(expr),
+            span,
+        })
     }
 
-    pub fn new_match(scrutinee: Expression, arms: Vec<(Expression, Block)>) -> Expression {
-        Expression::Match(MatchExpression::new(scrutinee, arms))
+    pub fn new_match(
+        scrutinee: Expression,
+        arms: Vec<(Expression, Block)>,
+        span: Span,
+    ) -> Expression {
+        Expression::Match(MatchExpression::new(scrutinee, arms, span))
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            Expression::Literal(lit) => lit.span(),
+            Expression::Unary(u) => u.span,
+            Expression::Binary(b) => b.span,
+            Expression::Grouping(g) => g.span,
+            Expression::Widget(w) => w.span,
+            Expression::MemberAccess(m) => m.span,
+            Expression::Call(c) => c.span,
+            Expression::IndexAccess(i) => i.span,
+            Expression::Range(r) => r.span,
+            Expression::ForLoop(f) => f.span,
+            Expression::SpreadForLoop(f) => f.span,
+            Expression::Spread(s) => s.span,
+            Expression::Match(m) => m.span,
+            Expression::PrefixIncrement(i) => i.span,
+            Expression::PostfixIncrement(i) => i.span,
+        }
     }
 }
 
@@ -90,13 +126,15 @@ impl Expression {
 pub struct IndexAccess {
     pub object: Box<Expression>,
     pub index: Box<Expression>,
+    pub span: Span,
 }
 
 impl IndexAccess {
-    pub fn new(object: Expression, index: Expression) -> Self {
+    pub fn new(object: Expression, index: Expression, span: Span) -> Self {
         Self {
             object: Box::new(object),
             index: Box::new(index),
+            span,
         }
     }
 }
@@ -105,13 +143,15 @@ impl IndexAccess {
 pub struct MemberAccess {
     pub object: Box<Expression>,
     pub property: Identifier,
+    pub span: Span,
 }
 
 impl MemberAccess {
-    pub fn new(object: Expression, property: Identifier) -> Self {
+    pub fn new(object: Expression, property: Identifier, span: Span) -> Self {
         Self {
             object: Box::new(object),
             property,
+            span,
         }
     }
 }
@@ -119,19 +159,22 @@ impl MemberAccess {
 #[derive(PartialEq, Clone, Debug)]
 pub struct Grouping {
     pub value: Box<Expression>,
+    pub span: Span,
 }
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct Unary {
     pub operator: Operator,
     pub value: Box<Expression>,
+    pub span: Span,
 }
 
 impl Unary {
-    pub fn new(operator: Operator, value: Expression) -> Unary {
+    pub fn new(operator: Operator, value: Expression, span: Span) -> Unary {
         Unary {
             operator,
             value: Box::new(value),
+            span,
         }
     }
 }
@@ -141,14 +184,16 @@ pub struct Binary {
     pub left: Box<Expression>,
     pub right: Box<Expression>,
     pub operator: Operator,
+    pub span: Span,
 }
 
 impl Binary {
-    pub fn new(left: Expression, operator: Operator, right: Expression) -> Binary {
+    pub fn new(left: Expression, operator: Operator, right: Expression, span: Span) -> Binary {
         Binary {
             left: Box::new(left),
             right: Box::new(right),
             operator,
+            span,
         }
     }
 }
@@ -157,13 +202,15 @@ impl Binary {
 pub struct RangeExpression {
     pub start: Box<Expression>,
     pub end: Box<Expression>,
+    pub span: Span,
 }
 
 impl RangeExpression {
-    pub fn new(start: Expression, end: Expression) -> RangeExpression {
+    pub fn new(start: Expression, end: Expression, span: Span) -> RangeExpression {
         RangeExpression {
             start: Box::new(start),
             end: Box::new(end),
+            span,
         }
     }
 }
@@ -174,6 +221,7 @@ pub struct ForLoopExpression {
     pub range_start: Box<Expression>,
     pub range_end: Box<Expression>,
     pub body: Block,
+    pub span: Span,
 }
 
 impl ForLoopExpression {
@@ -182,12 +230,14 @@ impl ForLoopExpression {
         range_start: Expression,
         range_end: Expression,
         body: Block,
+        span: Span,
     ) -> ForLoopExpression {
         ForLoopExpression {
             variable,
             range_start: Box::new(range_start),
             range_end: Box::new(range_end),
             body,
+            span,
         }
     }
 }
@@ -196,13 +246,31 @@ impl ForLoopExpression {
 pub struct MatchExpression {
     pub scrutinee: Box<Expression>,
     pub arms: Vec<(Expression, Block)>,
+    pub span: Span,
 }
 
 impl MatchExpression {
-    pub fn new(scrutinee: Expression, arms: Vec<(Expression, Block)>) -> MatchExpression {
+    pub fn new(
+        scrutinee: Expression,
+        arms: Vec<(Expression, Block)>,
+        span: Span,
+    ) -> MatchExpression {
         MatchExpression {
             scrutinee: Box::new(scrutinee),
             arms,
+            span,
         }
     }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct SpreadExpression {
+    pub inner: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub struct IncrementExpression {
+    pub identifier: Identifier,
+    pub span: Span,
 }

@@ -432,6 +432,7 @@ impl Compiler {
     }
 
     fn compile_statement(&mut self, statement: &Statement, is_last: bool) -> Result<(), VMError> {
+        self.current_line = statement.span().start_line;
         match statement {
             Statement::Expression(expr_stmt) => {
                 self.compile_expression(&expr_stmt.get_value())?;
@@ -665,6 +666,7 @@ impl Compiler {
     // -----------------------------------------------------------------------
 
     fn compile_expression(&mut self, expr: &Expression) -> Result<(), VMError> {
+        self.current_line = expr.span().start_line;
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Unary(unary) => {
@@ -773,20 +775,16 @@ impl Compiler {
                 // array literal compilation (see Literal::Array).
                 self.compile_for_loop_expression(for_loop)
             }
-            Expression::Spread(inner) => {
-                // Standalone spread outside an array literal is an error
-                // at runtime in the tree-walk interpreter. We'll compile
-                // the inner expression; the array literal handler deals
-                // with merging.
-                self.compile_expression(inner)?;
+            Expression::Spread(spread) => {
+                self.compile_expression(&spread.inner)?;
                 Ok(())
             }
             Expression::Match(m) => self.compile_match(m),
-            Expression::PrefixIncrement(ident) => {
-                self.compile_increment(ident, true)
+            Expression::PrefixIncrement(inc) => {
+                self.compile_increment(&inc.identifier, true)
             }
-            Expression::PostfixIncrement(ident) => {
-                self.compile_increment(ident, false)
+            Expression::PostfixIncrement(inc) => {
+                self.compile_increment(&inc.identifier, false)
             }
         }
     }
@@ -841,15 +839,15 @@ impl Compiler {
 
     fn compile_literal(&mut self, lit: &Literal) -> Result<(), VMError> {
         match lit {
-            Literal::Integer(i) => {
+            Literal::Integer(i, _) => {
                 self.emit_constant(Value::Integer(*i));
                 Ok(())
             }
-            Literal::Float(f) => {
+            Literal::Float(f, _) => {
                 self.emit_constant(Value::Float(*f));
                 Ok(())
             }
-            Literal::Boolean(b) => {
+            Literal::Boolean(b, _) => {
                 if *b {
                     self.emit(OpCode::True);
                 } else {
@@ -857,7 +855,7 @@ impl Compiler {
                 }
                 Ok(())
             }
-            Literal::String(s) => {
+            Literal::String(s, _) => {
                 self.emit_constant(Value::String(s.clone()));
                 Ok(())
             }
@@ -907,8 +905,8 @@ impl Compiler {
                             self.compile_for_loop_expression(for_loop)?;
                             self.emit(OpCode::SpreadForExpr);
                         }
-                        Expression::Spread(inner) => {
-                            self.compile_expression(inner)?;
+                        Expression::Spread(spread) => {
+                            self.compile_expression(&spread.inner)?;
                             self.emit(OpCode::SpreadForExpr);
                         }
                         _ => {

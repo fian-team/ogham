@@ -1,12 +1,28 @@
+use super::span::Span;
+
 #[derive(PartialEq, Clone, Debug)]
-pub struct Identifier(Box<String>);
+pub struct Identifier {
+    name: Box<String>,
+    pub span: Span,
+}
 
 impl Identifier {
-    pub fn new(identifier: &str) -> Identifier {
-        Identifier(Box::new(identifier.to_owned()))
+    pub fn new(identifier: &str, span: Span) -> Identifier {
+        Identifier {
+            name: Box::new(identifier.to_owned()),
+            span,
+        }
+    }
+
+    /// Create an identifier with a zero span, for synthetic/generated nodes.
+    pub fn synthetic(identifier: &str) -> Identifier {
+        Identifier {
+            name: Box::new(identifier.to_owned()),
+            span: Span::zero(),
+        }
     }
 
     pub fn get(&self) -> String {
-        *self.0.clone()
+        *self.name.clone()
     }
 }

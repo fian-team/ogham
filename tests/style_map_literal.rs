@@ -33,7 +33,7 @@ fn parse_flex_style_with_nested_map_literals() {
     );
 
     let ret = match &statements[0] {
-        Statement::Return(r) => r.0.as_ref(),
+        Statement::Return(r) => r.value.as_ref(),
         _ => panic!("expected implicit return statement"),
     };
     let ret = ret.expect("return should have a value");

@@ -743,7 +743,7 @@ impl VM {
                     }
                     self.stack.truncate(start);
                     self.push(Value::Widget(WidgetDescriptor {
-                        identifier: Identifier::new(&ident_name),
+                        identifier: Identifier::synthetic(&ident_name),
                         properties: props,
                     }))?;
                 }
@@ -808,8 +808,11 @@ impl VM {
                     // compiles the imported file to bytecode, runs it in
                     // a fresh VM, and merges exported names into the
                     // runtime's Environment.
-                    let import_stmt =
-                        crate::parser::ImportStatement::new(meta.names.clone(), meta.path.clone());
+                    let import_stmt = crate::parser::ImportStatement {
+                        names: meta.names.clone(),
+                        path: meta.path.clone(),
+                        span: crate::parser::Span::zero(),
+                    };
                     runtime.execute_import(&import_stmt)?;
 
                     // After import, the exported names are in

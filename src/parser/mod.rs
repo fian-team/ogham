@@ -14,13 +14,14 @@ mod literal;
 mod map;
 mod node;
 mod operator;
+pub mod span;
 mod statement;
 mod syntax_error;
 mod widget;
 
 pub use {
     array::*, block::*, call::*, expression::*, function::*, identifier::*, literal::*, map::*,
-    operator::*, statement::*, syntax_error::*, widget::*,
+    operator::*, span::*, statement::*, syntax_error::*, widget::*,
 };
 
 use super::scanner;
@@ -46,6 +47,36 @@ impl Parser {
             parsing_match_scrutinee: false,
         }
     }
+
+    // -- Span helpers -------------------------------------------------------
+
+    /// Capture the start position from the current token.
+    fn span_start(&self) -> (usize, usize) {
+        if self.current < self.input.len() {
+            let token = &self.input[self.current];
+            (token.line, token.column)
+        } else {
+            (0, 0)
+        }
+    }
+
+    /// Build a Span from a saved start position to the end of the previous token.
+    fn span_from(&self, start: (usize, usize)) -> Span {
+        if self.current > 0 {
+            let prev = &self.input[self.current - 1];
+            Span::new(start.0, start.1, prev.line, prev.column + prev.length)
+        } else {
+            Span::new(start.0, start.1, start.0, start.1)
+        }
+    }
+
+    /// Build a span covering just the current token (before consuming it).
+    fn current_token_span(&self) -> Span {
+        let token = &self.input[self.current];
+        Span::new(token.line, token.column, token.line, token.column + token.length)
+    }
+
+    // -- Token helpers ------------------------------------------------------
 
     fn current(&self) -> Option<scanner::Token> {
         if self.input.len() > self.current {
@@ -97,24 +128,27 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Result<Function, SyntaxError> {
+        let start = self.span_start();
         let block = self.parse_block(true)?;
         self.module.body = block;
+        self.module.span = self.span_from(start);
         Ok(self.module.clone())
     }
 
     pub fn parse_block(&mut self, allow_import: bool) -> Result<Block, SyntaxError> {
+        let start = self.span_start();
         let mut block = Block::new();
         while self.current < self.input.len() {
             if let scanner::TokenType::EOF = self.input[self.current].token_type.clone() {
                 break;
             }
-            // Check if next token is a closing bracket (end of block)
             if let scanner::TokenType::RightBracket = self.input[self.current].token_type.clone() {
                 break;
             }
             let statement = self.parse_statement(allow_import)?;
             block.statement_list.push(statement);
         }
+        block.span = self.span_from(start);
         Ok(block)
     }
 
@@ -136,18 +170,15 @@ impl Parser {
             scanner::TokenType::Return => self.parse_return(),
             scanner::TokenType::Let => self.parse_let(),
             scanner::TokenType::State => self.parse_state(),
-            // scanner::TokenType::Event => self.parse_event(),
             scanner::TokenType::Identifier(_) => self.parse_identifier_statement(),
             scanner::TokenType::Log => self.parse_log(),
             scanner::TokenType::For => self.parse_for_loop_statement(),
-            _ => {
-                // Try to parse as an expression statement (for implicit returns)
-                self.parse_expression_statement()
-            }
+            _ => self.parse_expression_statement(),
         }
     }
 
     fn parse_import(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::Import)?;
         let (names, path) = if self.next_is(vec![scanner::TokenType::LeftBracket]) {
             self.consume_if(scanner::TokenType::LeftBracket)?;
@@ -207,7 +238,8 @@ impl Parser {
             (None, path)
         };
         self.consume_if(scanner::TokenType::Semicolon)?;
-        Ok(Statement::new_import(names, path))
+        let span = self.span_from(start);
+        Ok(Statement::new_import(names, path, span))
     }
 
     fn consume_if(&mut self, token: scanner::TokenType) -> Result<(), SyntaxError> {
@@ -232,8 +264,9 @@ impl Parser {
     fn consume_if_identifier(&mut self) -> Result<Identifier, SyntaxError> {
         let current_token = self.current().unwrap();
         if let scanner::TokenType::Identifier(identifier) = current_token.token_type {
+            let span = self.current_token_span();
             self.consume();
-            Ok(Identifier::new(&identifier))
+            Ok(Identifier::new(&identifier, span))
         } else {
             Err(SyntaxError {
                 message: "Expected identifier".to_owned(),
@@ -254,7 +287,6 @@ impl Parser {
         self.current += 1;
     }
 
-    // Check if we're at the end of a block (EOF or RightBracket)
     fn is_at_block_end(&self) -> bool {
         self.current >= self.input.len()
             || matches!(
@@ -263,22 +295,21 @@ impl Parser {
             )
     }
 
-    // Convert an expression to a statement, handling implicit returns.
-    // If there's a semicolon, consume it and return as expression statement.
-    // If we're at the end of block without semicolon, treat as implicit return.
-    // Otherwise, return as expression statement.
     fn expression_to_statement(
         &mut self,
         expression: Expression,
+        stmt_start: (usize, usize),
     ) -> Result<Statement, SyntaxError> {
         if self.next_is(vec![scanner::TokenType::Semicolon]) {
             self.consume_if(scanner::TokenType::Semicolon)?;
-            Ok(Statement::new_expression(expression))
+            let span = self.span_from(stmt_start);
+            Ok(Statement::new_expression(expression, span))
         } else if self.is_at_block_end() {
-            // Implicit return
-            Ok(Statement::new_return(Some(expression)))
+            let span = self.span_from(stmt_start);
+            Ok(Statement::new_return(Some(expression), span))
         } else {
-            Ok(Statement::new_expression(expression))
+            let span = self.span_from(stmt_start);
+            Ok(Statement::new_expression(expression, span))
         }
     }
 
@@ -287,34 +318,30 @@ impl Parser {
             self.consume_if(scanner::TokenType::Colon)?;
             self.parse_type_identifier()
         } else {
-            Ok(Identifier::new("infer"))
+            Ok(Identifier::synthetic("infer"))
         }
     }
 
     /// Parses a type identifier, including postfix array syntax like `int[]` or `widget[][]`.
-    ///
-    /// Internally, types are represented as an `Identifier` string, so `int[][]` is stored
-    /// as the identifier `"int[][]"`.
     fn parse_type_identifier(&mut self) -> Result<Identifier, SyntaxError> {
+        let start = self.span_start();
         let base = self.consume_if_identifier()?;
         let mut type_str = base.get();
 
         while self.next_is(vec![scanner::TokenType::LeftSquareBracket]) {
             self.consume_if(scanner::TokenType::LeftSquareBracket)?;
-            // For types, we only support empty array brackets: `[]`
             self.consume_if(scanner::TokenType::RightSquareBracket)?;
             type_str.push_str("[]");
         }
 
-        Ok(Identifier::new(&type_str))
+        let span = self.span_from(start);
+        Ok(Identifier::new(&type_str, span))
     }
 
-    // When an identifier is used as a statement, it can be an assignment,
-    // a function call, or a widget expression.
     fn parse_identifier_statement(&mut self) -> Result<Statement, SyntaxError> {
+        let stmt_start = self.span_start();
         let identifier = self.consume_if_identifier()?;
 
-        // Check what the next token is (after consuming the identifier)
         let next_token_type = if self.current < self.input.len() {
             Some(&self.input[self.current].token_type)
         } else {
@@ -325,36 +352,28 @@ impl Parser {
             Some(scanner::TokenType::LeftParenthesis) => {
                 let expr = Expression::Literal(Literal::Identifier(identifier));
                 let full_expr = self.parse_postfix(expr)?;
-                self.expression_to_statement(full_expr)
+                self.expression_to_statement(full_expr, stmt_start)
             }
             Some(scanner::TokenType::LeftBracket) => {
-                // Widget expression
                 let widget = self.parse_widget(identifier)?;
-                self.expression_to_statement(Expression::Widget(widget))
+                self.expression_to_statement(Expression::Widget(widget), stmt_start)
             }
-            Some(scanner::TokenType::Equal) => {
-                // Assignment
-                self.parse_assign(identifier)
-            }
+            Some(scanner::TokenType::Equal) => self.parse_assign(identifier, stmt_start),
             _ => {
-                // Not a call, widget, or assignment - treat as identifier expression
-                // This handles cases like standalone identifiers
                 let expr = Expression::Literal(Literal::Identifier(identifier));
-                self.expression_to_statement(expr)
+                self.expression_to_statement(expr, stmt_start)
             }
         }
     }
 
-    // Parse an expression statement with optional semicolon.
-    // If the expression is followed by EOF or RightBracket (end of block) without a semicolon,
-    // it's treated as an implicit return.
     fn parse_expression_statement(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
         let expression = self.expression()?;
-        self.expression_to_statement(expression)
+        self.expression_to_statement(expression, start)
     }
 
     pub fn parse_conditional(&mut self) -> Result<Statement, SyntaxError> {
-        // Parse: if expression { block }
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::If)?;
         let condition = self.expression()?;
         self.consume_if(scanner::TokenType::LeftBracket)?;
@@ -364,12 +383,9 @@ impl Parser {
         let mut branches = vec![(condition, block)];
         let mut else_block = None;
 
-        // Parse optional else if branches
         while self.next_is(vec![scanner::TokenType::Else]) {
-            // Check if next token after Else is If
             if self.current + 1 < self.input.len() {
                 if let scanner::TokenType::If = self.input[self.current + 1].token_type {
-                    // Parse: else if expression { block }
                     self.consume_if(scanner::TokenType::Else)?;
                     self.consume_if(scanner::TokenType::If)?;
                     let else_if_condition = self.expression()?;
@@ -378,7 +394,6 @@ impl Parser {
                     self.consume_if(scanner::TokenType::RightBracket)?;
                     branches.push((else_if_condition, else_if_block));
                 } else {
-                    // Parse: else { block }
                     self.consume_if(scanner::TokenType::Else)?;
                     self.consume_if(scanner::TokenType::LeftBracket)?;
                     else_block = Some(self.parse_block(false)?);
@@ -386,7 +401,6 @@ impl Parser {
                     break;
                 }
             } else {
-                // Parse: else { block }
                 self.consume_if(scanner::TokenType::Else)?;
                 self.consume_if(scanner::TokenType::LeftBracket)?;
                 else_block = Some(self.parse_block(false)?);
@@ -395,38 +409,44 @@ impl Parser {
             }
         }
 
-        Ok(Statement::new_conditional(branches, else_block))
+        let span = self.span_from(start);
+        Ok(Statement::new_conditional(branches, else_block, span))
     }
 
     pub fn parse_return(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::Return)?;
         if self.next_is(vec![scanner::TokenType::Semicolon]) {
             self.consume_if(scanner::TokenType::Semicolon)?;
-            return Ok(Statement::new_return(None));
+            let span = self.span_from(start);
+            return Ok(Statement::new_return(None, span));
         }
         let expression = self.expression()?;
         self.consume_if(scanner::TokenType::Semicolon)?;
-        return Ok(Statement::new_return(Some(expression)));
+        let span = self.span_from(start);
+        Ok(Statement::new_return(Some(expression), span))
     }
 
     pub fn parse_let(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::Let)?;
         let (variable_name, _variable_type, variable_value) =
             self.parse_remainder_of_declaration()?;
-        return Ok(Statement::Declare(DeclareStatement::new(
-            &variable_name,
-            variable_value,
-        )));
+        let span = self.span_from(start);
+        Ok(Statement::new_declare(&variable_name, variable_value, span))
     }
 
     pub fn parse_state(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::State)?;
         let (variable_name, _variable_type, variable_value) =
             self.parse_remainder_of_declaration()?;
-        return Ok(Statement::DeclareState(DeclareStateStatement::new(
+        let span = self.span_from(start);
+        Ok(Statement::new_declare_state(
             &variable_name,
             variable_value,
-        )));
+            span,
+        ))
     }
 
     fn parse_remainder_of_declaration(
@@ -437,37 +457,36 @@ impl Parser {
         self.consume_if(scanner::TokenType::Equal)?;
         let expression = self.expression()?;
         self.consume_if(scanner::TokenType::Semicolon)?;
-        return Ok((identifier, identifier_type, expression));
+        Ok((identifier, identifier_type, expression))
     }
 
-    pub fn parse_assign(&mut self, identifier: Identifier) -> Result<Statement, SyntaxError> {
+    pub fn parse_assign(
+        &mut self,
+        identifier: Identifier,
+        stmt_start: (usize, usize),
+    ) -> Result<Statement, SyntaxError> {
         self.consume_if(scanner::TokenType::Equal)?;
         let expression = self.expression()?;
         self.consume_if(scanner::TokenType::Semicolon)?;
-        return Ok(Statement::new_assign(&identifier, expression));
+        let span = self.span_from(stmt_start);
+        Ok(Statement::new_assign(&identifier, expression, span))
     }
 
-    // pub fn parse_event(&mut self) -> Result<Statement, SyntaxError> {
-    //   self.consume_if(scanner::TokenType::Event)?;
-    //   let event_identifier = self.consume_if_identifier()?;
-    //   self.consume_if(scanner::TokenType::Equal)?;
-    //   let function = self.parse_function()?;
-    //   return Ok(Statement::new_event(&event_identifier, function));
-    // }
-
     pub fn parse_log(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::Log)?;
         let expression = self.expression()?;
         self.consume_if(scanner::TokenType::Semicolon)?;
-        return Ok(Statement::new_log(expression));
+        let span = self.span_from(start);
+        Ok(Statement::new_log(expression, span))
     }
 
     pub fn parse_for_loop_statement(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::For)?;
         self.consume_if(scanner::TokenType::LeftParenthesis)?;
         let variable = self.consume_if_identifier()?;
         self.consume_if(scanner::TokenType::In)?;
-        // Parse range explicitly: start..end (factor stops before .. so we don't consume it here)
         let range_start = self.factor()?;
         self.consume_if(scanner::TokenType::Range)?;
         let range_end = self.factor()?;
@@ -475,15 +494,18 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let body = self.parse_block(false)?;
         self.consume_if(scanner::TokenType::RightBracket)?;
-        return Ok(Statement::new_for_loop(
+        let span = self.span_from(start);
+        Ok(Statement::new_for_loop(
             variable,
             range_start,
             range_end,
             body,
-        ));
+            span,
+        ))
     }
 
     fn parse_for_loop_expression(&mut self, is_spread: bool) -> Result<Expression, SyntaxError> {
+        let start = self.span_start();
         if is_spread {
             self.consume_if(scanner::TokenType::Spread)?;
         }
@@ -491,7 +513,6 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftParenthesis)?;
         let variable = self.consume_if_identifier()?;
         self.consume_if(scanner::TokenType::In)?;
-        // Parse range explicitly: start..end (factor stops before .. so we don't consume it here)
         let range_start = self.factor()?;
         self.consume_if(scanner::TokenType::Range)?;
         let range_end = self.factor()?;
@@ -499,12 +520,14 @@ impl Parser {
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let body = self.parse_block(false)?;
         self.consume_if(scanner::TokenType::RightBracket)?;
+        let span = self.span_from(start);
         if is_spread {
             Ok(Expression::new_spread_for_loop(
                 variable,
                 range_start,
                 range_end,
                 body,
+                span,
             ))
         } else {
             Ok(Expression::new_for_loop(
@@ -512,6 +535,7 @@ impl Parser {
                 range_start,
                 range_end,
                 body,
+                span,
             ))
         }
     }
@@ -523,26 +547,27 @@ impl Parser {
             line: 0,
             column: 0,
         })?;
+        let span = self.current_token_span();
         let expr = match &current_token.token_type {
             scanner::TokenType::Integer(value) => {
                 self.current += 1;
-                Expression::Literal(Literal::Integer(*value))
+                Expression::Literal(Literal::Integer(*value, span))
             }
             scanner::TokenType::Float(value) => {
                 self.current += 1;
-                Expression::Literal(Literal::Float(*value))
+                Expression::Literal(Literal::Float(*value, span))
             }
             scanner::TokenType::Boolean(value) => {
                 self.current += 1;
-                Expression::Literal(Literal::Boolean(*value))
+                Expression::Literal(Literal::Boolean(*value, span))
             }
             scanner::TokenType::String(value) => {
                 self.current += 1;
-                Expression::Literal(Literal::String(value.clone()))
+                Expression::Literal(Literal::String(value.clone(), span))
             }
             scanner::TokenType::Identifier(value) => {
                 self.current += 1;
-                Expression::Literal(Literal::Identifier(Identifier::new(&value)))
+                Expression::Literal(Literal::Identifier(Identifier::new(value, span)))
             }
             _ => {
                 return Err(SyntaxError {
@@ -559,7 +584,7 @@ impl Parser {
     }
 
     fn parse_match_expression(&mut self) -> Result<Expression, SyntaxError> {
-        // Only accept Match token to begin the expression
+        let start = self.span_start();
         let current = self.current().ok_or_else(|| SyntaxError {
             message: "Expected 'match'".to_owned(),
             line: 0,
@@ -595,8 +620,12 @@ impl Parser {
                 block
             } else {
                 let expr = self.expression()?;
+                let expr_span = expr.span();
                 let mut block = Block::new();
-                block.statement_list.push(Statement::new_return(Some(expr)));
+                block.span = expr_span;
+                block
+                    .statement_list
+                    .push(Statement::new_return(Some(expr), expr_span));
                 block
             };
 
@@ -608,7 +637,8 @@ impl Parser {
         }
 
         self.consume_if(scanner::TokenType::RightBracket)?;
-        Ok(Expression::new_match(scrutinee, arms))
+        let span = self.span_from(start);
+        Ok(Expression::new_match(scrutinee, arms, span))
     }
 
     pub fn expression(&mut self) -> Result<Expression, SyntaxError> {
@@ -618,9 +648,11 @@ impl Parser {
     pub fn logical_or(&mut self) -> Result<Expression, SyntaxError> {
         let mut expression = self.logical_and()?;
         while self.next_is(vec![scanner::TokenType::Or]) {
+            let left_start = expression.span();
             let operator = self.get_current_as_operator()?;
             let right = self.logical_and()?;
-            expression = Expression::new_binary(expression, operator, right);
+            let span = Span::merge(&left_start, &right.span());
+            expression = Expression::new_binary(expression, operator, right, span);
         }
         Ok(expression)
     }
@@ -628,9 +660,11 @@ impl Parser {
     pub fn logical_and(&mut self) -> Result<Expression, SyntaxError> {
         let mut expression = self.equality()?;
         while self.next_is(vec![scanner::TokenType::And]) {
+            let left_start = expression.span();
             let operator = self.get_current_as_operator()?;
             let right = self.equality()?;
-            expression = Expression::new_binary(expression, operator, right);
+            let span = Span::merge(&left_start, &right.span());
+            expression = Expression::new_binary(expression, operator, right, span);
         }
         Ok(expression)
     }
@@ -641,9 +675,11 @@ impl Parser {
             scanner::TokenType::EqualEqual,
             scanner::TokenType::NotEqual,
         ]) {
+            let left_start = expression.span();
             let operator = self.get_current_as_operator()?;
             let right = self.comparison()?;
-            expression = Expression::new_binary(expression, operator, right);
+            let span = Span::merge(&left_start, &right.span());
+            expression = Expression::new_binary(expression, operator, right, span);
         }
         Ok(expression)
     }
@@ -656,9 +692,11 @@ impl Parser {
             scanner::TokenType::LessThan,
             scanner::TokenType::LessThanOrEqualTo,
         ]) {
+            let left_start = expression.span();
             let operator = self.get_current_as_operator()?;
             let right = self.term()?;
-            expression = Expression::new_binary(expression, operator, right);
+            let span = Span::merge(&left_start, &right.span());
+            expression = Expression::new_binary(expression, operator, right, span);
         }
         Ok(expression)
     }
@@ -666,9 +704,11 @@ impl Parser {
     pub fn term(&mut self) -> Result<Expression, SyntaxError> {
         let mut expression = self.range()?;
         while self.next_is(vec![scanner::TokenType::Plus, scanner::TokenType::Minus]) {
+            let left_start = expression.span();
             let operator = self.get_current_as_operator()?;
             let right = self.range()?;
-            expression = Expression::new_binary(expression, operator, right);
+            let span = Span::merge(&left_start, &right.span());
+            expression = Expression::new_binary(expression, operator, right, span);
         }
         Ok(expression)
     }
@@ -680,9 +720,11 @@ impl Parser {
             scanner::TokenType::Divide,
             scanner::TokenType::Modulo,
         ]) {
+            let left_start = expression.span();
             let operator = self.get_current_as_operator()?;
             let right = self.exponent()?;
-            expression = Expression::new_binary(expression, operator, right);
+            let span = Span::merge(&left_start, &right.span());
+            expression = Expression::new_binary(expression, operator, right, span);
         }
         Ok(expression)
     }
@@ -690,9 +732,11 @@ impl Parser {
     pub fn exponent(&mut self) -> Result<Expression, SyntaxError> {
         let base = self.unary()?;
         if self.next_is(vec![scanner::TokenType::Power]) {
+            let left_start = base.span();
             let operator = self.get_current_as_operator()?;
             let exp = self.exponent()?;
-            Ok(Expression::new_binary(base, operator, exp))
+            let span = Span::merge(&left_start, &exp.span());
+            Ok(Expression::new_binary(base, operator, exp, span))
         } else {
             Ok(base)
         }
@@ -701,18 +745,17 @@ impl Parser {
     pub fn range(&mut self) -> Result<Expression, SyntaxError> {
         let start = self.factor()?;
         if self.next_is(vec![scanner::TokenType::Range]) {
-            self.consume(); // consume Range token
+            self.consume();
             let end = self.factor()?;
-            Ok(Expression::new_range(start, end))
+            let span = Span::merge(&start.span(), &end.span());
+            Ok(Expression::new_range(start, end, span))
         } else {
             Ok(start)
         }
     }
 
     pub fn unary(&mut self) -> Result<Expression, SyntaxError> {
-        // Check for spread operator before for loop
         if self.next_is(vec![scanner::TokenType::Spread]) {
-            // Check if next token is For
             if self.current + 1 < self.input.len() {
                 if let scanner::TokenType::For = self.input[self.current + 1].token_type {
                     return self.parse_for_loop_expression(true);
@@ -720,6 +763,7 @@ impl Parser {
             }
         }
         if self.next_is(vec![scanner::TokenType::Increment]) {
+            let start = self.span_start();
             let token = self.current().unwrap();
             let line = token.line;
             let column = token.column;
@@ -729,17 +773,25 @@ impl Parser {
                 line,
                 column,
             })?;
-            return Ok(Expression::PrefixIncrement(ident));
+            let span = self.span_from(start);
+            return Ok(Expression::PrefixIncrement(IncrementExpression {
+                identifier: ident,
+                span,
+            }));
         }
         if self.next_is(vec![scanner::TokenType::Minus]) {
+            let start = self.span_start();
             self.consume();
             let operand = self.unary()?;
-            return Ok(Expression::new_unary(Operator::Minus, operand));
+            let span = self.span_from(start);
+            return Ok(Expression::new_unary(Operator::Minus, operand, span));
         }
         if self.next_is(vec![scanner::TokenType::Not]) {
+            let start = self.span_start();
             self.consume();
             let operand = self.unary()?;
-            return Ok(Expression::new_unary(Operator::Not, operand));
+            let span = self.span_from(start);
+            return Ok(Expression::new_unary(Operator::Not, operand, span));
         }
         self.primary()
     }
@@ -747,23 +799,26 @@ impl Parser {
     pub fn primary(&mut self) -> Result<Expression, SyntaxError> {
         let expr = match &self.input[self.current].token_type {
             scanner::TokenType::Integer(value) => {
+                let span = self.current_token_span();
                 self.current += 1;
-                Expression::Literal(Literal::Integer(*value))
+                Expression::Literal(Literal::Integer(*value, span))
             }
             scanner::TokenType::Float(value) => {
+                let span = self.current_token_span();
                 self.current += 1;
-                Expression::Literal(Literal::Float(*value))
+                Expression::Literal(Literal::Float(*value, span))
             }
             scanner::TokenType::Boolean(value) => {
+                let span = self.current_token_span();
                 self.current += 1;
-                Expression::Literal(Literal::Boolean(*value))
+                Expression::Literal(Literal::Boolean(*value, span))
             }
             scanner::TokenType::Identifier(value) => {
+                let span = self.current_token_span();
                 self.current += 1;
-                let identifier = Identifier::new(&value);
+                let identifier = Identifier::new(value, span);
                 let is_widget = self.next_is(vec![scanner::TokenType::LeftBracket]);
                 if is_widget && !self.parsing_match_scrutinee {
-                    // When parsing match scrutinee, `id {` is identifier + match arms, not a widget
                     let widget = self.parse_widget(identifier)?;
                     Expression::Widget(widget)
                 } else {
@@ -784,16 +839,18 @@ impl Parser {
             }
             scanner::TokenType::Match => return self.parse_match_expression(),
             scanner::TokenType::For => {
-                let for_loop = self.parse_for_loop_expression(false)?;
-                for_loop
+                return self.parse_for_loop_expression(false);
             }
             scanner::TokenType::LeftParenthesis => {
+                let start = self.span_start();
                 self.current += 1;
                 let expression = self.expression()?;
                 if self.next_is(vec![scanner::TokenType::RightParenthesis]) {
                     self.current += 1;
+                    let span = self.span_from(start);
                     Expression::Grouping(Grouping {
                         value: Box::new(expression),
+                        span,
                     })
                 } else {
                     let current_token = self.current().unwrap();
@@ -805,8 +862,9 @@ impl Parser {
                 }
             }
             scanner::TokenType::String(value) => {
+                let span = self.current_token_span();
                 self.current += 1;
-                Expression::Literal(Literal::String(value.clone()))
+                Expression::Literal(Literal::String(value.clone(), span))
             }
             _ => {
                 let current_token = &self.input[self.current];
@@ -825,22 +883,32 @@ impl Parser {
     fn parse_postfix(&mut self, mut expr: Expression) -> Result<Expression, SyntaxError> {
         loop {
             if self.next_is(vec![scanner::TokenType::Dot]) {
+                let start_span = expr.span();
                 self.consume_if(scanner::TokenType::Dot)?;
                 let property = self.consume_if_identifier()?;
-                expr = Expression::new_member_access(expr, property);
+                let span = Span::merge(&start_span, &property.span);
+                expr = Expression::new_member_access(expr, property, span);
             } else if self.next_is(vec![scanner::TokenType::LeftParenthesis]) {
-                let call = self.parse_call_with_callee(expr)?;
+                let callee_span = expr.span();
+                let call = self.parse_call_with_callee(expr, callee_span)?;
                 expr = Expression::Call(call);
             } else if self.next_is(vec![scanner::TokenType::LeftSquareBracket]) {
+                let start_span = expr.span();
                 self.consume_if(scanner::TokenType::LeftSquareBracket)?;
                 let index = self.expression()?;
                 self.consume_if(scanner::TokenType::RightSquareBracket)?;
-                expr = Expression::new_index_access(expr, index);
+                let span = self.span_from((start_span.start_line, start_span.start_column));
+                expr = Expression::new_index_access(expr, index, span);
             } else if self.next_is(vec![scanner::TokenType::Increment]) {
                 if let Expression::Literal(Literal::Identifier(ref ident)) = expr {
                     let ident = ident.clone();
+                    let start_span = ident.span;
                     self.consume();
-                    expr = Expression::PostfixIncrement(ident);
+                    let span = self.span_from((start_span.start_line, start_span.start_column));
+                    expr = Expression::PostfixIncrement(IncrementExpression {
+                        identifier: ident,
+                        span,
+                    });
                 } else {
                     break;
                 }
@@ -857,10 +925,11 @@ impl Parser {
             text.push_str(&self.parse_token_as_text());
             self.current += 1;
         }
-        return Ok(text);
+        Ok(text)
     }
 
     pub fn parse_function(&mut self) -> Result<Function, SyntaxError> {
+        let start = self.span_start();
         let mut function = Function::new();
 
         self.consume_if(scanner::TokenType::Fn)?;
@@ -882,6 +951,7 @@ impl Parser {
         while self.current < self.input.len() {
             if let scanner::TokenType::RightBracket = self.input[self.current].token_type {
                 self.consume_if(scanner::TokenType::RightBracket)?;
+                function.span = self.span_from(start);
                 return Ok(function);
             }
             let statement = self.parse_statement(false)?;
@@ -890,18 +960,21 @@ impl Parser {
         let current_token = if let Some(token) = self.current() {
             token
         } else {
-            // If we're at the end, use the last token
             self.input.last().unwrap().clone()
         };
-        return Err(SyntaxError {
+        Err(SyntaxError {
             message: "Failed to parse function".to_owned(),
             line: current_token.line,
             column: current_token.column,
-        });
+        })
     }
 
     /// Parse call arguments after the opening `(`; callee is already known.
-    fn parse_call_with_callee(&mut self, callee: Expression) -> Result<Call, SyntaxError> {
+    fn parse_call_with_callee(
+        &mut self,
+        callee: Expression,
+        callee_span: Span,
+    ) -> Result<Call, SyntaxError> {
         self.consume_if(scanner::TokenType::LeftParenthesis)?;
         let mut arguments = Vec::new();
         while !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
@@ -912,10 +985,13 @@ impl Parser {
             }
         }
         self.consume_if(scanner::TokenType::RightParenthesis)?;
-        Ok(Call::new(callee, arguments))
+        let span =
+            self.span_from((callee_span.start_line, callee_span.start_column));
+        Ok(Call::new(callee, arguments, span))
     }
 
     pub fn parse_map(&mut self) -> Result<Map, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::LeftBracket)?;
         let mut map = Map::new();
         while self.current < self.input.len()
@@ -924,8 +1000,6 @@ impl Parser {
             let identifier = self.consume_if_identifier()?;
             self.consume_if(scanner::TokenType::Colon)?;
             let expression = self.expression()?;
-            // Comma is optional before the closing bracket:
-            // { a: 1 } and { a: 1, } are both valid.
             if self.current < self.input.len()
                 && self.input[self.current].token_type != scanner::TokenType::RightBracket
             {
@@ -942,16 +1016,16 @@ impl Parser {
             });
         }
         self.consume_if(scanner::TokenType::RightBracket)?;
-        return Ok(map);
+        map.span = self.span_from(start);
+        Ok(map)
     }
 
     pub fn parse_array(&mut self) -> Result<Array, SyntaxError> {
+        let start = self.span_start();
         self.consume_if(scanner::TokenType::LeftSquareBracket)?;
         let mut array = Array::new();
         while !self.next_is(vec![scanner::TokenType::RightSquareBracket]) {
-            // Check for spread for loop or spread expression
             if self.next_is(vec![scanner::TokenType::Spread]) {
-                // Check if next token is For -> spread for loop
                 if self.current + 1 < self.input.len() {
                     if let scanner::TokenType::For = self.input[self.current + 1].token_type {
                         let spread_for_loop = self.parse_for_loop_expression(true)?;
@@ -962,10 +1036,11 @@ impl Parser {
                         continue;
                     }
                 }
-                // Spread expression: ...expr
+                let spread_start = self.span_start();
                 self.consume_if(scanner::TokenType::Spread)?;
                 let inner = self.expression()?;
-                array.push(Expression::new_spread(inner));
+                let spread_span = self.span_from(spread_start);
+                array.push(Expression::new_spread(inner, spread_span));
                 if !self.next_is(vec![scanner::TokenType::RightSquareBracket]) {
                     self.consume_if(scanner::TokenType::Comma)?;
                 }
@@ -978,10 +1053,12 @@ impl Parser {
             }
         }
         self.consume_if(scanner::TokenType::RightSquareBracket)?;
-        return Ok(array);
+        array.span = self.span_from(start);
+        Ok(array)
     }
 
     pub fn parse_widget(&mut self, identifier: Identifier) -> Result<Widget, SyntaxError> {
+        let start = (identifier.span.start_line, identifier.span.start_column);
         let mut widget = Widget::new(identifier);
         self.consume_if(scanner::TokenType::LeftBracket)?;
         while self.current < self.input.len()
@@ -1006,7 +1083,8 @@ impl Parser {
             });
         }
         self.consume_if(scanner::TokenType::RightBracket)?;
-        return Ok(widget);
+        widget.span = self.span_from(start);
+        Ok(widget)
     }
 
     fn parse_token_as_text(&mut self) -> String {
@@ -1140,7 +1218,7 @@ mod tests {
         match expr {
             Expression::Unary(unary) => {
                 assert_eq!(unary.operator, Operator::Minus);
-                assert_eq!(*unary.value, Expression::Literal(Literal::Integer(5)));
+                assert!(matches!(*unary.value, Expression::Literal(Literal::Integer(5, _))));
             }
             other => panic!("Expected Unary, got {:?}", other),
         }
@@ -1156,7 +1234,7 @@ mod tests {
         match expr {
             Expression::Unary(unary) => {
                 assert_eq!(unary.operator, Operator::Not);
-                assert_eq!(*unary.value, Expression::Literal(Literal::Boolean(true)));
+                assert!(matches!(*unary.value, Expression::Literal(Literal::Boolean(true, _))));
             }
             other => panic!("Expected Unary, got {:?}", other),
         }
@@ -1175,7 +1253,7 @@ mod tests {
                 match outer.value.as_ref() {
                     Expression::Unary(inner) => {
                         assert_eq!(inner.operator, Operator::Minus);
-                        assert_eq!(*inner.value, Expression::Literal(Literal::Integer(5)));
+                        assert!(matches!(*inner.value, Expression::Literal(Literal::Integer(5, _))));
                     }
                     other => panic!("Expected inner Unary, got {:?}", other),
                 }
@@ -1194,11 +1272,11 @@ mod tests {
         match &expr {
             Expression::Binary(binary) => {
                 assert_eq!(binary.operator, Operator::Minus);
-                assert_eq!(*binary.left, Expression::Literal(Literal::Integer(0)));
+                assert!(matches!(*binary.left, Expression::Literal(Literal::Integer(0, _))));
                 match binary.right.as_ref() {
                     Expression::Unary(unary) => {
                         assert_eq!(unary.operator, Operator::Minus);
-                        assert_eq!(*unary.value, Expression::Literal(Literal::Integer(5)));
+                        assert!(matches!(*unary.value, Expression::Literal(Literal::Integer(5, _))));
                     }
                     other => panic!("Expected Unary on right, got {:?}", other),
                 }
@@ -1217,7 +1295,12 @@ mod tests {
         match expr {
             Expression::Unary(unary) => {
                 assert_eq!(unary.operator, Operator::Minus);
-                assert_eq!(*unary.value, Expression::Literal(Literal::Float(3.14)));
+                match *unary.value {
+                    Expression::Literal(Literal::Float(f, _)) => {
+                        assert!((f - 3.14).abs() < f64::EPSILON);
+                    }
+                    ref other => panic!("Expected Float literal, got {:?}", other),
+                }
             }
             other => panic!("Expected Unary, got {:?}", other),
         }

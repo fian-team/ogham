@@ -1,4 +1,4 @@
-use super::{block::*, expression::*, identifier::*};
+use super::{block::*, expression::*, identifier::*, span::Span};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Statement {
@@ -14,35 +14,56 @@ pub enum Statement {
 }
 
 impl Statement {
-    pub fn new_expression(value: Expression) -> Statement {
-        Statement::Expression(ExpressionStatement::new(value))
+    pub fn new_expression(value: Expression, span: Span) -> Statement {
+        Statement::Expression(ExpressionStatement { value, span })
     }
 
-    pub fn new_declare(identifier: &Identifier, value: Expression) -> Statement {
-        Statement::Declare(DeclareStatement::new(identifier, value))
+    pub fn new_declare(identifier: &Identifier, value: Expression, span: Span) -> Statement {
+        Statement::Declare(DeclareStatement {
+            identifier: identifier.clone(),
+            value,
+            span,
+        })
     }
 
-    pub fn new_declare_state(identifier: &Identifier, value: Expression) -> Statement {
-        Statement::DeclareState(DeclareStateStatement::new(identifier, value))
+    pub fn new_declare_state(
+        identifier: &Identifier,
+        value: Expression,
+        span: Span,
+    ) -> Statement {
+        Statement::DeclareState(DeclareStateStatement {
+            identifier: identifier.clone(),
+            value,
+            span,
+        })
     }
 
-    pub fn new_assign(identifier: &Identifier, value: Expression) -> Statement {
-        Statement::Assign(AssignStatement::new(identifier, value))
+    pub fn new_assign(identifier: &Identifier, value: Expression, span: Span) -> Statement {
+        Statement::Assign(AssignStatement {
+            identifier: identifier.clone(),
+            value,
+            span,
+        })
     }
 
-    pub fn new_return(value: Option<Expression>) -> Statement {
-        Statement::Return(ReturnStatement::new(value))
+    pub fn new_return(value: Option<Expression>, span: Span) -> Statement {
+        Statement::Return(ReturnStatement { value, span })
     }
 
     pub fn new_conditional(
         branches: Vec<(Expression, Block)>,
         else_block: Option<Block>,
+        span: Span,
     ) -> Statement {
-        Statement::Conditional(ConditionalStatement::new(branches, else_block))
+        Statement::Conditional(ConditionalStatement {
+            branches,
+            else_block,
+            span,
+        })
     }
 
-    pub fn new_log(value: Expression) -> Statement {
-        Statement::Log(LogStatement::new(value))
+    pub fn new_log(value: Expression, span: Span) -> Statement {
+        Statement::Log(LogStatement { value, span })
     }
 
     pub fn new_for_loop(
@@ -50,126 +71,131 @@ impl Statement {
         range_start: Expression,
         range_end: Expression,
         body: Block,
+        span: Span,
     ) -> Statement {
-        Statement::ForLoop(ForLoopStatement::new(
+        Statement::ForLoop(ForLoopStatement {
             variable,
             range_start,
             range_end,
             body,
-        ))
+            span,
+        })
     }
 
-    pub fn new_import(names: Option<Vec<String>>, path: String) -> Statement {
-        Statement::Import(ImportStatement::new(names, path))
+    pub fn new_import(names: Option<Vec<String>>, path: String, span: Span) -> Statement {
+        Statement::Import(ImportStatement { names, path, span })
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            Statement::Expression(s) => s.span,
+            Statement::Declare(s) => s.span,
+            Statement::DeclareState(s) => s.span,
+            Statement::Assign(s) => s.span,
+            Statement::Return(s) => s.span,
+            Statement::Conditional(s) => s.span,
+            Statement::Log(s) => s.span,
+            Statement::ForLoop(s) => s.span,
+            Statement::Import(s) => s.span,
+        }
     }
 }
 
 #[derive(PartialEq, Clone, Debug)]
-pub struct ExpressionStatement(pub Expression);
+pub struct ExpressionStatement {
+    pub value: Expression,
+    pub span: Span,
+}
 
 impl ExpressionStatement {
-    pub fn new(value: Expression) -> ExpressionStatement {
-        ExpressionStatement(value)
-    }
-
     pub fn get_value(&self) -> Expression {
-        self.0.clone()
+        self.value.clone()
     }
 }
 
 #[derive(PartialEq, Clone, Debug)]
-pub struct ReturnStatement(pub Option<Expression>);
+pub struct ReturnStatement {
+    pub value: Option<Expression>,
+    pub span: Span,
+}
 
 impl ReturnStatement {
-    pub fn new(value: Option<Expression>) -> ReturnStatement {
-        ReturnStatement(value)
-    }
-
     pub fn get_value(&self) -> Option<Expression> {
-        self.0.clone()
+        self.value.clone()
     }
 }
 
 #[derive(PartialEq, Clone, Debug)]
-pub struct DeclareStatement(Identifier, Expression);
+pub struct DeclareStatement {
+    pub identifier: Identifier,
+    pub value: Expression,
+    pub span: Span,
+}
 
 impl DeclareStatement {
-    pub fn new(identifier: &Identifier, value: Expression) -> DeclareStatement {
-        DeclareStatement(identifier.clone(), value)
-    }
-
     pub fn get_identifier(&self) -> Identifier {
-        self.0.clone()
+        self.identifier.clone()
     }
 
     pub fn get_identifier_value(&self) -> String {
-        self.0.get()
+        self.identifier.get()
     }
 
     pub fn get_value(&self) -> Expression {
-        self.1.clone()
+        self.value.clone()
     }
 }
 
 #[derive(PartialEq, Clone, Debug)]
-pub struct DeclareStateStatement(Identifier, Expression);
+pub struct DeclareStateStatement {
+    pub identifier: Identifier,
+    pub value: Expression,
+    pub span: Span,
+}
 
 impl DeclareStateStatement {
-    pub fn new(identifier: &Identifier, value: Expression) -> DeclareStateStatement {
-        DeclareStateStatement(identifier.clone(), value)
-    }
-
     pub fn get_identifier(&self) -> Identifier {
-        self.0.clone()
+        self.identifier.clone()
     }
 
     pub fn get_identifier_value(&self) -> String {
-        self.0.get()
+        self.identifier.get()
     }
 
     pub fn get_value(&self) -> Expression {
-        self.1.clone()
+        self.value.clone()
     }
 }
 
 #[derive(PartialEq, Clone, Debug)]
-pub struct AssignStatement(Identifier, Expression);
+pub struct AssignStatement {
+    pub identifier: Identifier,
+    pub value: Expression,
+    pub span: Span,
+}
 
 impl AssignStatement {
-    pub fn new(identifier: &Identifier, value: Expression) -> AssignStatement {
-        AssignStatement(identifier.clone(), value)
-    }
-
     pub fn get_identifier(&self) -> Identifier {
-        self.0.clone()
+        self.identifier.clone()
     }
 
     pub fn get_identifier_value(&self) -> String {
-        self.0.get()
+        self.identifier.get()
     }
 
     pub fn get_value(&self) -> Expression {
-        self.1.clone()
+        self.value.clone()
     }
 }
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct ConditionalStatement {
-    branches: Vec<(Expression, Block)>,
-    else_block: Option<Block>,
+    pub branches: Vec<(Expression, Block)>,
+    pub else_block: Option<Block>,
+    pub span: Span,
 }
 
 impl ConditionalStatement {
-    pub fn new(
-        branches: Vec<(Expression, Block)>,
-        else_block: Option<Block>,
-    ) -> ConditionalStatement {
-        ConditionalStatement {
-            branches,
-            else_block,
-        }
-    }
-
     pub fn get_branches(&self) -> &Vec<(Expression, Block)> {
         &self.branches
     }
@@ -180,41 +206,27 @@ impl ConditionalStatement {
 }
 
 #[derive(PartialEq, Clone, Debug)]
-pub struct LogStatement(Expression);
+pub struct LogStatement {
+    pub value: Expression,
+    pub span: Span,
+}
 
 impl LogStatement {
-    pub fn new(value: Expression) -> LogStatement {
-        LogStatement(value)
-    }
-
     pub fn get_value(&self) -> Expression {
-        self.0.clone()
+        self.value.clone()
     }
 }
 
 #[derive(PartialEq, Clone, Debug)]
 pub struct ForLoopStatement {
-    variable: Identifier,
-    range_start: Expression,
-    range_end: Expression,
-    body: Block,
+    pub variable: Identifier,
+    pub range_start: Expression,
+    pub range_end: Expression,
+    pub body: Block,
+    pub span: Span,
 }
 
 impl ForLoopStatement {
-    pub fn new(
-        variable: Identifier,
-        range_start: Expression,
-        range_end: Expression,
-        body: Block,
-    ) -> ForLoopStatement {
-        ForLoopStatement {
-            variable,
-            range_start,
-            range_end,
-            body,
-        }
-    }
-
     pub fn get_variable(&self) -> Identifier {
         self.variable.clone()
     }
@@ -235,15 +247,12 @@ impl ForLoopStatement {
 #[derive(PartialEq, Clone, Debug)]
 pub struct ImportStatement {
     /// Some(names) for named import, None for "import all"
-    names: Option<Vec<String>>,
-    path: String,
+    pub names: Option<Vec<String>>,
+    pub path: String,
+    pub span: Span,
 }
 
 impl ImportStatement {
-    pub fn new(names: Option<Vec<String>>, path: String) -> ImportStatement {
-        ImportStatement { names, path }
-    }
-
     pub fn get_names(&self) -> &Option<Vec<String>> {
         &self.names
     }
