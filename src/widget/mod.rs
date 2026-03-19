@@ -189,6 +189,7 @@ impl UI {
 
     /// Updates the bounds of widgets in the hierarchy within the constraints provided (typically the screen size).
     pub fn layout(&mut self, width: f32, height: f32) {
+        self.dirty = false;
         let ctx = LayoutContext {
             font_collection: self.font_collection.as_ref(),
             default_font: self.default_font.as_deref(),

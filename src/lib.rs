@@ -326,6 +326,7 @@ impl Ogham {
             widget::builder::widget_value_to_widget_ref(&registry, &self.runtime, &widget_value)?;
 
         self.ui.reconcile(widget_ref);
+        self.ui.mark_dirty();
         Ok(true)
     }
 }
