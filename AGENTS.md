@@ -55,6 +55,44 @@ Source (.ogh)
 | `src/client/` | Standalone browser binary |
 | `src/file_watcher.rs` | File watching for hot-reload |
 
+## LSP Server
+
+The `ogham-lsp` binary implements the Language Server Protocol for `.ogh` files,
+enabling editor support and Claude-assisted development.
+
+### Building and running
+
+```sh
+cargo build --bin ogham-lsp        # build
+./target/debug/ogham-lsp           # run (stdin/stdout transport)
+```
+
+### VSCode integration
+
+The extension lives in `editors/vscode/`. Set `ogham.lspPath` in VSCode settings
+to the path of the built binary (defaults to `"ogham-lsp"` on PATH).
+
+### Capabilities
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Diagnostics | ✓ | Scanner + parser errors on every change |
+| Hover | ✓ | Variables, parameters, widgets, keywords |
+| Semantic tokens | ✓ | Full-document token classification |
+| Go to Definition | ✓ | Jumps to declaration site of any variable or parameter |
+| Document Symbols | ✓ | Outline of all declarations (useful for file navigation) |
+| Completion | — | Not implemented |
+| Find References | — | Not implemented |
+
+### Using the LSP as an agent
+
+When working on `.ogh` files, prefer LSP over grep for:
+- **Go to Definition** — resolves scope correctly; grep does not handle shadowing
+- **Document Symbols** — get file outline without reading every line
+- **Diagnostics** — verify edits introduced no syntax errors
+
+---
+
 ## Coding Conventions
 
 - **Rust 2021 edition.**

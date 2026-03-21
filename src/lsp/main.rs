@@ -1,6 +1,8 @@
 use tower_lsp::{LspService, Server};
 
 mod document;
+mod document_symbols;
+mod goto_definition;
 mod hover;
 mod semantic_tokens;
 mod server;

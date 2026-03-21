@@ -5,6 +5,8 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::document::DocumentStore;
+use crate::document_symbols;
+use crate::goto_definition;
 use crate::hover;
 use crate::semantic_tokens;
 
@@ -44,6 +46,8 @@ impl LanguageServer for OghamLanguageServer {
                     ),
                 ),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -120,6 +124,45 @@ impl LanguageServer for OghamLanguageServer {
             }),
             range: None,
         }))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let pos = params.text_document_position_params.position;
+        let store = self.store.lock().unwrap();
+        let Some(doc) = store.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(ast) = &doc.ast else {
+            return Ok(None);
+        };
+        let line = pos.line as usize + 1;
+        let col = pos.character as usize + 1;
+        let Some(span) = goto_definition::definition_at(ast, line, col) else {
+            return Ok(None);
+        };
+        Ok(Some(GotoDefinitionResponse::Scalar(Location {
+            uri,
+            range: goto_definition::span_to_range(&span),
+        })))
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let store = self.store.lock().unwrap();
+        let Some(doc) = store.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let Some(ast) = &doc.ast else {
+            return Ok(None);
+        };
+        let symbols = document_symbols::document_symbols(ast);
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
     async fn semantic_tokens_full(
