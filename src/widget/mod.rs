@@ -64,8 +64,15 @@ pub struct UI {
     pub root: WidgetRef,
     /// Cached images to prevent reloading on render.
     pub image_cache: ImageCache,
-    /// Flag to indicate whether interactions have occurred since the last render.
-    dirty: bool,
+    /// Set when the widget tree structure or content changed and a full
+    /// flexbox layout pass is required (expensive: involves Skia text
+    /// measurement). Cleared by `layout()`.
+    needs_layout: bool,
+    /// Set when visual appearance changed (e.g. hover state) but widget
+    /// sizes and positions are unaffected. The Skia draw pass runs every
+    /// frame regardless, so this flag is informational — it does NOT gate
+    /// any rendering.  Cleared by `layout()`.
+    needs_repaint: bool,
     /// Currently-focused widget, if any.
     focused: Option<WidgetRef>,
     /// Font collection with registered custom fonts. Shared with the
@@ -75,6 +82,17 @@ pub struct UI {
     /// Default font family applied to all text widgets that don't specify
     /// their own `font` in their style.
     pub default_font: Option<String>,
+    /// Last dimensions passed to `layout()`. A layout pass is forced when
+    /// the dimensions change even if `needs_layout` is false, because
+    /// grow/shrink sizing depends on the available space.
+    last_layout_width: f32,
+    last_layout_height: f32,
+    /// Debug-only: counts layout invocations per second to detect
+    /// unnecessary dirty-marking regressions.
+    #[cfg(debug_assertions)]
+    layout_count: u32,
+    #[cfg(debug_assertions)]
+    layout_window_start: Option<std::time::Instant>,
 }
 
 impl UI {
@@ -82,10 +100,17 @@ impl UI {
         Self {
             root,
             image_cache: ImageCache::new(),
-            dirty: true,
+            needs_layout: true,
+            needs_repaint: true,
             focused: None,
             font_collection: None,
             default_font: None,
+            last_layout_width: 0.0,
+            last_layout_height: 0.0,
+            #[cfg(debug_assertions)]
+            layout_count: 0,
+            #[cfg(debug_assertions)]
+            layout_window_start: None,
         }
     }
 
@@ -102,7 +127,10 @@ impl UI {
             if let Some(point) = &event.point {
                 let changed = self.update_hover(point);
                 if changed {
-                    self.mark_dirty();
+                    // Hover only affects visual appearance (effective_style in
+                    // render), not widget sizes or positions. A repaint is
+                    // sufficient — no layout pass needed.
+                    self.mark_needs_repaint();
                 }
                 return changed;
             }
@@ -189,7 +217,34 @@ impl UI {
 
     /// Updates the bounds of widgets in the hierarchy within the constraints provided (typically the screen size).
     pub fn layout(&mut self, width: f32, height: f32) {
-        self.dirty = false;
+        let dims_changed =
+            self.last_layout_width != width || self.last_layout_height != height;
+        if !self.needs_layout && !dims_changed {
+            return;
+        }
+        self.needs_layout = false;
+        self.needs_repaint = false;
+        self.last_layout_width = width;
+        self.last_layout_height = height;
+
+        #[cfg(debug_assertions)]
+        {
+            let now = std::time::Instant::now();
+            let start = self.layout_window_start.get_or_insert(now);
+            self.layout_count += 1;
+            if now.duration_since(*start).as_secs_f32() >= 1.0 {
+                if self.layout_count > 5 {
+                    eprintln!(
+                        "[ogham] WARNING: layout() called {} times in the last second \
+                         — check for unnecessary dirty-marking",
+                        self.layout_count,
+                    );
+                }
+                self.layout_count = 0;
+                self.layout_window_start = Some(now);
+            }
+        }
+
         let ctx = LayoutContext {
             font_collection: self.font_collection.as_ref(),
             default_font: self.default_font.as_deref(),
@@ -238,14 +293,37 @@ impl UI {
         }
     }
 
-    /// Mark the UI as having had interactions since the last render.
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+    /// Mark the UI as needing a full layout pass (structural / content change).
+    /// Also implies a repaint is needed.
+    pub fn mark_needs_layout(&mut self) {
+        self.needs_layout = true;
+        self.needs_repaint = true;
     }
 
-    /// Retrieve whether the UI has had interactions since the last render.
+    /// Mark the UI as needing a visual refresh only (e.g. hover state change).
+    /// Does **not** trigger a layout pass.
+    pub fn mark_needs_repaint(&mut self) {
+        self.needs_repaint = true;
+    }
+
+    /// Backward-compatible alias for [`mark_needs_layout`].
+    pub fn mark_dirty(&mut self) {
+        self.mark_needs_layout();
+    }
+
+    /// Whether a full layout pass is required.
+    pub fn needs_layout(&self) -> bool {
+        self.needs_layout
+    }
+
+    /// Whether a visual repaint is needed (always true when layout is needed).
+    pub fn needs_repaint(&self) -> bool {
+        self.needs_repaint
+    }
+
+    /// Backward-compatible alias for [`needs_layout`].
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.needs_layout
     }
 
     pub fn get_focused(&self) -> Option<&WidgetRef> {
