@@ -18,6 +18,18 @@ impl Axis {
     }
 }
 
+/// Controls how content that exceeds the container bounds is handled.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Overflow {
+    /// Content is not clipped and may render outside the container (default).
+    #[default]
+    Visible,
+    /// Content is clipped to the container bounds.
+    Hidden,
+    /// Content is clipped and can be scrolled with the mouse wheel.
+    Scroll,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FlexStyle {
     pub position: Position,
@@ -35,6 +47,7 @@ pub struct FlexStyle {
     pub background_image: Option<String>,
     pub text_size: Option<f32>,
     pub text_color: Option<Color>,
+    pub overflow: Overflow,
 }
 
 impl FlexStyle {
@@ -55,6 +68,7 @@ impl FlexStyle {
             background_image: None,
             text_size: None,
             text_color: None,
+            overflow: Overflow::Visible,
         }
     }
 

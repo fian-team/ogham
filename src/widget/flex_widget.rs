@@ -19,6 +19,12 @@ pub struct FlexWidget {
     pub hovered: bool,
     pub block_interactions: bool,
     pub layout: Option<Rect>,
+    /// Current vertical scroll offset (only used when overflow is Scroll).
+    pub scroll_y: f32,
+    /// Total content height (computed during layout).
+    content_height: f32,
+    /// Viewport height (computed during layout).
+    viewport_height: f32,
 }
 
 impl FlexWidget {
@@ -31,6 +37,9 @@ impl FlexWidget {
             hovered: false,
             block_interactions: true,
             layout: None,
+            scroll_y: 0.0,
+            content_height: 0.0,
+            viewport_height: 0.0,
         }
     }
 
@@ -43,6 +52,9 @@ impl FlexWidget {
             hovered: false,
             block_interactions: true,
             layout: None,
+            scroll_y: 0.0,
+            content_height: 0.0,
+            viewport_height: 0.0,
         }
     }
 
@@ -327,6 +339,15 @@ impl Widget for FlexWidget {
         if let Some(point) = &event.point {
             // For click events, first check if this widget contains the point
             if self.contains_point(point) {
+                // Handle scroll events for scrollable containers
+                if let Some((_, dy)) = event.scroll_delta {
+                    if self.style.overflow == Overflow::Scroll {
+                        let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+                        self.scroll_y = (self.scroll_y - dy).clamp(0.0, max_scroll);
+                        return true;
+                    }
+                }
+
                 let mut event_handled = false;
 
                 // If it does, check children
@@ -632,6 +653,38 @@ impl Widget for FlexWidget {
                 );
             }
         }
+
+        // Apply scroll offset for scrollable containers
+        if self.style.overflow == Overflow::Scroll && !self.style.direction.is_row() {
+            let content_top = cursor_y + self.style.inset_top();
+            let mut max_bottom: f32 = content_top;
+
+            // Compute content height and apply scroll offset in a single pass
+            for child_ref in self.children.iter() {
+                let mut child = child_ref.lock().expect("widget lock poisoned");
+                if child.is_absolute_positioned() { continue; }
+                if let Some(r) = child.get_layout_rect() {
+                    max_bottom = max_bottom.max(r.y + r.height);
+                }
+            }
+            self.content_height = max_bottom - content_top;
+            self.viewport_height = content_height;
+
+            // Clamp scroll (needed even outside handle_event because content can change between frames)
+            let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+            self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
+
+            if self.scroll_y > 0.0 {
+                for child_ref in self.children.iter() {
+                    let mut child = child_ref.lock().expect("widget lock poisoned");
+                    if child.is_absolute_positioned() { continue; }
+                    let new_y = child.get_layout_rect().map(|r| r.y - self.scroll_y);
+                    if let Some(y) = new_y {
+                        child.set_layout_y(y);
+                    }
+                }
+            }
+        }
     }
 
     fn get_children_fixed_width(&self) -> f32 {
@@ -666,6 +719,16 @@ impl Widget for FlexWidget {
                 && point.y() <= content_y + content_height
         } else {
             false
+        }
+    }
+
+    fn get_layout_rect(&self) -> Option<&Rect> {
+        self.layout.as_ref()
+    }
+
+    fn set_layout_y(&mut self, y: f32) {
+        if let Some(ref mut layout) = self.layout {
+            layout.y = y;
         }
     }
 
@@ -756,6 +819,25 @@ impl Widget for FlexWidget {
                 border_box_height,
                 &style.corner_radii,
             );
+
+            // For scrollable/hidden overflow, clip children to the border box
+            if self.style.overflow != Overflow::Visible {
+                ctx.push_clip_rect(border_box_x, border_box_y, border_box_width, border_box_height);
+            }
+        }
+    }
+
+    fn needs_post_render(&self) -> bool {
+        self.style.overflow != Overflow::Visible
+    }
+
+    fn post_render(
+        &self,
+        ctx: &mut dyn crate::widget::RenderContext,
+        _image_cache: &mut crate::widget::image::ImageCache,
+    ) {
+        if self.style.overflow != Overflow::Visible && self.layout.is_some() {
+            ctx.pop_clip_rect();
         }
     }
 }

@@ -78,6 +78,8 @@ pub struct Event {
     pub keyboard_data: Option<KeyboardData>,
     pub callback: Option<Box<dyn Fn(&Event)>>,
     pub value: Option<String>,
+    /// Scroll wheel delta (dx, dy) in logical pixels.
+    pub scroll_delta: Option<(f32, f32)>,
 }
 
 impl Event {
@@ -88,6 +90,7 @@ impl Event {
             keyboard_data: None,
             callback: None,
             value: None,
+            scroll_delta: None,
         }
     }
 
@@ -98,6 +101,7 @@ impl Event {
             keyboard_data: None,
             callback: None,
             value: None,
+            scroll_delta: None,
         }
     }
 
@@ -117,6 +121,7 @@ impl Event {
             }),
             callback: None,
             value: None,
+            scroll_delta: None,
         }
     }
 
@@ -127,6 +132,18 @@ impl Event {
             keyboard_data: None,
             callback: None,
             value: Some(value),
+            scroll_delta: None,
+        }
+    }
+
+    pub fn scroll(point: Point, dx: f32, dy: f32) -> Self {
+        Self {
+            name: "scroll".to_string(),
+            point: Some(point),
+            keyboard_data: None,
+            callback: None,
+            value: None,
+            scroll_delta: Some((dx, dy)),
         }
     }
 

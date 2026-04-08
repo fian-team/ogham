@@ -467,6 +467,23 @@ impl RenderContext for SkiaEnv {
 
         self.canvas().restore();
     }
+
+    fn push_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let sx = self.scale_coord(x);
+        let sy = self.scale_coord(y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+        self.surface.canvas().save();
+        self.surface.canvas().clip_rect(
+            skia_safe::Rect::from_xywh(sx, sy, sw, sh),
+            skia_safe::ClipOp::Intersect,
+            true,
+        );
+    }
+
+    fn pop_clip_rect(&mut self) {
+        self.surface.canvas().restore();
+    }
 }
 
 impl Surface for SkiaEnv {
@@ -496,22 +513,27 @@ impl Surface for SkiaEnv {
 impl SkiaEnv {
     fn draw_widget_recursive(
         env: &mut SkiaEnv,
-        widget: &WidgetRef,
+        widget_ref: &WidgetRef,
         focused: Option<&WidgetRef>,
         image_cache: &mut ImageCache,
     ) {
         let is_focused = focused
-            .map(|f| std::ptr::eq(Arc::as_ptr(f), Arc::as_ptr(widget)))
+            .map(|f| std::ptr::eq(Arc::as_ptr(f), Arc::as_ptr(widget_ref)))
             .unwrap_or(false);
 
-        let widget = widget.lock().expect("widget lock poisoned");
+        let widget = widget_ref.lock().expect("widget lock poisoned");
         widget.render(env, is_focused, image_cache);
-
+        let needs_post = widget.needs_post_render();
         let children = widget.get_children();
         drop(widget);
 
         for child in &children {
             Self::draw_widget_recursive(env, child, focused, image_cache);
+        }
+
+        if needs_post {
+            let widget = widget_ref.lock().expect("widget lock poisoned");
+            widget.post_render(env, image_cache);
         }
     }
 }

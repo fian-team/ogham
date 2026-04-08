@@ -299,6 +299,15 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     _ => {}
                 }
             }
+            "overflow" => {
+                if let Value::String(s) = value {
+                    match s.as_str() {
+                        "hidden" => style.overflow = Overflow::Hidden,
+                        "scroll" => style.overflow = Overflow::Scroll,
+                        _ => style.overflow = Overflow::Visible,
+                    }
+                }
+            }
             _ => {}
         }
     }

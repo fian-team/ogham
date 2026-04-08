@@ -378,9 +378,17 @@ pub trait RenderContext {
         w: f32,
         h: f32,
     );
+
+    /// Push a clip rectangle. All subsequent drawing is clipped to this rect
+    /// until `pop_clip_rect()` is called. Uses save/restore semantics.
+    fn push_clip_rect(&mut self, _x: f32, _y: f32, _w: f32, _h: f32) {}
+
+    /// Pop the most recently pushed clip rectangle.
+    fn pop_clip_rect(&mut self) {}
 }
 
 use downcast_rs::{impl_downcast, Downcast};
+use rect::Rect;
 
 /// All widgets (boxes, text inputs, etc) must implement the Widget trait.
 /// Can be used to implement custom rendering systems (e.g. grid instead of
@@ -463,6 +471,24 @@ pub trait Widget: Downcast {
         &self,
         _ctx: &mut dyn RenderContext,
         _focused: bool,
+        _image_cache: &mut ImageCache,
+    ) {
+    }
+
+    /// Get the layout rect for this widget (if it has been laid out).
+    fn get_layout_rect(&self) -> Option<&Rect> { None }
+
+    /// Offset the widget's layout Y position (used for scroll offset).
+    fn set_layout_y(&mut self, _y: f32) {}
+
+    /// Returns true if this widget needs post_render called after children render.
+    fn needs_post_render(&self) -> bool { false }
+
+    /// Called after all children have been rendered. Used by scrollable
+    /// containers to pop their clip rect.
+    fn post_render(
+        &self,
+        _ctx: &mut dyn RenderContext,
         _image_cache: &mut ImageCache,
     ) {
     }
