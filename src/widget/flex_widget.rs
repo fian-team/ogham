@@ -748,6 +748,14 @@ impl Widget for FlexWidget {
         self.hovered
     }
 
+    fn fire_listeners(&self, event_name: &str, event: &Event) {
+        if let Some(listeners) = self.event_listeners.get(event_name) {
+            for listener in listeners {
+                listener(event);
+            }
+        }
+    }
+
     fn is_absolute_positioned(&self) -> bool {
         matches!(self.style.position, Position::Absolute(_, _))
     }

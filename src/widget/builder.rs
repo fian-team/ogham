@@ -426,6 +426,12 @@ fn create_flex_widget(
         runtime,
         "mouse_down",
     )?;
+    register_event_listener(
+        &mut flex_widget.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "mouse_enter",
+    )?;
 
     if let Some(value) = descriptor.properties.get("children") {
         if let Value::Array(children_array) = value {
@@ -700,6 +706,12 @@ fn create_grid_widget(
         &descriptor.properties,
         runtime,
         "mouse_down",
+    )?;
+    register_event_listener(
+        &mut grid.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "mouse_enter",
     )?;
 
     Ok(Arc::new(Mutex::new(grid)))

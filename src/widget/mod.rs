@@ -205,6 +205,11 @@ impl UI {
         widget.set_hovered(hit);
         let mut changed = was_hovered != hit;
 
+        if !was_hovered && hit {
+            let event = Event::new("mouse_enter".to_string());
+            widget.fire_listeners("mouse_enter", &event);
+        }
+
         let children = widget.get_children_mut();
         drop(widget);
 
@@ -464,6 +469,11 @@ pub trait Widget: Downcast {
     fn is_hovered(&self) -> bool {
         false
     }
+
+    /// Fire registered event listeners for the given event name. Default is a
+    /// no-op for widgets that don't support event listeners.
+    fn fire_listeners(&self, _event_name: &str, _event: &Event) {}
+
 
     /// Render this widget using the provided render context. The default
     /// implementation is a no-op; widgets override this to draw themselves.

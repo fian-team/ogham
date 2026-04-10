@@ -71,6 +71,7 @@ pub struct GridWidget {
     pub children: Vec<(GridPlacement, WidgetRef)>,
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
     pub layout: Option<Rect>,
+    pub hovered: bool,
 }
 
 impl GridWidget {
@@ -80,6 +81,7 @@ impl GridWidget {
             children: Vec::new(),
             event_listeners: HashMap::new(),
             layout: None,
+            hovered: false,
         }
     }
 
@@ -251,6 +253,22 @@ impl Widget for GridWidget {
             true
         } else {
             false
+        }
+    }
+
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+
+    fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
+    fn fire_listeners(&self, event_name: &str, event: &Event) {
+        if let Some(listeners) = self.event_listeners.get(event_name) {
+            for listener in listeners {
+                listener(event);
+            }
         }
     }
 
