@@ -121,6 +121,9 @@ impl StateManager {
     }
 
     /// Cleanup state for components that are no longer mounted.
+    /// Top-level state (empty path) is always considered active — the module
+    /// itself is always "mounted", so state declared at module scope persists
+    /// for the runtime's lifetime.
     fn cleanup_unmounted_state(&mut self) {
         let keys_to_remove: Vec<String> = self
             .component_state
@@ -128,6 +131,9 @@ impl StateManager {
             .filter(|key| {
                 if let Some(colon_pos) = key.find(':') {
                     let path = &key[..colon_pos];
+                    if path.is_empty() {
+                        return false;
+                    }
                     !self.active_state_paths.contains(path)
                 } else {
                     true
