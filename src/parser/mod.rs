@@ -360,8 +360,13 @@ impl Parser {
             }
             Some(scanner::TokenType::Equal) => self.parse_assign(identifier, stmt_start),
             _ => {
+                // Allow postfix (`.prop`, `[idx]`, etc.) on a bare identifier
+                // appearing as a statement/trailing expression — e.g.
+                //   state m = mutation("foo");
+                //   m.status        // trailing expression
                 let expr = Expression::Literal(Literal::Identifier(identifier));
-                self.expression_to_statement(expr, stmt_start)
+                let full_expr = self.parse_postfix(expr)?;
+                self.expression_to_statement(full_expr, stmt_start)
             }
         }
     }

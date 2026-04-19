@@ -179,7 +179,7 @@ impl ImportResolver {
 pub struct Runtime {
     pub(crate) environment: Environment,
     host_state: HashMap<String, Value>,
-    event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> bool + Send + Sync>>,
+    event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync>>,
     needs_rerender: bool,
     module: Option<Function>,
     /// Compiled bytecode for the module (cached so rerenders skip compilation).
@@ -194,6 +194,12 @@ pub struct Runtime {
     /// built-in types by default; host applications can add custom widgets
     /// via [`RuntimeConfig::with_widget`].
     pub widget_registry: WidgetRegistry,
+    /// Stack of `(name, value)` entries used by the `Context` primitive. The
+    /// compiler emits `PushContext` / `PopContext` around a Context widget's
+    /// children evaluation; `use_context("name")` walks this stack.
+    ///
+    /// Transient — cleared at the start of every module execution.
+    pub(crate) context_stack: Vec<(String, Value)>,
 }
 
 impl Runtime {
@@ -210,6 +216,7 @@ impl Runtime {
             screen_width: 0.0,
             widget_registry: WidgetRegistry::with_defaults(),
             screen_height: 0.0,
+            context_stack: Vec::new(),
         }
     }
 
@@ -277,7 +284,7 @@ impl Runtime {
     pub fn register_event_handler<S, F>(&mut self, name: S, handler: F)
     where
         S: Into<String>,
-        F: Fn(&[Value]) -> bool + Send + Sync + 'static,
+        F: Fn(&[Value]) -> Result<Value, String> + Send + Sync + 'static,
     {
         self.event_handlers.insert(name.into(), Arc::new(handler));
     }
@@ -285,16 +292,22 @@ impl Runtime {
     pub(crate) fn register_event_handler_arc(
         &mut self,
         name: String,
-        handler: Arc<dyn Fn(&[Value]) -> bool + Send + Sync>,
+        handler: Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync>,
     ) {
         self.event_handlers.insert(name, handler);
     }
 
-    pub fn emit_event(&self, name: &str, args: &[Value]) -> bool {
-        self.event_handlers
-            .get(name)
-            .map(|handler| handler(args))
-            .unwrap_or(false)
+    /// Dispatch an event to the registered handler, if any.
+    ///
+    /// Returns `Ok(Value::Void)` when no handler is registered for the name —
+    /// fire-and-forget `event()` calls treat a missing handler as a no-op.
+    /// For tracked mutations, the caller distinguishes success/error via the
+    /// returned `Result`.
+    pub fn emit_event(&self, name: &str, args: &[Value]) -> Result<Value, String> {
+        match self.event_handlers.get(name) {
+            Some(handler) => handler(args),
+            None => Ok(Value::Void),
+        }
     }
 
     pub fn needs_rerender(&self) -> bool {
@@ -367,6 +380,9 @@ impl Runtime {
         self.state.call_stack.clear();
         self.state.call_counters.clear();
         self.imports.loading_stack.clear();
+        // Context is transient per render; compiler-emitted Push/Pop pairs
+        // balance out, but clear anyway to recover from any imbalance.
+        self.context_stack.clear();
         // NOTE: import_loaded and import_cache are intentionally preserved
         // so that imports are resolved from memory rather than disk.
 

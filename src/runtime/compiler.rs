@@ -166,6 +166,16 @@ impl Compiler {
 
             // Pop n args (including name), push Void
             OpCode::EmitEvent(n) => -(*n as i32 - 1),
+
+            // Pop event-name, push Mutation (net 0)
+            OpCode::CreateMutation => 0,
+
+            // Pop (name, value), no push
+            OpCode::PushContext => -2,
+            // No stack effect — pops from the runtime side-channel
+            OpCode::PopContext => 0,
+            // Push the looked-up context value
+            OpCode::GetContext(_) => 1,
         }
     }
 
@@ -747,6 +757,70 @@ impl Compiler {
             }
             Expression::Widget(widget) => {
                 let ident_name = widget.identifier.get();
+
+                // Special-case: `Context { name, value, children }`. The
+                // widget is a compile-time scope: we push (name, value) onto
+                // the runtime context stack, compile the `children`
+                // expression (which may contain `use_context(...)` calls
+                // that observe the pushed scope), then pop. The final
+                // emitted widget is a transparent Flex containing those
+                // children, so Context composes into a parent's `children`
+                // array like any other widget.
+                if ident_name == "Context" {
+                    let mut name_expr: Option<&crate::parser::Expression> = None;
+                    let mut value_expr: Option<&crate::parser::Expression> = None;
+                    let mut children_expr: Option<&crate::parser::Expression> = None;
+                    for (key_ident, val_expr) in &widget.properties {
+                        match key_ident.get().as_str() {
+                            "name" => name_expr = Some(val_expr),
+                            "value" => value_expr = Some(val_expr),
+                            "children" => children_expr = Some(val_expr),
+                            other => {
+                                return Err(VMError::InvalidOperation(format!(
+                                    "Context widget does not support property '{}'; only name, value, children are allowed",
+                                    other
+                                )));
+                            }
+                        }
+                    }
+                    let name_expr = name_expr.ok_or_else(|| {
+                        VMError::InvalidOperation(
+                            "Context widget requires a `name` property".to_string(),
+                        )
+                    })?;
+                    let value_expr = value_expr.ok_or_else(|| {
+                        VMError::InvalidOperation(
+                            "Context widget requires a `value` property".to_string(),
+                        )
+                    })?;
+                    let children_expr = children_expr.ok_or_else(|| {
+                        VMError::InvalidOperation(
+                            "Context widget requires a `children` property".to_string(),
+                        )
+                    })?;
+
+                    // Push (name, value), activate the scope.
+                    self.compile_expression(name_expr)?;
+                    self.compile_expression(value_expr)?;
+                    self.emit(OpCode::PushContext);
+
+                    // Emit the wrapper Flex: push "children" key, compile
+                    // the children expression, then pop the context.
+                    let flex_const =
+                        self.chunk().add_constant(Value::String("Flex".to_string()));
+                    let children_key =
+                        self.chunk().add_constant(Value::String("children".to_string()));
+                    self.emit(OpCode::Constant(children_key));
+                    self.compile_expression(children_expr)?;
+                    self.emit(OpCode::PopContext);
+
+                    self.emit(OpCode::Widget {
+                        identifier_constant: flex_const,
+                        property_count: 1,
+                    });
+                    return Ok(());
+                }
+
                 let ident_const = self.chunk().add_constant(Value::String(ident_name));
                 let prop_count = widget.properties.len() as u16;
 
@@ -1000,6 +1074,44 @@ impl Compiler {
                     self.compile_expression(arg)?;
                 }
                 self.emit(OpCode::EmitEvent(call.arguments.len() as u8));
+                return Ok(());
+            }
+        }
+
+        // Special-case: mutation("event_name")
+        if let Expression::Literal(Literal::Identifier(ident)) = &*call.callee {
+            if ident.get() == "mutation" {
+                if call.arguments.len() != 1 {
+                    return Err(VMError::InvalidOperation(
+                        "mutation() takes exactly one string argument".to_string(),
+                    ));
+                }
+                self.compile_expression(&call.arguments[0])?;
+                self.emit(OpCode::CreateMutation);
+                return Ok(());
+            }
+        }
+
+        // Special-case: use_context("name") — look up the nearest enclosing
+        // Context provider with the matching name.
+        if let Expression::Literal(Literal::Identifier(ident)) = &*call.callee {
+            if ident.get() == "use_context" {
+                if call.arguments.len() != 1 {
+                    return Err(VMError::InvalidOperation(
+                        "use_context() takes exactly one string argument".to_string(),
+                    ));
+                }
+                // Statically resolve the name to a constant-pool index.
+                let name = match &call.arguments[0] {
+                    Expression::Literal(Literal::String(s, _)) => s.clone(),
+                    _ => {
+                        return Err(VMError::InvalidOperation(
+                            "use_context() argument must be a string literal".to_string(),
+                        ))
+                    }
+                };
+                let idx = self.chunk().add_constant(Value::String(name));
+                self.emit(OpCode::GetContext(idx));
                 return Ok(());
             }
         }

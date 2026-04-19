@@ -619,6 +619,35 @@ impl VM {
                             new_frame.saved_call_stack = Some(old_call_stack);
                             new_frame.saved_has_branched = Some(old_has_branched);
                         }
+                        Value::BoundTrigger(mutation) => {
+                            // Pop args off the stack.
+                            let ac = arg_count as usize;
+                            let start = self.stack.len() - ac;
+                            let args: Vec<Value> = self.stack[start..].to_vec();
+                            self.stack.truncate(start);
+                            // Pop the callee (the BoundTrigger itself).
+                            self.pop()?;
+
+                            let event_name = mutation.borrow().event_name.clone();
+                            mutation.borrow_mut().status =
+                                crate::runtime::value::MutationStatus::Pending;
+                            match runtime.emit_event(&event_name, &args) {
+                                Ok(data) => {
+                                    let mut m = mutation.borrow_mut();
+                                    m.status = crate::runtime::value::MutationStatus::Success;
+                                    m.data = data;
+                                    m.error.clear();
+                                }
+                                Err(msg) => {
+                                    let mut m = mutation.borrow_mut();
+                                    m.status = crate::runtime::value::MutationStatus::Error;
+                                    m.data = Value::Void;
+                                    m.error = msg;
+                                }
+                            }
+                            runtime.request_rerender();
+                            self.push(Value::Void)?;
+                        }
                         _ => {
                             return Err(VMError::TypeMismatch(
                                 "Only functions can be called".to_string(),
@@ -708,6 +737,25 @@ impl VM {
                             })?;
                             self.push(val)?;
                         }
+                        Value::Mutation(m) => {
+                            let val = match name.as_str() {
+                                "trigger" => Value::BoundTrigger(m.clone()),
+                                other => {
+                                    let s = m.borrow();
+                                    match other {
+                                        "status" => Value::String(s.status.as_str().to_string()),
+                                        "pending" => Value::Boolean(
+                                            s.status
+                                                == crate::runtime::value::MutationStatus::Pending,
+                                        ),
+                                        "data" => s.data.clone(),
+                                        "error" => Value::String(s.error.clone()),
+                                        _ => Value::Void,
+                                    }
+                                }
+                            };
+                            self.push(val)?;
+                        }
                         _ => {
                             return Err(VMError::TypeMismatch(format!(
                                 "Cannot access property '{}' on {:?}",
@@ -783,13 +831,60 @@ impl VM {
                             )))
                         }
                     };
-                    runtime.emit_event(&event_name, &all_args[1..]);
+                    // Fire-and-forget: `event()` always yields Void regardless
+                    // of handler result. Tracked flows go through mutations.
+                    let _ = runtime.emit_event(&event_name, &all_args[1..]);
                     self.push(Value::Void)?;
                 }
                 OpCode::Log => {
                     let val = self.pop()?;
                     eprintln!("[ogham] {}", val);
                     self.push(Value::Void)?;
+                }
+                OpCode::CreateMutation => {
+                    let name_val = self.pop()?;
+                    let name = match name_val {
+                        Value::String(s) => s,
+                        other => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "mutation() expects a string event name, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    let state = std::rc::Rc::new(std::cell::RefCell::new(
+                        crate::runtime::value::MutationState::new(name),
+                    ));
+                    self.push(Value::Mutation(state))?;
+                }
+                OpCode::PushContext => {
+                    // Stack: ..., name, value
+                    let value = self.pop()?;
+                    let name_val = self.pop()?;
+                    let name = match name_val {
+                        Value::String(s) => s,
+                        other => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "Context name must be a string, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    runtime.context_stack.push((name, value));
+                }
+                OpCode::PopContext => {
+                    runtime.context_stack.pop();
+                }
+                OpCode::GetContext(name_idx) => {
+                    let name = self.read_string_constant(name_idx)?;
+                    let value = runtime
+                        .context_stack
+                        .iter()
+                        .rev()
+                        .find(|(k, _)| k == &name)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::Void);
+                    self.push(value)?;
                 }
 
                 // -- Branching flag ------------------------------------------

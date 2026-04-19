@@ -14,7 +14,7 @@ pub struct FontEntry {
 #[derive(Clone, Default)]
 pub struct RuntimeConfig {
     pub host_state: Option<std::collections::HashMap<String, Value>>,
-    pub event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> bool + Send + Sync>>,
+    pub event_handlers: HashMap<String, Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync>>,
     pub project_root: Option<PathBuf>,
     pub import_paths: HashMap<String, PathBuf>,
     pub fonts: Vec<FontEntry>,
@@ -38,7 +38,7 @@ impl RuntimeConfig {
     pub fn with_event_handler<S, F>(mut self, name: S, handler: F) -> Self
     where
         S: Into<String>,
-        F: Fn(&[Value]) -> bool + Send + Sync + 'static,
+        F: Fn(&[Value]) -> Result<Value, String> + Send + Sync + 'static,
     {
         self.event_handlers.insert(name.into(), Arc::new(handler));
         self

@@ -111,6 +111,23 @@ pub enum OpCode {
     /// Pop value and log it.
     Log,
 
+    // -- Mutations ----------------------------------------------------------
+    /// Pop an event-name string and push a fresh `Value::Mutation` in the
+    /// `Idle` state. Paired with `state` so status persists across renders.
+    CreateMutation,
+
+    // -- Context ------------------------------------------------------------
+    /// Pop (value, name) from the stack and push them onto the runtime's
+    /// context stack. Emitted by the compiler around the `children` evaluation
+    /// of a `Context { name, value, children }` widget.
+    PushContext,
+    /// Remove the top entry from the runtime's context stack.
+    PopContext,
+    /// Walk the runtime's context stack from top to bottom looking for a key
+    /// matching the string constant at the given index. Push the associated
+    /// value if found, otherwise push `Value::Void`.
+    GetContext(u16),
+
     // -- Branching flag -----------------------------------------------------
     /// Mark that branching has occurred in the current function (for state
     /// declaration validation).
