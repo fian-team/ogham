@@ -1,30 +1,61 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::animation::AnimationState;
 use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::style::*;
-use super::Widget;
+use super::{TickResult, Widget};
 use crate::widget::event::EventContext;
 use crate::widget::style::Direction;
 use crate::widget::{LayoutContext, WidgetRef};
 
 /// Flexbox-like layout widget. Supports rendering child elements in either a row or a column with styling applied to the surrounding box.
+///
+/// `style` holds the currently-rendered style — the same value layout and
+/// rendering observe. During transitions it is overwritten each frame with
+/// the interpolated spring values. The user-declared target style is held
+/// in `declared_style`; `hover_style`, if set, is the alternate target
+/// used while `hovered` is true.
 pub struct FlexWidget {
     pub children: Vec<WidgetRef>,
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
     pub style: FlexStyle,
+    /// Author-declared base style. Animations treat this as their target
+    /// when the widget is not hovered. Distinct from `style`, which may
+    /// transiently hold interpolated values during an active transition.
+    pub declared_style: FlexStyle,
     pub hover_style: Option<FlexStyle>,
+    /// Style the widget is born with. When set, the widget starts at
+    /// this style on first mount and transitions toward `declared_style`.
+    /// `None` means no entry animation (current behavior).
+    pub initial_style: Option<FlexStyle>,
+    /// Style animations target when the widget is leaving the tree.
+    /// `None` means the widget is removed immediately on unmount (no
+    /// exit animation).
+    pub exit_style: Option<FlexStyle>,
     pub hovered: bool,
     pub block_interactions: bool,
     pub layout: Option<Rect>,
+    /// Optional stable identity used to carry persistent state (hover,
+    /// scroll, animations) across reconciliation when the widget moves
+    /// position in its parent's children list.
+    pub key: Option<String>,
     /// Current vertical scroll offset (only used when overflow is Scroll).
     pub scroll_y: f32,
     /// Total content height (computed during layout).
     content_height: f32,
     /// Viewport height (computed during layout).
     viewport_height: f32,
+    /// In-flight spring state for any transitioning style properties.
+    /// Populated only when a property actually changes and the style
+    /// declares a transition for it.
+    pub animations: AnimationState,
+    /// True while the widget is playing an exit animation. The widget
+    /// stays in the parent's `children` list until its springs settle,
+    /// then is dropped on the next reconcile pass.
+    pub exiting: bool,
 }
 
 impl FlexWidget {
@@ -33,13 +64,19 @@ impl FlexWidget {
             children: Vec::new(),
             event_listeners: HashMap::new(),
             style: FlexStyle::default(),
+            declared_style: FlexStyle::default(),
             hover_style: None,
+            initial_style: None,
+            exit_style: None,
             hovered: false,
             block_interactions: true,
             layout: None,
+            key: None,
             scroll_y: 0.0,
             content_height: 0.0,
             viewport_height: 0.0,
+            animations: AnimationState::default(),
+            exiting: false,
         }
     }
 
@@ -47,31 +84,265 @@ impl FlexWidget {
         Self {
             children: Vec::new(),
             event_listeners: HashMap::new(),
-            style,
+            style: style.clone(),
+            declared_style: style,
             hover_style: None,
+            initial_style: None,
+            exit_style: None,
             hovered: false,
             block_interactions: true,
             layout: None,
+            key: None,
             scroll_y: 0.0,
             content_height: 0.0,
             viewport_height: 0.0,
+            animations: AnimationState::default(),
+            exiting: false,
         }
     }
 
-    /// Returns the style to use for layout and rendering. When the widget is
-    /// hovered and a pre-merged `hover_style` is set, returns it; otherwise
-    /// returns the base style.
+    /// Returns the style to use for layout and rendering. Since `style`
+    /// is kept in sync with the current interpolated value during
+    /// transitions, this simply returns a reference to it.
     pub fn effective_style(&self) -> &FlexStyle {
+        &self.style
+    }
+
+    /// The style animations are currently pulling toward. Priority:
+    /// (1) `exit_style` when the widget is exiting,
+    /// (2) `hover_style` when hovered,
+    /// (3) the declared base style.
+    fn target_style(&self) -> &FlexStyle {
+        if self.exiting {
+            if let Some(ref s) = self.exit_style {
+                return s;
+            }
+        }
         if self.hovered {
             if let Some(ref s) = self.hover_style {
                 return s;
             }
         }
-        &self.style
+        &self.declared_style
     }
 
     pub fn add_child(&mut self, child: WidgetRef) {
         self.children.push(child);
+    }
+
+    /// Seed the widget at `initial_style` and retarget its springs
+    /// toward `declared_style`, producing an entry animation on first
+    /// mount. No-op when `initial_style` is absent or the declared
+    /// style has no transitions enabled.
+    ///
+    /// Called by the widget builder right after construction so the
+    /// first rendered frame is already at the initial values.
+    pub fn apply_entry_transition(&mut self) {
+        let initial = match self.initial_style.as_ref() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let target = self.declared_style.clone();
+        if !target.transitions.any_enabled() {
+            return;
+        }
+        self.style = initial.clone();
+        self.animations.retarget(&initial, &target);
+        if self.animations.is_empty() {
+            // initial and declared are identical on all transition-
+            // declared properties — nothing to animate.
+            self.style = target;
+        }
+    }
+
+    /// Advance any in-flight transitions by `dt` seconds and overwrite
+    /// `self.style` with the resulting interpolated values. Called once
+    /// per frame before layout so the layout pass observes the animated
+    /// values directly.
+    pub fn tick_own_animations(&mut self, dt: f32) -> TickResult {
+        if self.animations.is_empty() {
+            return TickResult::NONE;
+        }
+        let still_moving = self.animations.tick(dt);
+        let layout_effects = self.animations.has_layout_effects();
+
+        // Overlay current spring values onto the target to produce the
+        // visual style for this frame.
+        let target = self.target_style().clone();
+        self.style = self.animations.render_onto(&target);
+
+        // If everything just settled, snap exactly to the target so we
+        // don't leave a one-tick-off rendering and cleared springs can
+        // release memory. `tick()` already cleared settled springs, so
+        // any remaining entries are still moving.
+        if self.animations.is_empty() {
+            self.style = target;
+        }
+
+        TickResult {
+            needs_repaint: true,
+            needs_layout: layout_effects && still_moving,
+            still_animating: still_moving,
+        }
+    }
+
+    /// Reconcile `self.children` with `new_children`. Keyed children
+    /// are matched by key; unkeyed children match by position.
+    ///
+    /// Exit lifecycle: a keyed child that disappears from `new_children`
+    /// becomes a "ghost" — it is kept in `self.children` at its old
+    /// position while its exit animation plays, then removed on a later
+    /// reconcile pass once settled. A child whose key is re-inserted
+    /// while it is still exiting has its exit canceled. Children
+    /// without exit capability (e.g. no `exit_style`) are dropped
+    /// immediately, matching the old behavior. Unkeyed children can't
+    /// be ghosts (no identity to carry).
+    pub fn reconcile_children(&mut self, new_children: &mut Vec<WidgetRef>) {
+        // Pre-pass: if a new child's key matches a currently-exiting
+        // ghost, cancel the exit so the ghost re-enters normal matching.
+        let new_key_set: std::collections::HashSet<String> = new_children
+            .iter()
+            .filter_map(|c| {
+                let g = c.lock().expect("widget lock poisoned");
+                g.key().map(|s| s.to_string())
+            })
+            .collect();
+        for child in self.children.iter() {
+            let should_cancel = {
+                let g = child.lock().expect("widget lock poisoned");
+                g.is_exiting() && g.key().map_or(false, |k| new_key_set.contains(k))
+            };
+            if should_cancel {
+                let mut g = child.lock().expect("widget lock poisoned");
+                g.cancel_exit();
+            }
+        }
+
+        // Build key→index map of the (possibly un-exited) old children.
+        let mut old_by_key: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (i, child) in self.children.iter().enumerate() {
+            let guard = child.lock().expect("widget lock poisoned");
+            if let Some(k) = guard.key() {
+                old_by_key.entry(k.to_string()).or_insert(i);
+            }
+        }
+
+        // Match new children against old. Keyed children match by key;
+        // unkeyed children consume the next unkeyed, non-exiting old
+        // child by position. Exiting ghosts are NEVER matched by
+        // unkeyed position — they keep their slot independently.
+        let mut next: Vec<WidgetRef> = Vec::with_capacity(new_children.len());
+        let mut consumed_old: Vec<bool> = vec![false; self.children.len()];
+        let mut unkeyed_cursor: usize = 0;
+
+        for new_child in new_children.iter() {
+            let new_key: Option<String> = {
+                let guard = new_child.lock().expect("widget lock poisoned");
+                guard.key().map(|s| s.to_string())
+            };
+
+            let matched_old_idx: Option<usize> = if let Some(key) = new_key.as_deref() {
+                old_by_key.get(key).copied().filter(|i| !consumed_old[*i])
+            } else {
+                while unkeyed_cursor < self.children.len() {
+                    if consumed_old[unkeyed_cursor] {
+                        unkeyed_cursor += 1;
+                        continue;
+                    }
+                    let skip = {
+                        let guard = self.children[unkeyed_cursor]
+                            .lock()
+                            .expect("widget lock poisoned");
+                        guard.key().is_some() || guard.is_exiting()
+                    };
+                    if skip {
+                        unkeyed_cursor += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if unkeyed_cursor < self.children.len() {
+                    Some(unkeyed_cursor)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(idx) = matched_old_idx {
+                consumed_old[idx] = true;
+                let same_ref = Arc::ptr_eq(&self.children[idx], new_child);
+                if same_ref {
+                    next.push(self.children[idx].clone());
+                } else {
+                    let updated_in_place = {
+                        let mut child = self.children[idx]
+                            .lock()
+                            .expect("widget lock poisoned");
+                        child.update(new_child.clone())
+                    };
+                    if updated_in_place {
+                        next.push(self.children[idx].clone());
+                    } else {
+                        // Type mismatch: the old widget can't absorb the
+                        // new one. Try to let it (or its subtree) play
+                        // an exit animation before being dropped —
+                        // otherwise the button rows inside a panel that
+                        // just got swapped would vanish instantly.
+                        let can_ghost = {
+                            let mut g = self.children[idx]
+                                .lock()
+                                .expect("widget lock poisoned");
+                            g.begin_exit()
+                        };
+                        if can_ghost {
+                            next.push(self.children[idx].clone());
+                        }
+                        next.push(new_child.clone());
+                    }
+                }
+            } else {
+                next.push(new_child.clone());
+            }
+        }
+
+        // Handle unconsumed old children: already-exiting ghosts keep
+        // going; newly-orphaned keyed children attempt to begin an exit
+        // animation and become ghosts if they can. Everything else is
+        // dropped.
+        //
+        // Ghosts are spliced back into `next` at a position close to
+        // their original index so sibling layout stays stable.
+        for (old_idx, old_child) in self.children.iter().enumerate() {
+            if consumed_old[old_idx] {
+                continue;
+            }
+            let (is_exiting, begin_ok) = {
+                let mut g = old_child.lock().expect("widget lock poisoned");
+                let already = g.is_exiting();
+                let started = if already { true } else { g.begin_exit() };
+                (already, started)
+            };
+            if !begin_ok {
+                // No exit capability and not already exiting — drop.
+                continue;
+            }
+            let _ = is_exiting;
+            let splice_at = old_idx.min(next.len());
+            next.insert(splice_at, old_child.clone());
+        }
+
+        self.children = next;
+    }
+
+    /// Drop any children whose exit animation has fully settled. Called
+    /// after per-frame ticks so ghosts clean up without needing a
+    /// reconcile pass from above.
+    fn drain_exited_children(&mut self) {
+        self.children.retain(|child| {
+            let g = child.lock().expect("widget lock poisoned");
+            !g.is_exit_complete()
+        });
     }
 
     fn get_children_fixed_on_axis(&self, axis: Axis) -> f32 {
@@ -95,38 +366,42 @@ impl Widget for FlexWidget {
     fn update(&mut self, new_widget: WidgetRef) -> bool {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_flex_widget) = new_widget.downcast_mut::<FlexWidget>() {
-            self.style = new_flex_widget.style.clone();
+            // Snapshot the current rendered style — this is what the user
+            // last saw on screen, including any mid-animation values — so
+            // transitions seed from there rather than from the old target.
+            let old_rendered = self.style.clone();
+
+            // Adopt the new target (and optional hover override). Child
+            // widgets carry over their own animation state via reconciliation.
+            self.declared_style = new_flex_widget.declared_style.clone();
             self.hover_style = new_flex_widget.hover_style.clone();
+            self.initial_style = new_flex_widget.initial_style.clone();
+            self.exit_style = new_flex_widget.exit_style.clone();
             self.block_interactions = new_flex_widget.block_interactions;
             self.layout = new_flex_widget.layout.clone();
-            // Swap event listeners - we can't clone closures, so we swap them
+            self.key = new_flex_widget.key.clone();
             std::mem::swap(
                 &mut self.event_listeners,
                 &mut new_flex_widget.event_listeners,
             );
 
-            // Update existing children and remove children without corresponding new_child
-            let new_child_count = new_flex_widget.children.len();
-            for i in 0..self.children.len().min(new_child_count) {
-                // Check if the child references are the same Arc to avoid deadlock
-                if Arc::ptr_eq(&self.children[i], &new_flex_widget.children[i]) {
-                    // Same widget reference, skip update to avoid deadlock
-                    continue;
+            let new_target = self.target_style().clone();
+
+            if new_target.transitions.any_enabled() {
+                self.animations.retarget(&old_rendered, &new_target);
+                if self.animations.is_empty() {
+                    // No property actually changed — snap to target.
+                    self.style = new_target;
                 }
-                let mut child = self.children[i].lock().expect("widget lock poisoned");
-                if !child.update(new_flex_widget.children[i].clone()) {
-                    drop(child); // Drop the lock before replacing the child
-                    self.children[i] = new_flex_widget.children[i].clone();
-                }
+                // Otherwise leave self.style as old_rendered; the next
+                // tick will interpolate from there toward the new target.
+            } else {
+                // No transitions declared — snap immediately.
+                self.animations = AnimationState::default();
+                self.style = new_target;
             }
 
-            // Remove old children that don't have corresponding new children
-            self.children.truncate(new_child_count);
-
-            // Add new children that don't have corresponding old children
-            for i in self.children.len()..new_child_count {
-                self.children.push(new_flex_widget.children[i].clone());
-            }
+            self.reconcile_children(&mut new_flex_widget.children);
 
             true
         } else {
@@ -348,12 +623,23 @@ impl Widget for FlexWidget {
                     }
                 }
 
+                // Build an event whose point is in this widget's own content
+                // coordinate space, so children (which store parent-relative
+                // rects) can hit-test without knowing the ancestor chain.
+                let origin = self.layout.as_ref().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+                let (scroll_x, scroll_y) = if self.style.overflow == Overflow::Scroll {
+                    (0.0, self.scroll_y)
+                } else {
+                    (0.0, 0.0)
+                };
+                let local_event = event.shift_point(-origin.0 + scroll_x, -origin.1 + scroll_y);
+
                 let mut event_handled = false;
 
                 // If it does, check children
                 for child_ref in self.children.iter() {
                     let mut child = child_ref.lock().expect("widget lock poisoned");
-                    if child.handle_event(event, ctx, child_ref) {
+                    if child.handle_event(&local_event, ctx, child_ref) {
                         event_handled = true;
                         break; // Stop propagating once a child handles the event
                     }
@@ -511,9 +797,13 @@ impl Widget for FlexWidget {
         );
         let initial_offset = self.style.main_alignment.get_space_around_offset(spacing);
 
-        // Start positioning children from the content area with initial offset
-        let mut current_x = cursor_x + self.style.inset_left();
-        let mut current_y = cursor_y + self.style.inset_top();
+        // Start positioning children from the content area with initial offset.
+        // Coordinates are parent-relative: children are positioned from this
+        // widget's own top-left origin, not in absolute screen space. The
+        // renderer and hit-test walker are responsible for composing these
+        // offsets.
+        let mut current_x = self.style.inset_left();
+        let mut current_y = self.style.inset_top();
 
         if self.style.direction.is_reverse() {
             if self.style.direction.is_row() {
@@ -637,8 +927,8 @@ impl Widget for FlexWidget {
         for child in self.children.iter_mut() {
             let mut child = child.lock().expect("widget lock poisoned");
             if let Some((offset_x, offset_y)) = child.get_absolute_offset() {
-                let child_x = cursor_x + self.style.inset_left() + offset_x;
-                let child_y = cursor_y + self.style.inset_top() + offset_y;
+                let child_x = self.style.inset_left() + offset_x;
+                let child_y = self.style.inset_top() + offset_y;
 
                 child.layout(
                     ctx,
@@ -654,14 +944,14 @@ impl Widget for FlexWidget {
             }
         }
 
-        // Apply scroll offset for scrollable containers
+        // Measure content extent so scroll_y can be clamped against it. The
+        // scroll offset itself is applied at render/hit-test time via canvas
+        // translation, not by mutating child layout rects.
         if self.style.overflow == Overflow::Scroll && !self.style.direction.is_row() {
-            let content_top = cursor_y + self.style.inset_top();
+            let content_top = self.style.inset_top();
             let mut max_bottom: f32 = content_top;
-
-            // Compute content height and apply scroll offset in a single pass
             for child_ref in self.children.iter() {
-                let mut child = child_ref.lock().expect("widget lock poisoned");
+                let child = child_ref.lock().expect("widget lock poisoned");
                 if child.is_absolute_positioned() { continue; }
                 if let Some(r) = child.get_layout_rect() {
                     max_bottom = max_bottom.max(r.y + r.height);
@@ -670,20 +960,8 @@ impl Widget for FlexWidget {
             self.content_height = max_bottom - content_top;
             self.viewport_height = content_height;
 
-            // Clamp scroll (needed even outside handle_event because content can change between frames)
             let max_scroll = (self.content_height - self.viewport_height).max(0.0);
             self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
-
-            if self.scroll_y > 0.0 {
-                for child_ref in self.children.iter() {
-                    let mut child = child_ref.lock().expect("widget lock poisoned");
-                    if child.is_absolute_positioned() { continue; }
-                    let new_y = child.get_layout_rect().map(|r| r.y - self.scroll_y);
-                    if let Some(y) = new_y {
-                        child.set_layout_y(y);
-                    }
-                }
-            }
         }
     }
 
@@ -726,9 +1004,11 @@ impl Widget for FlexWidget {
         self.layout.as_ref()
     }
 
-    fn set_layout_y(&mut self, y: f32) {
-        if let Some(ref mut layout) = self.layout {
-            layout.y = y;
+    fn scroll_offset(&self) -> (f32, f32) {
+        if self.style.overflow == Overflow::Scroll {
+            (0.0, self.scroll_y)
+        } else {
+            (0.0, 0.0)
         }
     }
 
@@ -741,7 +1021,168 @@ impl Widget for FlexWidget {
     }
 
     fn set_hovered(&mut self, hovered: bool) {
+        if self.hovered == hovered {
+            return;
+        }
+        let old_rendered = self.style.clone();
         self.hovered = hovered;
+        let new_target = self.target_style().clone();
+
+        if new_target.transitions.any_enabled() {
+            self.animations.retarget(&old_rendered, &new_target);
+            if self.animations.is_empty() {
+                self.style = new_target;
+            }
+        } else {
+            self.animations = AnimationState::default();
+            self.style = new_target;
+        }
+    }
+
+    fn key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+
+    fn render_effects(&self) -> Option<crate::widget::RenderEffects> {
+        let style = self.effective_style();
+        let has_opacity = !style.opacity.is_opaque();
+        let has_transform = !style.transform.is_identity();
+        if !has_opacity && !has_transform {
+            return None;
+        }
+        // Pivot is the widget's layout center in parent-relative
+        // coordinates, so that scale/rotate feel natural. Fall back to
+        // (0, 0) when the widget hasn't been laid out yet.
+        let (pivot_x, pivot_y) = self
+            .layout
+            .as_ref()
+            .map(|r| (r.x + r.width / 2.0, r.y + r.height / 2.0))
+            .unwrap_or((0.0, 0.0));
+        Some(crate::widget::RenderEffects {
+            opacity: style.opacity.value(),
+            transform: style.transform,
+            pivot_x,
+            pivot_y,
+        })
+    }
+
+    fn tick_animations(&mut self, dt: f32) -> TickResult {
+        let mut result = self.tick_own_animations(dt);
+        let children = self.children.clone();
+        for child in &children {
+            let child_result = {
+                let mut guard = child.lock().expect("widget lock poisoned");
+                guard.tick_animations(dt)
+            };
+            result = result.merge(child_result);
+        }
+        // A ghost whose exit animation settled this frame is now safe
+        // to drop. Removing it triggers one more layout pass so its
+        // former slot collapses.
+        let before = self.children.len();
+        self.drain_exited_children();
+        if self.children.len() != before {
+            result.needs_layout = true;
+            result.needs_repaint = true;
+        }
+        result
+    }
+
+    fn is_exiting(&self) -> bool {
+        self.exiting
+    }
+
+    fn begin_exit(&mut self) -> bool {
+        if self.exiting {
+            return true;
+        }
+
+        // First try this widget's own exit animation. Requires an
+        // exit_style whose transitions list is non-empty — otherwise
+        // "animate out" is meaningless.
+        if let Some(exit) = self
+            .exit_style
+            .as_ref()
+            .filter(|e| e.transitions.any_enabled())
+            .cloned()
+        {
+            let old_rendered = self.style.clone();
+            self.exiting = true;
+            self.animations.retarget(&old_rendered, &exit);
+            if !self.animations.is_empty() {
+                return true;
+            }
+            // exit_style was declared but matched the current rendered
+            // style — fall through to the cascade rather than giving up.
+            self.exiting = false;
+        }
+
+        // Cascade: if this widget has no own exit animation (or it had
+        // nothing to animate), try to begin_exit on each child. If any
+        // child can animate out, become a passive ghost so the subtree
+        // stays in the tree until its exiting descendants finish.
+        let mut any_descendant_exiting = false;
+        let children = self.children.clone();
+        for child in &children {
+            let started = {
+                let mut g = child.lock().expect("widget lock poisoned");
+                g.begin_exit()
+            };
+            if started {
+                any_descendant_exiting = true;
+            }
+        }
+
+        if any_descendant_exiting {
+            self.exiting = true;
+            return true;
+        }
+
+        false
+    }
+
+    fn cancel_exit(&mut self) {
+        if !self.exiting {
+            return;
+        }
+        let old_rendered = self.style.clone();
+        self.exiting = false;
+        let new_target = self.target_style().clone();
+        if new_target.transitions.any_enabled() {
+            self.animations.retarget(&old_rendered, &new_target);
+            if self.animations.is_empty() {
+                self.style = new_target;
+            }
+        } else {
+            self.animations = AnimationState::default();
+            self.style = new_target;
+        }
+        // If we were a passive ghost, cascade the cancel so any
+        // exiting descendants return to their normal state too.
+        let children = self.children.clone();
+        for child in &children {
+            let mut g = child.lock().expect("widget lock poisoned");
+            g.cancel_exit();
+        }
+    }
+
+    fn is_exit_complete(&self) -> bool {
+        if !self.exiting {
+            return false;
+        }
+        // Own animation must be settled (always true for passive ghosts).
+        if !self.animations.is_empty() {
+            return false;
+        }
+        // Any exiting descendants must have finished. Non-exiting
+        // descendants don't block — they'll be dropped with us.
+        for child in self.children.iter() {
+            let g = child.lock().expect("widget lock poisoned");
+            if g.is_exiting() && !g.is_exit_complete() {
+                return false;
+            }
+        }
+        true
     }
 
     fn is_hovered(&self) -> bool {
@@ -1329,6 +1770,370 @@ mod tests {
             "Shrink child height ({}) should be clamped to parent height ({})",
             shrink_height,
             parent_height
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Key-based reconciliation tests
+    // ---------------------------------------------------------------------
+
+    /// Returns the Arc identities of `parent`'s children as raw pointer
+    /// values, used to prove a child widget survived reconciliation.
+    fn child_identities(parent: &FlexWidget) -> Vec<*const ()> {
+        parent
+            .children
+            .iter()
+            .map(|c| Arc::as_ptr(c) as *const ())
+            .collect()
+    }
+
+    fn keyed_flex(key: &str) -> WidgetRef {
+        let mut w = FlexWidget::new();
+        w.key = Some(key.to_string());
+        Arc::new(Mutex::new(w))
+    }
+
+    fn unkeyed_flex() -> WidgetRef {
+        Arc::new(Mutex::new(FlexWidget::new()))
+    }
+
+    fn wrap_parent(children: Vec<WidgetRef>) -> FlexWidget {
+        let mut parent = FlexWidget::new();
+        for c in children {
+            parent.add_child(c);
+        }
+        parent
+    }
+
+    #[test]
+    fn keyed_children_survive_reordering() {
+        // Old: [A, B, C] — new: [C, A, B]. All three should be reused,
+        // just rearranged.
+        let a = keyed_flex("a");
+        let b = keyed_flex("b");
+        let c = keyed_flex("c");
+        let mut parent = wrap_parent(vec![a.clone(), b.clone(), c.clone()]);
+
+        let a_id = Arc::as_ptr(&a) as *const ();
+        let b_id = Arc::as_ptr(&b) as *const ();
+        let c_id = Arc::as_ptr(&c) as *const ();
+
+        let mut new_children = vec![keyed_flex("c"), keyed_flex("a"), keyed_flex("b")];
+        parent.reconcile_children(&mut new_children);
+
+        let ids = child_identities(&parent);
+        assert_eq!(ids, vec![c_id, a_id, b_id]);
+    }
+
+    #[test]
+    fn keyed_children_survive_middle_removal() {
+        // Old: [A, B, C] — new: [A, C]. B is dropped; A and C survive.
+        let a = keyed_flex("a");
+        let b = keyed_flex("b");
+        let c = keyed_flex("c");
+        let mut parent = wrap_parent(vec![a.clone(), b.clone(), c.clone()]);
+
+        let a_id = Arc::as_ptr(&a) as *const ();
+        let c_id = Arc::as_ptr(&c) as *const ();
+
+        let mut new_children = vec![keyed_flex("a"), keyed_flex("c")];
+        parent.reconcile_children(&mut new_children);
+
+        let ids = child_identities(&parent);
+        assert_eq!(ids, vec![a_id, c_id]);
+        assert_eq!(parent.children.len(), 2);
+    }
+
+    #[test]
+    fn unkeyed_children_match_by_position() {
+        // Old: [X, Y] unkeyed — new: [X', Y']. Both update in place.
+        let x = unkeyed_flex();
+        let y = unkeyed_flex();
+        let mut parent = wrap_parent(vec![x.clone(), y.clone()]);
+
+        let x_id = Arc::as_ptr(&x) as *const ();
+        let y_id = Arc::as_ptr(&y) as *const ();
+
+        let mut new_children = vec![unkeyed_flex(), unkeyed_flex()];
+        parent.reconcile_children(&mut new_children);
+
+        let ids = child_identities(&parent);
+        assert_eq!(ids, vec![x_id, y_id]);
+    }
+
+    #[test]
+    fn new_keyed_child_is_inserted_fresh() {
+        // Old: [A] — new: [A, B]. A survives by key, B is brand new.
+        let a = keyed_flex("a");
+        let mut parent = wrap_parent(vec![a.clone()]);
+
+        let a_id = Arc::as_ptr(&a) as *const ();
+        let fresh_b = keyed_flex("b");
+        let b_id = Arc::as_ptr(&fresh_b) as *const ();
+
+        let mut new_children = vec![keyed_flex("a"), fresh_b];
+        parent.reconcile_children(&mut new_children);
+
+        let ids = child_identities(&parent);
+        assert_eq!(ids[0], a_id);
+        assert_eq!(ids[1], b_id);
+    }
+
+    #[test]
+    fn mixed_keyed_and_unkeyed_children() {
+        // Old: [K1, U, K2] — new: [K2, U, K1]. Keyed children match by
+        // key; the single unkeyed child matches by position within the
+        // unkeyed subsequence (there's only one, so it survives).
+        let k1 = keyed_flex("k1");
+        let u = unkeyed_flex();
+        let k2 = keyed_flex("k2");
+        let mut parent = wrap_parent(vec![k1.clone(), u.clone(), k2.clone()]);
+
+        let k1_id = Arc::as_ptr(&k1) as *const ();
+        let u_id = Arc::as_ptr(&u) as *const ();
+        let k2_id = Arc::as_ptr(&k2) as *const ();
+
+        let mut new_children = vec![keyed_flex("k2"), unkeyed_flex(), keyed_flex("k1")];
+        parent.reconcile_children(&mut new_children);
+
+        let ids = child_identities(&parent);
+        assert_eq!(ids, vec![k2_id, u_id, k1_id]);
+    }
+
+    #[test]
+    fn keyed_child_arc_survives_reorder() {
+        // When reordering keyed children, the Arc identities survive —
+        // the in-place update happens on the original widget, preserving
+        // any state that wasn't overwritten by update().
+        let a = keyed_flex("a");
+        let b = keyed_flex("b");
+        let a_id = Arc::as_ptr(&a) as *const ();
+        let mut parent = wrap_parent(vec![a.clone(), b.clone()]);
+
+        let mut new_children = vec![keyed_flex("b"), keyed_flex("a")];
+        parent.reconcile_children(&mut new_children);
+
+        // The original `a` Arc is at position 1 after reordering.
+        let ids = child_identities(&parent);
+        assert_eq!(
+            ids[1], a_id,
+            "reconciliation must reuse the same widget for matching keys"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Entry / exit lifecycle tests
+    // ---------------------------------------------------------------------
+
+    fn make_transition_style(bg: Color) -> FlexStyle {
+        let mut s = FlexStyle::default();
+        s.background_color = Some(bg);
+        s.transitions.background_color =
+            Some(crate::widget::animation::TransitionConfig::DEFAULT);
+        s
+    }
+
+    #[test]
+    fn initial_style_seeds_starting_state() {
+        // initial_style: opaque black. declared_style: opaque white.
+        // apply_entry_transition puts `self.style` at the initial and
+        // kicks off a spring toward the declared target.
+        let mut w = FlexWidget::new();
+        w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+        w.initial_style = Some(make_transition_style(Color::new(0, 0, 0, 255)));
+        w.style = w.declared_style.clone();
+
+        w.apply_entry_transition();
+
+        assert_eq!(
+            w.style.background_color,
+            Some(Color::new(0, 0, 0, 255)),
+            "style should be seeded from initial_style"
+        );
+        assert!(
+            w.animations.background_color.is_some(),
+            "entry animation should be armed"
+        );
+    }
+
+    #[test]
+    fn exit_style_drives_disappearing_child() {
+        // Parent has one keyed child `a` with an exit_style. When `a`
+        // disappears from new_children, it should become a ghost (still
+        // in parent.children, with exiting=true) rather than being
+        // dropped immediately.
+        let a = {
+            let mut w = FlexWidget::new();
+            w.key = Some("a".to_string());
+            w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+            w.style = w.declared_style.clone();
+            Arc::new(Mutex::new(w))
+        };
+        let a_id = Arc::as_ptr(&a) as *const ();
+        let mut parent = wrap_parent(vec![a.clone()]);
+
+        let mut new_children: Vec<WidgetRef> = vec![];
+        parent.reconcile_children(&mut new_children);
+
+        assert_eq!(
+            parent.children.len(),
+            1,
+            "child with exit_style should become a ghost, not be dropped"
+        );
+        assert_eq!(
+            Arc::as_ptr(&parent.children[0]) as *const (),
+            a_id,
+            "ghost must be the same Arc as the original child"
+        );
+        let g = parent.children[0].lock().expect("widget lock poisoned");
+        let flex = g.downcast_ref::<FlexWidget>().expect("FlexWidget");
+        assert!(flex.exiting, "ghost should be marked exiting");
+        assert!(
+            flex.animations.background_color.is_some(),
+            "exit animation should be running"
+        );
+    }
+
+    #[test]
+    fn child_without_exit_style_is_dropped_immediately() {
+        // Without an exit_style, a disappearing child is removed right
+        // away — same as pre-ghost behavior.
+        let a = keyed_flex("a");
+        let mut parent = wrap_parent(vec![a.clone()]);
+
+        let mut new_children: Vec<WidgetRef> = vec![];
+        parent.reconcile_children(&mut new_children);
+
+        assert_eq!(parent.children.len(), 0);
+    }
+
+    #[test]
+    fn reinsertion_cancels_exit() {
+        // Ghost `a` is mid-exit. A new `a` key appears in new_children:
+        // the ghost un-exits and gets matched normally, transitioning
+        // back toward declared_style.
+        let a = {
+            let mut w = FlexWidget::new();
+            w.key = Some("a".to_string());
+            w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+            w.style = w.declared_style.clone();
+            Arc::new(Mutex::new(w))
+        };
+        let mut parent = wrap_parent(vec![a.clone()]);
+
+        // First reconcile: remove `a` → becomes a ghost.
+        let mut empty: Vec<WidgetRef> = vec![];
+        parent.reconcile_children(&mut empty);
+        assert!(
+            parent.children[0]
+                .lock()
+                .expect("widget lock poisoned")
+                .is_exiting()
+        );
+
+        // Second reconcile: `a` reappears with same key.
+        let reinserted: WidgetRef = {
+            let mut w = FlexWidget::new();
+            w.key = Some("a".to_string());
+            w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+            w.style = w.declared_style.clone();
+            Arc::new(Mutex::new(w))
+        };
+        let mut new_children: Vec<WidgetRef> = vec![reinserted];
+        parent.reconcile_children(&mut new_children);
+
+        let g = parent.children[0].lock().expect("widget lock poisoned");
+        let flex = g.downcast_ref::<FlexWidget>().expect("FlexWidget");
+        assert!(
+            !flex.exiting,
+            "reinsertion should clear the exiting flag"
+        );
+    }
+
+    #[test]
+    fn settled_ghost_is_drained_during_tick() {
+        // After a ghost's exit springs settle, the next tick_animations
+        // call drops it from the parent's children list.
+        let a = {
+            let mut w = FlexWidget::new();
+            w.key = Some("a".to_string());
+            w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+            w.style = w.declared_style.clone();
+            Arc::new(Mutex::new(w))
+        };
+        let mut parent = wrap_parent(vec![a.clone()]);
+
+        // Start exit.
+        let mut empty: Vec<WidgetRef> = vec![];
+        parent.reconcile_children(&mut empty);
+        assert_eq!(parent.children.len(), 1);
+
+        // Tick with enough total time for the spring to settle.
+        for _ in 0..120 {
+            parent.tick_animations(1.0 / 60.0);
+        }
+
+        assert_eq!(
+            parent.children.len(),
+            0,
+            "settled ghost should have been drained"
+        );
+    }
+
+    #[test]
+    fn animation_state_persists_across_reorder_with_transitions() {
+        // When a widget has an active background-color transition and it
+        // gets reordered into a new position, the update() flows through
+        // retarget() and preserves the in-flight spring (velocity +
+        // current value) rather than wiping it.
+        use crate::widget::animation::TransitionConfig;
+
+        let make_with_transitions = |key: &str, bg: Color| -> WidgetRef {
+            let mut w = FlexWidget::new();
+            w.key = Some(key.to_string());
+            let mut s = FlexStyle::default();
+            s.background_color = Some(bg);
+            s.transitions.background_color = Some(TransitionConfig::DEFAULT);
+            w.declared_style = s.clone();
+            w.style = s;
+            Arc::new(Mutex::new(w))
+        };
+
+        let a = make_with_transitions("a", Color::new(0, 0, 0, 255));
+        let b = make_with_transitions("b", Color::new(255, 0, 0, 255));
+
+        // Prime widget `a` with an active spring mid-animation.
+        {
+            let mut guard = a.lock().expect("widget lock poisoned");
+            let flex = guard.downcast_mut::<FlexWidget>().expect("FlexWidget");
+            let mut springs = crate::widget::animation::ColorSprings::new(
+                Color::new(0, 0, 0, 255),
+                TransitionConfig::DEFAULT,
+            );
+            springs.set_target(Color::new(255, 255, 255, 255));
+            springs.tick(1.0 / 60.0);
+            flex.animations.background_color = Some(springs);
+        }
+
+        let mut parent = wrap_parent(vec![a.clone(), b.clone()]);
+
+        // Reorder to [b, a] — new descriptors carry the same targets
+        // and transitions as the originals.
+        let mut new_children = vec![
+            make_with_transitions("b", Color::new(255, 0, 0, 255)),
+            make_with_transitions("a", Color::new(0, 0, 0, 255)),
+        ];
+        parent.reconcile_children(&mut new_children);
+
+        let a_after = parent.children[1].lock().expect("widget lock poisoned");
+        let flex = a_after.downcast_ref::<FlexWidget>().expect("FlexWidget");
+        assert!(
+            flex.animations.background_color.is_some(),
+            "mid-animation spring state should survive reorder + update"
         );
     }
 }

@@ -44,12 +44,16 @@ Source (.ogh)
 | `src/runtime/environment.rs` | Variable scoping |
 | `src/runtime/error.rs` | `RuntimeError`, `VMError` |
 | `src/runtime/descriptor.rs` | `WidgetDescriptor` -- runtime widget representation |
-| `src/widget/mod.rs` | `UI` struct, `Surface` trait, `Widget` trait |
+| `src/widget/mod.rs` | `UI` struct, `Surface` trait, `Widget` trait, `RenderEffects`, `TickResult` |
 | `src/widget/builder.rs` | Converts runtime widget values to widget tree nodes |
-| `src/widget/flex_widget.rs` | Flexbox container widget |
+| `src/widget/flex_widget.rs` | Flexbox container; owns style transitions and exit lifecycle |
 | `src/widget/text_widget.rs` | Text display widget |
 | `src/widget/text_input_widget.rs` | Text input widget |
 | `src/widget/svg_widget.rs` | SVG widget |
+| `src/widget/grid_widget.rs` | Grid container widget |
+| `src/widget/image_widget.rs` | Image widget |
+| `src/widget/presence_widget.rs` | Lifecycle-sequencing container (waits for exits before mounting next generation) |
+| `src/widget/animation.rs` | Spring math + per-property animation state used by transitions |
 | `src/widget/event.rs` | Event types (`Event`, `EventContext`) |
 | `src/skia.rs` | Skia rendering backend (implements `Surface`) |
 | `src/client/` | Standalone browser binary |
@@ -146,7 +150,7 @@ let add = fn (a: int, b: int): int {
 
 ### Widgets
 
-Four built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`.
+Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`) wrap or specialize it.
 
 ```ogh
 Flex {
@@ -181,6 +185,61 @@ Flex {
   children: [ ... ],
 }
 ```
+
+### Animations and lifecycle
+
+Style transitions, entry animations, and exit animations are first-class on `Flex`. Three pieces work together: a `transition:` declaration in the style enabling spring interpolation, optional `initial:` / `exit:` widget-level styles for entry/exit animations, and a `key:` for stable identity across reconciles.
+
+```ogh
+Flex {
+  key: "save-button",
+  initial: { opacity: 0, transform: { translate_y: -12 } },
+  exit:    { opacity: 0, transform: { translate_y:  -8 } },
+  style: {
+    background_color: { r: 60, g: 90, b: 120, a: 255 },
+    border: { width: 1, color: { r: 90, g: 120, b: 150, a: 255 }, style: "solid" },
+    padding: 12,
+    transition: {
+      opacity:          "spring",
+      transform:        "spring",
+      background_color: "spring",
+      border:           "spring",
+    },
+  },
+  hover_style: {
+    background_color: { r: 90, g: 120, b: 150, a: 255 },
+    border: { width: 1, color: { r: 140, g: 170, b: 200, a: 255 }, style: "solid" },
+  },
+  children: [ Text { text: "Save" } ],
+}
+```
+
+**`transition`** — declares which style properties spring-animate when their target value changes (hover/unhover, state-driven style updates). `"spring"` uses defaults; `{ stiffness: 200, damping: 28 }` tunes per property. Animatable properties: `background_color`, `text_color`, `border`, `corner_radius`, `padding`, `margin`, `gap`, `text_size`, `opacity`, `transform`. Non-animated properties snap immediately.
+
+**`initial`** — style snapshot the widget is born at. The widget's first frame renders at `initial`; subsequent ticks spring toward the declared `style` (target). Without `initial`, the widget mounts at its declared style with no entry animation.
+
+**`exit`** — style snapshot the widget animates toward when it disappears from the declarative tree. The widget stays in the tree (a "ghost") until its springs settle, then is dropped. Requires a `key` so reconciliation can tell removal from reordering. Without `exit`, the widget is dropped immediately.
+
+**`key`** — stable identity used by reconciliation to match widgets across frames. Required for exit animations and for preserving animation/hover/scroll state across reorders. Keyless siblings are matched by position.
+
+#### `Presence` — sequencing transitions between generations
+
+`Flex`'s exit animations run *in parallel* with the new content mounting. When you want one to finish before the other starts (e.g., page transitions), wrap the swap point in `Presence`:
+
+```ogh
+Presence {
+  key: current_route_id,
+  children: [ render_route(current_route_id) ],
+}
+```
+
+When `key` changes, every current child is asked to `begin_exit` (cascading through descendants if no own `exit` exists). Children with exit animations stay in the tree as ghosts; the new content is held aside as *pending* and mounts only once all ghosts settle. Rapid key changes replace the pending content latest-wins; reverting the key mid-exit cancels the transition and unwinds the in-flight exits.
+
+Use `Presence` for route boundaries; nest one per "slot" that should sequence independently (e.g., separate Presences for a sidebar and a main panel).
+
+#### Opacity and transform style properties
+
+`opacity` (number 0..1, default 1) and `transform` (`{ translate_x, translate_y, scale, scale_x, scale_y, rotate }`, default identity) are paint-only — they don't affect layout or hit-testing. `transform` pivots around the widget's center. Both are spring-animatable when listed in `transition:`.
 
 ### Imports
 
@@ -348,12 +407,22 @@ It returns `Ok(true)` when a rerender was performed (useful for dirty-tracking).
 // 1. Update (rerender + bridge + reconcile, only if needed)
 let rerendered = ogham.update()?;
 
-// 2. Layout
+// 2. Tick animations forward by the real elapsed time (in seconds).
+//    Required for style transitions, entry/exit animations, and Presence
+//    sequencing to advance. Cap dt to ~33ms so a stalled frame doesn't
+//    skip through a whole animation in one step.
+ogham.get_ui_mut().tick_animations(dt);
+
+// 3. Layout
 ogham.get_ui_mut().layout(window_width, window_height);
 
-// 3. Draw using a Surface implementation
+// 4. Draw using a Surface implementation
 surface.draw(ogham.get_ui_mut());
 ```
+
+**Important**: `tick_animations` must run *every* frame, not just when `update()`
+reports a rerender. Animations are driven by per-frame ticks independent of
+runtime state changes. Skipping ticks freezes any in-flight transitions.
 
 ### 6. Handling UI events
 
@@ -370,19 +439,38 @@ ogham.get_ui_mut().call_event(&event);
 
 ### 7. Custom rendering backends
 
-Implement the `Surface` trait (`src/widget/mod.rs`) to use a renderer other than Skia:
+Two traits live in `src/widget/mod.rs`:
+
+- **`Surface`** — entry point. Implementations walk the widget tree and call each widget's `render()` / `post_render()` methods. Its only required method is `draw(&mut self, ui: &mut UI)`.
+- **`RenderContext`** — the drawing API widgets call from inside their `render()` methods. Implementations provide primitives like `fill_rect`, `draw_border`, `draw_text`, plus stack-based scopes via `push_clip_rect` / `pop_clip_rect` and `push_effects` / `pop_effects`.
 
 ```rust
 pub trait Surface {
     fn draw(&mut self, ui: &mut UI);
-    fn draw_widget(&mut self, widget: &WidgetRef, focused: Option<&WidgetRef>, image_cache: &mut ImageCache);
-    fn draw_box(&mut self, widget: &FlexWidget, image_cache: &mut ImageCache);
-    fn draw_borders(&mut self, widget: &FlexWidget, x: f32, y: f32, width: f32, height: f32);
-    fn draw_text(&mut self, widget: &TextWidget);
-    fn draw_text_input(&mut self, widget: &TextInputWidget);
-    fn draw_svg(&mut self, widget: &SvgWidget);
+}
+
+pub trait RenderContext {
+    fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: &Color);
+    fn fill_rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radii: &CornerRadii, color: &Color);
+    fn draw_border(&mut self, border: &Border, x: f32, y: f32, w: f32, h: f32, radii: &CornerRadii);
+    fn draw_image(&mut self, path: &str, x: f32, y: f32, w: f32, h: f32, cache: &mut ImageCache);
+    fn draw_text(&mut self, text: &str, style: &TextStyle, x: f32, y: f32, width: f32);
+    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: &Color);
+    fn draw_svg_dom(&mut self, dom: &skia_safe::svg::Dom, x: f32, y: f32, w: f32, h: f32);
+
+    fn push_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {}
+    fn pop_clip_rect(&mut self) {}
+
+    /// Push an opacity layer (`< 1.0` triggers offscreen compositing) and an
+    /// affine transform pivoting around `(pivot_x, pivot_y)`. Paired with
+    /// `pop_effects`. Required for opacity / transform style transitions to
+    /// render correctly.
+    fn push_effects(&mut self, opacity: f32, transform: &Transform, pivot_x: f32, pivot_y: f32) {}
+    fn pop_effects(&mut self) {}
 }
 ```
+
+`SkiaEnv` in `src/skia.rs` is the reference implementation of both traits.
 
 ## Project Structure
 
@@ -410,12 +498,16 @@ ogham/
       ops.rs                -- arithmetic/comparison operations
       descriptor.rs         -- WidgetDescriptor (runtime widget representation)
     widget/
-      mod.rs                -- UI struct, Surface trait, Widget trait
+      mod.rs                -- UI struct, Surface trait, Widget trait, RenderEffects, TickResult
       builder.rs            -- runtime values -> widget tree nodes
-      flex_widget.rs        -- Flex container
+      flex_widget.rs        -- Flex container; transitions + exit lifecycle
       text_widget.rs        -- Text display
       text_input_widget.rs  -- Text input
       svg_widget.rs         -- SVG rendering
+      grid_widget.rs        -- Grid container
+      image_widget.rs       -- Image
+      presence_widget.rs    -- Lifecycle-sequencing container
+      animation.rs          -- Spring math + per-property animation state
       event.rs              -- Event, EventContext
     client/
       main.rs               -- standalone browser binary entry point

@@ -171,10 +171,14 @@ impl Widget for GridWidget {
             if !self.contains_point(point) {
                 return false;
             }
+            // Shift the point into this widget's own coord space before
+            // recursing (child rects are parent-relative).
+            let origin = self.layout.as_ref().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+            let local_event = event.shift_point(-origin.0, -origin.1);
             // Propagate to children in reverse order (topmost first)
             for (_, child_ref) in self.children.iter().rev() {
                 let mut child = child_ref.lock().expect("widget lock poisoned");
-                if child.handle_event(event, ctx, child_ref) {
+                if child.handle_event(&local_event, ctx, child_ref) {
                     return true;
                 }
             }
@@ -205,9 +209,10 @@ impl Widget for GridWidget {
         let h = self.total_height();
         self.layout = Some(Rect::new(cursor_x, cursor_y, w, h));
 
-        // Layout each child at its grid-determined position
+        // Layout each child at its grid-determined position, relative to
+        // this widget's own origin.
         for (placement, child_ref) in &self.children {
-            let cell = self.cell_rect(placement, cursor_x, cursor_y);
+            let cell = self.cell_rect(placement, 0.0, 0.0);
             let mut child = child_ref.lock().expect("widget lock poisoned");
             child.layout(
                 ctx,

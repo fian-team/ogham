@@ -1,8 +1,9 @@
 use crate::runtime::{descriptor::WidgetDescriptor, error::VMError, value::Value, Runtime};
+use crate::widget::animation::{TransitionConfig, TransitionSet};
 use crate::widget::{
     flex_widget::FlexWidget, grid_widget::{GridPlacement, GridStyle, GridWidget},
-    image_widget::ImageWidget, style::*, svg_widget::SvgWidget,
-    text_input_widget::TextInputWidget, text_widget::TextWidget, WidgetRef,
+    image_widget::ImageWidget, presence_widget::PresenceWidget, style::*,
+    svg_widget::SvgWidget, text_input_widget::TextInputWidget, text_widget::TextWidget, WidgetRef,
 };
 use crate::widget::event::Event;
 use std::collections::HashMap;
@@ -39,6 +40,7 @@ impl WidgetRegistry {
         reg.register("svg", |_reg, rt, desc| create_svg_widget(rt, desc));
         reg.register("image", |_reg, rt, desc| create_image_widget(rt, desc));
         reg.register("grid", |reg, rt, desc| create_grid_widget(reg, rt, desc));
+        reg.register("presence", |reg, rt, desc| create_presence_widget(reg, rt, desc));
         reg
     }
 
@@ -207,6 +209,16 @@ fn optional_hover_style_map<'a>(
     }
 }
 
+fn optional_map_property<'a>(
+    descriptor: &'a WidgetDescriptor,
+    name: &str,
+) -> Option<&'a HashMap<String, Value>> {
+    match descriptor.properties.get(name) {
+        Some(Value::Map(map)) => Some(map),
+        _ => None,
+    }
+}
+
 /// Apply flex style properties from a map onto a mutable `FlexStyle`.
 fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>) {
     for (key, value) in map {
@@ -308,8 +320,128 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     }
                 }
             }
+            "opacity" => {
+                if let Some(v) = value_to_f32(value) {
+                    style.opacity = Opacity(v);
+                }
+            }
+            "transform" => {
+                if let Some(t) = parse_transform_value(value) {
+                    style.transform = t;
+                }
+            }
+            "transition" => {
+                if let Some(set) = parse_transition_value(value) {
+                    style.transitions = set;
+                }
+            }
             _ => {}
         }
+    }
+}
+
+/// Parse a `transform:` value.
+///
+/// Accepted shapes:
+/// - number — uniform translate_x/translate_y? No — we treat a bare
+///   number as meaningless for transforms and ignore it.
+/// - `{ translate_x, translate_y, scale, scale_x, scale_y, rotate }` —
+///   missing fields default to identity values. `scale` sets both axes.
+fn parse_transform_value(value: &Value) -> Option<Transform> {
+    match value {
+        Value::Map(map) => {
+            let mut t = Transform::IDENTITY;
+            if let Some(v) = map.get("translate_x").and_then(value_to_f32) {
+                t.translate_x = v;
+            }
+            if let Some(v) = map.get("translate_y").and_then(value_to_f32) {
+                t.translate_y = v;
+            }
+            if let Some(v) = map.get("scale").and_then(value_to_f32) {
+                t.scale_x = v;
+                t.scale_y = v;
+            }
+            if let Some(v) = map.get("scale_x").and_then(value_to_f32) {
+                t.scale_x = v;
+            }
+            if let Some(v) = map.get("scale_y").and_then(value_to_f32) {
+                t.scale_y = v;
+            }
+            if let Some(v) = map.get("rotate").and_then(value_to_f32) {
+                t.rotate = v;
+            }
+            Some(t)
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `transition:` declaration.
+///
+/// Accepted shapes:
+/// - `"spring"` — enable a default spring on every animatable property
+/// - `{ background_color: "spring", border: { stiffness: 200, damping: 30 } }`
+///   — enable named properties with either a default or custom config
+/// - `{ background_color: true }` — equivalent to `"spring"`
+fn parse_transition_value(value: &Value) -> Option<TransitionSet> {
+    match value {
+        Value::String(s) if s == "spring" || s == "default" => {
+            let cfg = TransitionConfig::DEFAULT;
+            Some(TransitionSet {
+                background_color: Some(cfg),
+                text_color: Some(cfg),
+                border: Some(cfg),
+                corner_radius: Some(cfg),
+                padding: Some(cfg),
+                margin: Some(cfg),
+                gap: Some(cfg),
+                text_size: Some(cfg),
+                opacity: Some(cfg),
+                transform: Some(cfg),
+            })
+        }
+        Value::Map(map) => {
+            let mut set = TransitionSet::default();
+            for (key, entry_value) in map {
+                let cfg = parse_transition_entry(entry_value)?;
+                match key.as_str() {
+                    "background_color" => set.background_color = Some(cfg),
+                    "text_color" => set.text_color = Some(cfg),
+                    "border" => set.border = Some(cfg),
+                    "corner_radius" => set.corner_radius = Some(cfg),
+                    "padding" => set.padding = Some(cfg),
+                    "margin" => set.margin = Some(cfg),
+                    "gap" => set.gap = Some(cfg),
+                    "text_size" => set.text_size = Some(cfg),
+                    "opacity" => set.opacity = Some(cfg),
+                    "transform" => set.transform = Some(cfg),
+                    _ => {}
+                }
+            }
+            Some(set)
+        }
+        _ => None,
+    }
+}
+
+/// Parse the value side of a single transition entry into a
+/// `TransitionConfig`. `true` / `"spring"` yield the default; a map with
+/// `stiffness` / `damping` yields a tuned spring.
+fn parse_transition_entry(value: &Value) -> Option<TransitionConfig> {
+    match value {
+        Value::Boolean(true) => Some(TransitionConfig::DEFAULT),
+        Value::String(s) if s == "spring" || s == "default" => Some(TransitionConfig::DEFAULT),
+        Value::Map(map) => {
+            let mut cfg = TransitionConfig::DEFAULT;
+            if let Some(v) = map.get("stiffness").and_then(value_to_f32) {
+                cfg.stiffness = v;
+            }
+            if let Some(v) = map.get("damping").and_then(value_to_f32) {
+                cfg.damping = v;
+            }
+            Some(cfg)
+        }
+        _ => None,
     }
 }
 
@@ -459,19 +591,107 @@ fn create_flex_widget(
         apply_flex_style_from_map(&mut style, style_map);
     }
 
+    // Declared style is the authored target; `style` is kept in sync and
+    // is what layout/rendering observes. Only diverges mid-transition.
+    flex_widget.declared_style = style.clone();
     flex_widget.style = style;
 
     if let Some(hover_map) = optional_hover_style_map(descriptor) {
-        let mut hover_style = flex_widget.style.clone();
+        let mut hover_style = flex_widget.declared_style.clone();
         apply_flex_style_from_map(&mut hover_style, hover_map);
         flex_widget.hover_style = Some(hover_style);
+    }
+
+    // `initial:` — style the widget is born with. Defaults to the
+    // declared style as a base so unspecified fields are sensible;
+    // fields present in the initial map override.
+    if let Some(initial_map) = optional_map_property(descriptor, "initial") {
+        let mut initial_style = flex_widget.declared_style.clone();
+        apply_flex_style_from_map(&mut initial_style, initial_map);
+        flex_widget.initial_style = Some(initial_style);
+    }
+
+    // `exit:` — style the widget animates toward while leaving the tree.
+    if let Some(exit_map) = optional_map_property(descriptor, "exit") {
+        let mut exit_style = flex_widget.declared_style.clone();
+        apply_flex_style_from_map(&mut exit_style, exit_map);
+        flex_widget.exit_style = Some(exit_style);
+    }
+
+    // Optional stable identity. Accepts strings, or numbers stringified,
+    // so templates can write `key: index` or `key: "header"`.
+    if let Some(key_value) = descriptor.properties.get("key") {
+        flex_widget.key = key_to_string(key_value);
     }
 
     for child in children {
         flex_widget.add_child(child);
     }
 
+    // Apply any declared entry transition last so initial_style
+    // overrides `style` on the first frame and springs start moving
+    // toward `declared_style` on the next tick.
+    flex_widget.apply_entry_transition();
+
     Ok(Arc::new(Mutex::new(flex_widget)))
+}
+
+fn key_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Integer(i) => Some(i.to_string()),
+        Value::Float(f) => Some(f.to_string()),
+        Value::Boolean(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Build a `Presence` widget. Recognized properties:
+/// - `key`: the generation discriminator. When this changes across
+///   reconciles, the current content begins exiting and the new content
+///   is held as pending until exits settle.
+/// - `children`: the content to mount. Accepts a single Widget or an
+///   Array of Widgets.
+fn create_presence_widget(
+    registry: &WidgetRegistry,
+    runtime: &Arc<Mutex<Runtime>>,
+    descriptor: &WidgetDescriptor,
+) -> Result<WidgetRef, BridgeError> {
+    let mut presence = PresenceWidget::new();
+
+    if let Some(value) = descriptor.properties.get("key") {
+        presence.generation_key = key_to_string(value);
+    }
+
+    let mut children: Vec<WidgetRef> = Vec::new();
+    if let Some(value) = descriptor.properties.get("children") {
+        match value {
+            Value::Array(children_array) => {
+                for child_value in children_array {
+                    if let Value::Widget(child_widget) = child_value {
+                        let child_ref = widget_value_to_widget_ref(
+                            registry,
+                            runtime,
+                            &Value::Widget(child_widget.clone()),
+                        )?;
+                        children.push(child_ref);
+                    }
+                }
+            }
+            Value::Widget(child_widget) => {
+                let child_ref = widget_value_to_widget_ref(
+                    registry,
+                    runtime,
+                    &Value::Widget(child_widget.clone()),
+                )?;
+                children.push(child_ref);
+            }
+            _ => {}
+        }
+    }
+    presence.inner.children = children;
+
+    Ok(Arc::new(Mutex::new(presence)))
 }
 
 fn create_text_widget(

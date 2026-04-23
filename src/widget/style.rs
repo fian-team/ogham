@@ -1,3 +1,4 @@
+use crate::widget::animation::TransitionSet;
 use crate::widget::WidgetRef;
 
 /// Represents either the horizontal or vertical axis, used to unify
@@ -30,7 +31,7 @@ pub enum Overflow {
     Scroll,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct FlexStyle {
     pub position: Position,
     pub width: Size,
@@ -48,10 +49,80 @@ pub struct FlexStyle {
     pub text_size: Option<f32>,
     pub text_color: Option<Color>,
     pub overflow: Overflow,
+    /// Paint-time opacity applied to the widget and its descendants.
+    /// 1.0 is fully opaque; values less than 1.0 trigger a Skia layer
+    /// composite. Does not affect layout.
+    pub opacity: Opacity,
+    /// Paint-time affine transform applied to the widget and its
+    /// descendants. Pivots around the widget's center. Does not affect
+    /// layout or hit-testing (hit-tests ignore the transform for now).
+    pub transform: Transform,
+    /// Spring-driven transitions declared for specific style properties.
+    /// Empty by default — properties snap to new values unless opted in.
+    pub transitions: TransitionSet,
 }
 
-impl FlexStyle {
-    pub fn default() -> Self {
+/// Single-scalar opacity wrapped so it has a non-zero `Default`. Values
+/// are clamped to `[0, 1]` at paint time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Opacity(pub f32);
+
+impl Default for Opacity {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+impl Opacity {
+    pub const OPAQUE: Self = Self(1.0);
+    pub fn value(self) -> f32 {
+        self.0.clamp(0.0, 1.0)
+    }
+    pub fn is_opaque(self) -> bool {
+        self.value() >= 1.0
+    }
+}
+
+/// Affine transform with separate translation, scale, and rotation
+/// components. Composed at paint time as
+/// `translate(center) * rotate * scale * translate(-center) * translate(tx, ty)`
+/// so scale and rotation pivot around the widget's center.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Transform {
+    pub translate_x: f32,
+    pub translate_y: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    /// Rotation in degrees. Positive rotates clockwise (Skia convention).
+    pub rotate: f32,
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Transform {
+    pub const IDENTITY: Self = Self {
+        translate_x: 0.0,
+        translate_y: 0.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
+        rotate: 0.0,
+    };
+
+    pub fn is_identity(&self) -> bool {
+        self.translate_x == 0.0
+            && self.translate_y == 0.0
+            && self.scale_x == 1.0
+            && self.scale_y == 1.0
+            && self.rotate == 0.0
+    }
+}
+
+impl Default for FlexStyle {
+    fn default() -> Self {
         Self {
             position: Position::Static,
             width: Size::Shrink,
@@ -69,9 +140,14 @@ impl FlexStyle {
             text_size: None,
             text_color: None,
             overflow: Overflow::Visible,
+            opacity: Opacity::OPAQUE,
+            transform: Transform::IDENTITY,
+            transitions: TransitionSet::default(),
         }
     }
+}
 
+impl FlexStyle {
     /// Creates a new builder for constructing a FlexStyle
     pub fn builder() -> FlexStyleBuilder {
         FlexStyleBuilder::default()
@@ -765,7 +841,7 @@ pub enum BorderStyle {
     Dotted,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     pub r: u8,
     pub g: u8,

@@ -158,4 +158,19 @@ impl Event {
     pub fn keyup(key_code: u32, character: Option<char>, modifiers: KeyModifiers) -> Self {
         Self::with_keyboard("keyup".to_string(), key_code, character, modifiers)
     }
+
+    /// Returns a copy of this event with its point shifted by `(dx, dy)`.
+    /// The hit-test walker uses this to translate the event point into a
+    /// child widget's local coordinate space before recursing. The
+    /// `callback` field (not cloneable) is dropped.
+    pub fn shift_point(&self, dx: f32, dy: f32) -> Event {
+        Self {
+            name: self.name.clone(),
+            point: self.point.as_ref().map(|p| Point::new(p.x() + dx, p.y() + dy)),
+            keyboard_data: self.keyboard_data.clone(),
+            callback: None,
+            value: self.value.clone(),
+            scroll_delta: self.scroll_delta,
+        }
+    }
 }

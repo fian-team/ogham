@@ -484,6 +484,56 @@ impl RenderContext for SkiaEnv {
     fn pop_clip_rect(&mut self) {
         self.surface.canvas().restore();
     }
+
+    fn push_effects(
+        &mut self,
+        opacity: f32,
+        transform: &crate::widget::style::Transform,
+        pivot_x: f32,
+        pivot_y: f32,
+    ) {
+        let clamped = opacity.clamp(0.0, 1.0);
+        // save_layer_alpha is an expensive offscreen composite — only use
+        // it when actually needed. A plain save suffices for identity
+        // opacity and lets us still push a matrix transform.
+        if clamped < 1.0 {
+            let alpha_u8 = (clamped * 255.0).round() as u8;
+            // Bounds=None lets Skia infer from subsequent draws.
+            self.surface
+                .canvas()
+                .save_layer_alpha(None, alpha_u8 as u32);
+        } else {
+            self.surface.canvas().save();
+        }
+
+        if !transform.is_identity() {
+            let spx = self.scale_coord(pivot_x);
+            let spy = self.scale_coord(pivot_y);
+            let tx = self.scale_coord(transform.translate_x);
+            let ty = self.scale_coord(transform.translate_y);
+
+            // Skia composes transforms with later calls closer to the
+            // drawing side. To get "rotate and scale around pivot, then
+            // translate by (tx, ty)" we emit, outer-first:
+            //   translate(tx, ty) -> translate(pivot) -> rotate/scale -> translate(-pivot)
+            let canvas = self.surface.canvas();
+            if tx != 0.0 || ty != 0.0 {
+                canvas.translate((tx, ty));
+            }
+            canvas.translate((spx, spy));
+            if transform.rotate != 0.0 {
+                canvas.rotate(transform.rotate, None);
+            }
+            if transform.scale_x != 1.0 || transform.scale_y != 1.0 {
+                canvas.scale((transform.scale_x, transform.scale_y));
+            }
+            canvas.translate((-spx, -spy));
+        }
+    }
+
+    fn pop_effects(&mut self) {
+        self.surface.canvas().restore();
+    }
 }
 
 impl Surface for SkiaEnv {
@@ -517,23 +567,66 @@ impl SkiaEnv {
         focused: Option<&WidgetRef>,
         image_cache: &mut ImageCache,
     ) {
+        use crate::widget::RenderContext;
+
         let is_focused = focused
             .map(|f| std::ptr::eq(Arc::as_ptr(f), Arc::as_ptr(widget_ref)))
             .unwrap_or(false);
 
         let widget = widget_ref.lock().expect("widget lock poisoned");
+        let effects = widget.render_effects();
+        drop(widget);
+
+        // Push opacity/transform BEFORE drawing the widget itself so
+        // background/border are affected, and pop AFTER children so the
+        // whole subtree composites under the effect.
+        if let Some(ref fx) = effects {
+            env.push_effects(fx.opacity, &fx.transform, fx.pivot_x, fx.pivot_y);
+        }
+
+        let widget = widget_ref.lock().expect("widget lock poisoned");
+        // render() runs with the canvas positioned at this widget's parent's
+        // coordinate origin, so the widget draws itself (and pushes any clip)
+        // in parent-relative coordinates.
         widget.render(env, is_focused, image_cache);
         let needs_post = widget.needs_post_render();
         let children = widget.get_children();
+        let child_origin = widget
+            .get_layout_rect()
+            .map(|r| (r.x, r.y))
+            .unwrap_or((0.0, 0.0));
+        let (scroll_x, scroll_y) = widget.scroll_offset();
         drop(widget);
+
+        // Step into this widget's own content coordinate space before
+        // rendering its children: translate by its origin (so the child's
+        // parent-relative layout.x/y becomes the right physical position)
+        // and subtract any scroll offset so descendants shift within the
+        // clipped viewport.
+        let tx = child_origin.0 - scroll_x;
+        let ty = child_origin.1 - scroll_y;
+        let needs_transform = tx != 0.0 || ty != 0.0;
+        if needs_transform {
+            env.save();
+            let dpi = env.dpi_scale;
+            env.translate(tx * dpi, ty * dpi);
+        }
 
         for child in &children {
             Self::draw_widget_recursive(env, child, focused, image_cache);
         }
 
+        if needs_transform {
+            env.surface.canvas().restore();
+        }
+
         if needs_post {
             let widget = widget_ref.lock().expect("widget lock poisoned");
             widget.post_render(env, image_cache);
+        }
+
+        if effects.is_some() {
+            env.pop_effects();
         }
     }
 }

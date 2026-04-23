@@ -16,8 +16,13 @@
 //! Despite shipping with Skia rendering supported by default, alternative solutions simply need to
 //! implement Surface for their own backend in order to work with the framework.
 
+/// Spring-driven style transitions.
+pub mod animation;
 /// Flexbox-like layout widget.
 pub mod flex_widget;
+/// Lifecycle-sequencing container that holds one generation of content
+/// at a time and waits for exits before mounting the next.
+pub mod presence_widget;
 /// Grid layout widget.
 pub mod grid_widget;
 pub mod image;
@@ -47,7 +52,7 @@ use crate::widget::{
     event::{Event, EventContext},
     image::ImageCache,
     point::Point,
-    style::{Border, Color, CornerRadii, Direction, TextStyle},
+    style::{Border, Color, CornerRadii, Direction, TextStyle, Transform},
 };
 
 /// Context passed through the layout tree during a layout pass.
@@ -210,11 +215,24 @@ impl UI {
             widget.fire_listeners("mouse_enter", &event);
         }
 
+        // Transform the point into this widget's own content coordinate
+        // space before recursing: subtract its origin and add any scroll
+        // offset, mirroring the canvas translate in the render walker.
+        let origin = widget
+            .get_layout_rect()
+            .map(|r| (r.x, r.y))
+            .unwrap_or((0.0, 0.0));
+        let (scroll_x, scroll_y) = widget.scroll_offset();
+        let child_point = Point::new(
+            point.x() - origin.0 + scroll_x,
+            point.y() - origin.1 + scroll_y,
+        );
+
         let children = widget.get_children_mut();
         drop(widget);
 
         for child in &children {
-            changed |= Self::update_hover_recursive(child, point);
+            changed |= Self::update_hover_recursive(child, &child_point);
         }
 
         changed
@@ -334,6 +352,26 @@ impl UI {
     pub fn get_focused(&self) -> Option<&WidgetRef> {
         self.focused.as_ref()
     }
+
+    /// Advance all active animations in the widget tree by `dt` seconds.
+    /// Called once per frame before `layout()`. Marks the UI dirty as
+    /// appropriate: layout-affecting transitions request a full layout
+    /// pass; color-only transitions only request a repaint.
+    pub fn tick_animations(&mut self, dt: f32) {
+        if dt <= 0.0 {
+            return;
+        }
+        let result = {
+            let mut root = self.root.lock().expect("widget lock poisoned");
+            root.tick_animations(dt)
+        };
+        if result.needs_layout {
+            self.needs_layout = true;
+            self.needs_repaint = true;
+        } else if result.needs_repaint {
+            self.needs_repaint = true;
+        }
+    }
 }
 
 /// The Surface trait must be implemented for a given renderer (such as Skia) to draw the widget tree to a bitmap.
@@ -390,10 +428,64 @@ pub trait RenderContext {
 
     /// Pop the most recently pushed clip rectangle.
     fn pop_clip_rect(&mut self) {}
+
+    /// Push a paint-time effect layer for a widget: opacity applied as
+    /// a layer composite, plus an affine transform pivoting around
+    /// `(pivot_x, pivot_y)`. Backends that don't support layered
+    /// compositing can skip the alpha. Paired with `pop_effects`.
+    fn push_effects(
+        &mut self,
+        _opacity: f32,
+        _transform: &Transform,
+        _pivot_x: f32,
+        _pivot_y: f32,
+    ) {
+    }
+
+    /// Pop the most recently pushed effects layer.
+    fn pop_effects(&mut self) {}
 }
 
 use downcast_rs::{impl_downcast, Downcast};
 use rect::Rect;
+
+/// Paint-time effects applied to a widget and its descendants: an
+/// opacity layer and an affine transform pivoting around `(pivot_x,
+/// pivot_y)`. Pure rendering concern — does not affect layout or
+/// hit-testing.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderEffects {
+    pub opacity: f32,
+    pub transform: Transform,
+    pub pivot_x: f32,
+    pub pivot_y: f32,
+}
+
+/// Result of a per-frame animation tick. Bubbled up the widget tree so
+/// the UI root can decide whether to mark layout dirty or trigger another
+/// tick next frame.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TickResult {
+    pub needs_repaint: bool,
+    pub needs_layout: bool,
+    pub still_animating: bool,
+}
+
+impl TickResult {
+    pub const NONE: Self = Self {
+        needs_repaint: false,
+        needs_layout: false,
+        still_animating: false,
+    };
+
+    pub fn merge(self, other: TickResult) -> TickResult {
+        TickResult {
+            needs_repaint: self.needs_repaint || other.needs_repaint,
+            needs_layout: self.needs_layout || other.needs_layout,
+            still_animating: self.still_animating || other.still_animating,
+        }
+    }
+}
 
 /// All widgets (boxes, text inputs, etc) must implement the Widget trait.
 /// Can be used to implement custom rendering systems (e.g. grid instead of
@@ -486,10 +578,55 @@ pub trait Widget: Downcast {
     }
 
     /// Get the layout rect for this widget (if it has been laid out).
+    /// Rects are stored in parent-relative coordinates.
     fn get_layout_rect(&self) -> Option<&Rect> { None }
 
-    /// Offset the widget's layout Y position (used for scroll offset).
-    fn set_layout_y(&mut self, _y: f32) {}
+    /// Scroll offset applied to descendants. The renderer translates the
+    /// canvas by `-(dx, dy)` and the hit-tester offsets the event point by
+    /// `+(dx, dy)` before recursing into this widget's children. Defaults
+    /// to `(0, 0)` — scrolling containers override.
+    fn scroll_offset(&self) -> (f32, f32) { (0.0, 0.0) }
+
+    /// Stable identity for this widget, used during reconciliation to
+    /// match children across frames even when they are inserted, removed,
+    /// or reordered in the declarative tree. Widgets without a key fall
+    /// back to position-based matching.
+    fn key(&self) -> Option<&str> { None }
+
+    /// Paint-time effects (opacity + transform) applied around this
+    /// widget and its descendants. Returns `None` when the widget has
+    /// no effects to push, saving a canvas save/restore. Widgets with
+    /// effects should resolve their pivot point (typically the widget's
+    /// own layout center) inside this method.
+    fn render_effects(&self) -> Option<RenderEffects> { None }
+
+    /// Whether this widget is currently playing an exit animation. Such
+    /// widgets are kept in their parent's `children` vec until the
+    /// animation completes, then dropped.
+    fn is_exiting(&self) -> bool { false }
+
+    /// Attempt to put this widget into the "exiting" lifecycle state.
+    /// Returns `true` if the widget accepts exiting (i.e. it has an
+    /// exit style and will animate out); returns `false` for widgets
+    /// that don't support exit animations or have nothing to animate
+    /// toward. The parent should drop widgets that return `false`.
+    fn begin_exit(&mut self) -> bool { false }
+
+    /// Cancel an in-flight exit so the widget re-enters normal life,
+    /// transitioning back toward its declared style. Called when a
+    /// matching key reappears in the declarative tree.
+    fn cancel_exit(&mut self) {}
+
+    /// True once a widget's exit animation has fully settled and it
+    /// is safe for the parent to remove. Non-exiting widgets should
+    /// return `false`.
+    fn is_exit_complete(&self) -> bool { false }
+
+    /// Advance any in-flight style transitions by `dt` seconds and
+    /// recursively tick children. Returns the merged tick result so the
+    /// UI root can flag the tree for repaint/layout when animations are
+    /// running. Default implementation is a no-op.
+    fn tick_animations(&mut self, _dt: f32) -> TickResult { TickResult::NONE }
 
     /// Returns true if this widget needs post_render called after children render.
     fn needs_post_render(&self) -> bool { false }

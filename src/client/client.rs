@@ -97,8 +97,10 @@ impl Client {
         self.ogham.get_ui().is_dirty() || self.ogham.get_runtime().lock().expect("runtime lock poisoned").needs_rerender()
     }
 
-    /// Update UI if dirty, then layout with the given dimensions
-    pub fn update_ui_layout(&mut self, width: f32, height: f32) {
+    /// Update UI if dirty, then layout with the given dimensions.
+    /// `dt` is the real elapsed time since the last frame, used to advance
+    /// any active style transitions before layout.
+    pub fn update_ui_layout(&mut self, width: f32, height: f32, dt: f32) {
         // Check if runtime needs a rerender due to state updates
         let needs_rerender = {
             let runtime = self.ogham.get_runtime();
@@ -136,6 +138,10 @@ impl Client {
             }
         }
 
+        // Advance any in-flight style transitions before laying out, so the
+        // layout pass observes the interpolated values.
+        self.ogham.get_ui_mut().tick_animations(dt);
+
         self.ogham.get_ui_mut().layout(width, height);
     }
 
@@ -170,8 +176,8 @@ impl ClientUI for Client {
         self.needs_ui_update()
     }
 
-    fn update_ui_layout(&mut self, width: f32, height: f32) {
-        self.update_ui_layout(width, height)
+    fn update_ui_layout(&mut self, width: f32, height: f32, dt: f32) {
+        self.update_ui_layout(width, height, dt)
     }
 
     fn get_ui_mut(&mut self) -> &mut UI {

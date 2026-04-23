@@ -128,8 +128,13 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                         .window
                         .inner_size()
                         .to_logical(self.window.scale_factor());
-                    self.client
-                        .update_ui_layout(logical_size.width as f32, logical_size.height as f32);
+                    // Event-driven layout (no per-frame delta). Transitions
+                    // advance on real frame ticks only.
+                    self.client.update_ui_layout(
+                        logical_size.width as f32,
+                        logical_size.height as f32,
+                        0.0,
+                    );
                 }
 
                 handled
@@ -242,6 +247,7 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                     self.client.update_ui_layout(
                         logical_size.width as f32,
                         logical_size.height as f32,
+                        0.0,
                     );
                 }
 
@@ -329,8 +335,11 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                     .window
                     .inner_size()
                     .to_logical(self.window.scale_factor());
-                self.client
-                    .update_ui_layout(logical_size.width as f32, logical_size.height as f32);
+                self.client.update_ui_layout(
+                    logical_size.width as f32,
+                    logical_size.height as f32,
+                    0.0,
+                );
 
                 self.gl_surface.resize(
                     &self.gl_context,
@@ -352,21 +361,29 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
         let expected_frame_length_seconds = 1.0 / 60.0;
         let frame_duration = Duration::from_secs_f32(expected_frame_length_seconds);
 
-        if frame_start - self.previous_frame_start > frame_duration {
+        let elapsed_since_last = frame_start.duration_since(self.previous_frame_start);
+        if elapsed_since_last > frame_duration {
             draw_frame = true;
-            self.previous_frame_start = frame_start;
         }
         if draw_frame {
-            let frame_length = frame_duration;
-            self.update_client(frame_length.as_secs_f32());
+            // Real wall-clock delta, clamped tightly so startup lag
+            // or a stalled window doesn't skip through UI animations.
+            let max_delta = Duration::from_millis(33);
+            let frame_length = elapsed_since_last.min(max_delta);
+            self.previous_frame_start = frame_start;
+            let dt = frame_length.as_secs_f32();
+            self.update_client(dt);
 
             {
                 let logical_size: LogicalSize<f64> = self
                     .window
                     .inner_size()
                     .to_logical(self.window.scale_factor());
-                self.client
-                    .update_ui_layout(logical_size.width as f32, logical_size.height as f32);
+                self.client.update_ui_layout(
+                    logical_size.width as f32,
+                    logical_size.height as f32,
+                    dt,
+                );
             }
 
             {
@@ -399,7 +416,7 @@ pub trait ClientUI {
     fn is_ui_dirty(&self) -> bool;
     /// True when the UI tree is dirty or the runtime needs a rerender (e.g. state changed).
     fn needs_ui_update(&self) -> bool;
-    fn update_ui_layout(&mut self, width: f32, height: f32);
+    fn update_ui_layout(&mut self, width: f32, height: f32, dt: f32);
     fn get_ui_mut(&mut self) -> &mut UI;
     fn render(&mut self, surface: &mut SkiaSurface);
 }
