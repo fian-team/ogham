@@ -15,8 +15,14 @@ pub struct TextInputWidget {
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
     pub style: FlexStyle,
     pub hover_style: Option<FlexStyle>,
+    /// Applied when the widget is the currently-focused input. Takes
+    /// precedence over hover when both apply — if a user is mousing over
+    /// their own focused field, focus wins since it's the more
+    /// load-bearing state.
+    pub focus_style: Option<FlexStyle>,
     pub text_style: TextStyle,
     pub hover_text_style: Option<TextStyle>,
+    pub focus_text_style: Option<TextStyle>,
     pub hovered: bool,
     pub layout: Option<Rect>,
 }
@@ -29,8 +35,10 @@ impl TextInputWidget {
             event_listeners: HashMap::new(),
             style: FlexStyle::default(),
             hover_style: None,
+            focus_style: None,
             text_style: TextStyle::default(),
             hover_text_style: None,
+            focus_text_style: None,
             hovered: false,
             layout: None,
         }
@@ -43,8 +51,10 @@ impl TextInputWidget {
             event_listeners: HashMap::new(),
             style,
             hover_style: None,
+            focus_style: None,
             text_style: TextStyle::default(),
             hover_text_style: None,
+            focus_text_style: None,
             hovered: false,
             layout: None,
         }
@@ -58,17 +68,24 @@ impl TextInputWidget {
             event_listeners: HashMap::new(),
             style: FlexStyle::default(),
             hover_style: None,
+            focus_style: None,
             text_style: TextStyle::default(),
             hover_text_style: None,
+            focus_text_style: None,
             hovered: false,
             layout: None,
         }
     }
 
-    /// Returns the flex style to use for rendering. When hovered and a
-    /// pre-merged `hover_style` is set, returns it; otherwise returns the
-    /// base style.
-    pub fn effective_style(&self) -> &FlexStyle {
+    /// Returns the flex style to use for rendering. Focus wins over hover
+    /// when both apply — a user hovering their own already-focused field
+    /// should still see the focus affordance, not just the hover.
+    pub fn effective_style(&self, focused: bool) -> &FlexStyle {
+        if focused {
+            if let Some(ref s) = self.focus_style {
+                return s;
+            }
+        }
         if self.hovered {
             if let Some(ref s) = self.hover_style {
                 return s;
@@ -77,10 +94,14 @@ impl TextInputWidget {
         &self.style
     }
 
-    /// Returns the text style to use for rendering. When hovered and a
-    /// pre-merged `hover_text_style` is set, returns it; otherwise returns
-    /// the base text style.
-    pub fn effective_text_style(&self) -> &TextStyle {
+    /// Returns the text style to use for rendering. Focus wins over hover
+    /// for the same reason `effective_style` does.
+    pub fn effective_text_style(&self, focused: bool) -> &TextStyle {
+        if focused {
+            if let Some(ref s) = self.focus_text_style {
+                return s;
+            }
+        }
         if self.hovered {
             if let Some(ref s) = self.hover_text_style {
                 return s;
@@ -139,8 +160,10 @@ impl Widget for TextInputWidget {
         if let Some(new_text_input_widget) = new_widget.downcast_mut::<TextInputWidget>() {
             self.style = new_text_input_widget.style.clone();
             self.hover_style = new_text_input_widget.hover_style.clone();
+            self.focus_style = new_text_input_widget.focus_style.clone();
             self.text_style = new_text_input_widget.text_style.clone();
             self.hover_text_style = new_text_input_widget.hover_text_style.clone();
+            self.focus_text_style = new_text_input_widget.focus_text_style.clone();
             self.layout = new_text_input_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
             std::mem::swap(
@@ -396,8 +419,8 @@ impl Widget for TextInputWidget {
         _image_cache: &mut crate::widget::image::ImageCache,
     ) {
         if let Some(layout) = &self.layout {
-            let style = self.effective_style();
-            let text_style = self.effective_text_style();
+            let style = self.effective_style(focused);
+            let text_style = self.effective_text_style(focused);
 
             let box_x = layout.x + style.margin.get_left();
             let box_y = layout.y + style.margin.get_top();

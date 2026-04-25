@@ -800,6 +800,18 @@ fn create_text_input_widget(
         text_input.hover_text_style = Some(hover_text_style);
     }
 
+    // `focus_style:` — applied while this input is the active focus
+    // target. Built off the base style so the author only has to spell
+    // the fields that change (typically the border).
+    if let Some(focus_map) = optional_map_property(descriptor, "focus_style") {
+        let mut focus_style = text_input.style.clone();
+        apply_flex_style_from_map(&mut focus_style, focus_map);
+        text_input.focus_style = Some(focus_style);
+        let mut focus_text_style = text_input.text_style.clone();
+        apply_text_style_from_map(&mut focus_text_style, focus_map);
+        text_input.focus_text_style = Some(focus_text_style);
+    }
+
     Ok(Arc::new(Mutex::new(text_input)))
 }
 

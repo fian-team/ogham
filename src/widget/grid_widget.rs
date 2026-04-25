@@ -281,6 +281,14 @@ impl Widget for GridWidget {
         self.layout.as_ref().is_some_and(|r| r.contains(point))
     }
 
+    /// The skia render walker uses this to translate the canvas into the
+    /// widget's own coordinate space before rendering its children.
+    /// Without it, Grid children (whose cell rects are grid-local) draw
+    /// against the parent's origin and stack at the top-left.
+    fn get_layout_rect(&self) -> Option<&Rect> {
+        self.layout.as_ref()
+    }
+
     fn render(
         &self,
         ctx: &mut dyn RenderContext,
