@@ -297,9 +297,11 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
             WindowEvent::MouseWheel { delta, .. } => {
                 match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                        // Convert line deltas to pixel deltas (typical line height is ~15 pixels)
-                        let pixel_delta_x = x * 15.0;
-                        let pixel_delta_y = y * 15.0;
+                        // Match common desktop conventions (~3 lines per notch
+                        // at ~16px line height = ~50px). The previous 15px was
+                        // a single-line value and made each notch barely move.
+                        let pixel_delta_x = x * 50.0;
+                        let pixel_delta_y = y * 50.0;
                         self.input
                             .set_scroll_delta(glm::vec2(pixel_delta_x, pixel_delta_y));
                     }

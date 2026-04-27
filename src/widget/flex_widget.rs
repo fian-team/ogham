@@ -43,7 +43,11 @@ pub struct FlexWidget {
     /// position in its parent's children list.
     pub key: Option<String>,
     /// Current vertical scroll offset (only used when overflow is Scroll).
+    /// Eased toward `scroll_y_target` each tick for smooth wheel scrolling.
     pub scroll_y: f32,
+    /// Where the rendered scroll position is animating toward. Wheel input
+    /// updates this; `tick_smooth_scroll` advances `scroll_y` toward it.
+    pub scroll_y_target: f32,
     /// Total content height (computed during layout).
     content_height: f32,
     /// Viewport height (computed during layout).
@@ -73,6 +77,7 @@ impl FlexWidget {
             layout: None,
             key: None,
             scroll_y: 0.0,
+            scroll_y_target: 0.0,
             content_height: 0.0,
             viewport_height: 0.0,
             animations: AnimationState::default(),
@@ -94,6 +99,7 @@ impl FlexWidget {
             layout: None,
             key: None,
             scroll_y: 0.0,
+            scroll_y_target: 0.0,
             content_height: 0.0,
             viewport_height: 0.0,
             animations: AnimationState::default(),
@@ -152,6 +158,33 @@ impl FlexWidget {
             // initial and declared are identical on all transition-
             // declared properties — nothing to animate.
             self.style = target;
+        }
+    }
+
+    /// Ease `scroll_y` toward `scroll_y_target` using framerate-independent
+    /// exponential decay. Returns a tick result that requests a repaint
+    /// while the offset is still moving so the animation keeps running.
+    fn tick_smooth_scroll(&mut self, dt: f32) -> TickResult {
+        if self.style.overflow != Overflow::Scroll {
+            return TickResult::NONE;
+        }
+        let delta = self.scroll_y_target - self.scroll_y;
+        if delta.abs() < 0.5 {
+            if self.scroll_y != self.scroll_y_target {
+                self.scroll_y = self.scroll_y_target;
+                return TickResult { needs_repaint: true, ..TickResult::NONE };
+            }
+            return TickResult::NONE;
+        }
+        // Decay constant: higher = snappier. ~18/s settles a wheel notch in
+        // roughly 150ms while still feeling smooth.
+        const SCROLL_DECAY: f32 = 18.0;
+        let alpha = 1.0 - (-dt * SCROLL_DECAY).exp();
+        self.scroll_y += delta * alpha;
+        TickResult {
+            needs_repaint: true,
+            needs_layout: false,
+            still_animating: true,
         }
     }
 
@@ -618,7 +651,8 @@ impl Widget for FlexWidget {
                 if let Some((_, dy)) = event.scroll_delta {
                     if self.style.overflow == Overflow::Scroll {
                         let max_scroll = (self.content_height - self.viewport_height).max(0.0);
-                        self.scroll_y = (self.scroll_y - dy).clamp(0.0, max_scroll);
+                        self.scroll_y_target =
+                            (self.scroll_y_target - dy).clamp(0.0, max_scroll);
                         return true;
                     }
                 }
@@ -961,6 +995,7 @@ impl Widget for FlexWidget {
             self.viewport_height = content_height;
 
             let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+            self.scroll_y_target = self.scroll_y_target.clamp(0.0, max_scroll);
             self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
         }
     }
@@ -1068,6 +1103,7 @@ impl Widget for FlexWidget {
 
     fn tick_animations(&mut self, dt: f32) -> TickResult {
         let mut result = self.tick_own_animations(dt);
+        result = result.merge(self.tick_smooth_scroll(dt));
         let children = self.children.clone();
         for child in &children {
             let child_result = {
