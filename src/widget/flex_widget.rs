@@ -558,6 +558,14 @@ impl Widget for FlexWidget {
             Size::Fixed(h) => h,
             Size::Shrink => {
                 let children_basis = self.get_children_basis();
+                // `width` is already resolved by this point — pass it
+                // (and self's own content width) down so children see the
+                // same width budget they will see during `layout`. Using
+                // the outer `parent_width` here was confusing wrap-aware
+                // height measurement: a 280-wide sidebar would hand its
+                // children the full window width and they would all
+                // measure as fitting on one line.
+                let self_content_width = (width - self.style.horizontal_inset()).max(0.0);
                 let get_dimensions = |child: &WidgetRef| {
                     let child = child.lock().expect("widget lock poisoned");
                     if child.is_absolute_positioned() {
@@ -566,7 +574,7 @@ impl Widget for FlexWidget {
                     let child_available_width = if self.style.direction.is_row() {
                         0.0
                     } else {
-                        parent_available_width
+                        self_content_width
                     };
                     let child_available_height = if !self.style.direction.is_row() {
                         0.0
@@ -576,13 +584,61 @@ impl Widget for FlexWidget {
                     child.get_dimensions(
                         ctx,
                         &self.style.direction,
-                        parent_width,
+                        width,
                         child_available_width,
                         parent_height,
                         child_available_height,
                         children_basis,
                     )
                 };
+
+                // For wrap-row containers the shrink height is the sum of
+                // each line's tallest child plus the gap between lines.
+                // We re-run the same wrap walk used by `layout` so the
+                // measurement matches. `width` is already resolved here so
+                // we can compute the line budget directly.
+                if self.style.flex_wrap && self.style.direction.is_row() {
+                    let line_main_max = (width - self.style.horizontal_inset()).max(0.0);
+                    let mut total: f32 = 0.0;
+                    let mut line_max_h: f32 = 0.0;
+                    let mut cursor: f32 = 0.0;
+                    let mut is_first = true;
+                    for child_ref in self.children.iter() {
+                        let is_absolute = {
+                            let child = child_ref.lock().expect("widget lock poisoned");
+                            child.is_absolute_positioned()
+                        };
+                        if is_absolute {
+                            continue;
+                        }
+                        let (cw, ch) = get_dimensions(child_ref);
+                        let projected = if is_first { cursor + cw } else { cursor + self.style.gap + cw };
+                        if !is_first && projected > line_main_max {
+                            total += line_max_h + self.style.gap;
+                            line_max_h = 0.0;
+                            cursor = 0.0;
+                            is_first = true;
+                        }
+                        if !is_first {
+                            cursor += self.style.gap;
+                        }
+                        cursor += cw;
+                        line_max_h = line_max_h.max(ch);
+                        is_first = false;
+                    }
+                    total += line_max_h;
+                    let unclamped = total + self.style.vertical_inset();
+                    let max_height = if parent_direction.is_row() {
+                        parent_height
+                    } else {
+                        parent_available_height
+                    };
+                    return (
+                        width,
+                        if max_height > 0.0 { unclamped.min(max_height) } else { unclamped },
+                    );
+                }
+
                 let child_size = if self.style.direction.is_row() {
                     self.style
                         .direction
@@ -668,26 +724,34 @@ impl Widget for FlexWidget {
                 };
                 let local_event = event.shift_point(-origin.0 + scroll_x, -origin.1 + scroll_y);
 
-                let mut event_handled = false;
+                let mut child_consumed = false;
 
-                // If it does, check children
+                // Walk children. A child returning `true` consumes the
+                // click for sibling-iteration purposes (so the next sibling
+                // doesn't also see it), but it does *not* by itself
+                // suppress this widget's own listener — that decision is
+                // made below using `ctx.listener_fired`, which tells us
+                // whether a real listener actually ran in the subtree as
+                // opposed to a layout-only Flex returning `true` purely
+                // because `block_interactions` is set.
                 for child_ref in self.children.iter() {
                     let mut child = child_ref.lock().expect("widget lock poisoned");
                     if child.handle_event(&local_event, ctx, child_ref) {
-                        event_handled = true;
-                        break; // Stop propagating once a child handles the event
+                        child_consumed = true;
+                        break;
                     }
                 }
 
-                // If no child handled the event, check if this widget has event listeners
-                if !event_handled && self.event_listeners.contains_key(&event.name) {
+                let mut my_fired = false;
+                if !ctx.listener_fired && self.event_listeners.contains_key(&event.name) {
                     for listener in self.event_listeners.get(&event.name).unwrap() {
                         listener(event);
                     }
-                    event_handled = true;
+                    my_fired = true;
+                    ctx.listener_fired = true;
                 }
 
-                return self.block_interactions || event_handled;
+                return self.block_interactions || child_consumed || my_fired;
             }
         } else {
             // For non-click events (like keyboard events), propagate to all children
@@ -798,6 +862,79 @@ impl Widget for FlexWidget {
                 ))
             })
             .collect();
+
+        // Wrap-aware row layout. Each child sits on the current line until
+        // the next would overflow the container's main-axis content width;
+        // then the cursor jumps to the start of a new line offset by the
+        // tallest child on the previous line. No flex grow distribution
+        // happens within a wrapped line — children keep their natural
+        // dimensions. Cross-axis (column) wrap is intentionally not
+        // supported; it isn't needed by any current caller.
+        if self.style.flex_wrap && self.style.direction.is_row() {
+            let inset_left = self.style.inset_left();
+            let inset_top = self.style.inset_top();
+            let mut cursor_x = inset_left;
+            let mut cursor_y = inset_top;
+            let mut line_max_height: f32 = 0.0;
+            let mut is_first_on_line = true;
+            let line_main_max = inset_left + content_width;
+
+            for (i, child_ref) in self.children.iter_mut().enumerate() {
+                let dims = match child_dims[i] {
+                    Some(d) => d,
+                    None => continue,
+                };
+                let projected = if is_first_on_line {
+                    cursor_x + dims.0
+                } else {
+                    cursor_x + self.style.gap + dims.0
+                };
+                if !is_first_on_line && projected > line_main_max {
+                    cursor_x = inset_left;
+                    cursor_y += line_max_height + self.style.gap;
+                    line_max_height = 0.0;
+                    is_first_on_line = true;
+                }
+                if !is_first_on_line {
+                    cursor_x += self.style.gap;
+                }
+                let mut child = child_ref.lock().expect("widget lock poisoned");
+                child.layout(
+                    ctx,
+                    cursor_x,
+                    cursor_y,
+                    &self.style.direction,
+                    content_width,
+                    available_width,
+                    content_height,
+                    available_height,
+                    children_basis,
+                );
+                cursor_x += dims.0;
+                line_max_height = line_max_height.max(dims.1);
+                is_first_on_line = false;
+            }
+
+            for child in self.children.iter_mut() {
+                let mut child = child.lock().expect("widget lock poisoned");
+                if let Some((offset_x, offset_y)) = child.get_absolute_offset() {
+                    let child_x = self.style.inset_left() + offset_x;
+                    let child_y = self.style.inset_top() + offset_y;
+                    child.layout(
+                        ctx,
+                        child_x,
+                        child_y,
+                        &self.style.direction,
+                        content_width,
+                        available_width,
+                        content_height,
+                        available_height,
+                        children_basis,
+                    );
+                }
+            }
+            return;
+        }
 
         // Calculate total size of children in main axis (excluding absolute positioned)
         let mut total_main_size = 0.0;

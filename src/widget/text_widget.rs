@@ -270,7 +270,7 @@ impl Widget for TextWidget {
     fn handle_event(
         &mut self,
         event: &Event,
-        _ctx: &mut EventContext,
+        ctx: &mut EventContext,
         _self_ref: &WidgetRef,
     ) -> bool {
         if let Some(point) = &event.point {
@@ -281,7 +281,7 @@ impl Widget for TextWidget {
                     for listener in listeners {
                         listener(event);
                     }
-                    println!("Event handled: {}", event.name);
+                    ctx.listener_fired = true;
                     return true; // Event was handled
                 }
             }

@@ -12,6 +12,12 @@ pub struct EventContext {
     focus_request: Option<Arc<Mutex<dyn Widget>>>,
     /// Currently focused widget (if any)
     pub focused_widget: Option<Arc<Mutex<dyn Widget>>>,
+    /// Set true by any widget that fires a pointer listener during the
+    /// current dispatch. Lets ancestors distinguish "a descendant fired a
+    /// real listener" from "a descendant returned `true` only because its
+    /// `block_interactions` was set". Reset by the dispatcher between
+    /// top-level events.
+    pub listener_fired: bool,
 }
 
 impl EventContext {
@@ -19,6 +25,7 @@ impl EventContext {
         Self {
             focus_request: None,
             focused_widget: None,
+            listener_fired: false,
         }
     }
 
@@ -27,6 +34,7 @@ impl EventContext {
         Self {
             focus_request: None,
             focused_widget,
+            listener_fired: false,
         }
     }
 

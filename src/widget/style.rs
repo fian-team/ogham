@@ -39,6 +39,10 @@ pub struct FlexStyle {
     pub direction: Direction,
     pub main_alignment: Alignment,
     pub cross_alignment: Alignment,
+    /// When `true`, row-direction children that exceed the container's
+    /// main-axis size wrap onto a new line. Only meaningful for row
+    /// directions; column wrap is not supported.
+    pub flex_wrap: bool,
     pub gap: f32,
     pub padding: Padding,
     pub margin: Margin,
@@ -130,6 +134,7 @@ impl Default for FlexStyle {
             direction: Direction::Row,
             main_alignment: Alignment::Start,
             cross_alignment: Alignment::Start,
+            flex_wrap: false,
             gap: 0.0,
             padding: Padding::identity(),
             margin: Margin::identity(),

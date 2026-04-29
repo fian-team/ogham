@@ -274,6 +274,7 @@ impl Widget for TextInputWidget {
                 if event.name == "mouse_up" {
                     self.cursor_position = self.value.len();
                     ctx.request_focus(self_ref.clone());
+                    ctx.listener_fired = true;
                     event_handled = true;
                 }
             }

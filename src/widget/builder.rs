@@ -263,6 +263,11 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     style.gap = g;
                 }
             }
+            "flex_wrap" => match value {
+                Value::String(s) => style.flex_wrap = s == "wrap",
+                Value::Boolean(b) => style.flex_wrap = *b,
+                _ => {}
+            },
             "padding" => {
                 if let Some(p) = parse_spacing_value(value) {
                     style.padding = p;
