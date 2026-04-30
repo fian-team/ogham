@@ -34,9 +34,14 @@ pub mod descriptor;
 /// Built-in prelude source that defines helper functions available in all modules.
 /// Compiled and executed once when the runtime is first created via
 /// `Runtime::from_source`/`Runtime::from_file`.
+///
+/// Function parameters require type annotations per `parse_function`, so the
+/// prelude declares each colour component as `int`. The annotations are
+/// hints only — the runtime never enforces them — so the same body still
+/// accepts the floats and ints callers pass.
 const PRELUDE_SOURCE: &str = r#"
-let rgb = fn (r, g, b) { { r: r, g: g, b: b, a: 255 } };
-let rgba = fn (r, g, b, a) { { r: r, g: g, b: b, a: a } };
+let rgb = fn (r: int, g: int, b: int) { { r: r, g: g, b: b, a: 255 } };
+let rgba = fn (r: int, g: int, b: int, a: int) { { r: r, g: g, b: b, a: a } };
 "#;
 
 /// Manages component state and the call stack used for state key generation.

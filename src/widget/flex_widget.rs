@@ -60,6 +60,12 @@ pub struct FlexWidget {
     /// stays in the parent's `children` list until its springs settle,
     /// then is dropped on the next reconcile pass.
     pub exiting: bool,
+    /// Debug-only: consecutive frames where this widget reported
+    /// `layout_effects && still_moving` from `tick_own_animations`.
+    /// Used to identify a stuck spring by emitting a single warning
+    /// after a threshold of frames.
+    #[cfg(debug_assertions)]
+    pub layout_anim_frames: u32,
 }
 
 impl FlexWidget {
@@ -82,6 +88,8 @@ impl FlexWidget {
             viewport_height: 0.0,
             animations: AnimationState::default(),
             exiting: false,
+            #[cfg(debug_assertions)]
+            layout_anim_frames: 0,
         }
     }
 
@@ -104,6 +112,8 @@ impl FlexWidget {
             viewport_height: 0.0,
             animations: AnimationState::default(),
             exiting: false,
+            #[cfg(debug_assertions)]
+            layout_anim_frames: 0,
         }
     }
 
@@ -210,6 +220,33 @@ impl FlexWidget {
         // any remaining entries are still moving.
         if self.animations.is_empty() {
             self.style = target;
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            if layout_effects && still_moving {
+                self.layout_anim_frames = self.layout_anim_frames.saturating_add(1);
+                if self.layout_anim_frames % 60 == 30 {
+                    eprintln!(
+                        "[ogham] layout-affecting spring stuck on widget key={:?} \
+                         exiting={} hovered={} \
+                         border={} padding={} margin={} corner_radius={} gap={} text_size={} \
+                         ({} frames)",
+                        self.key,
+                        self.exiting,
+                        self.hovered,
+                        self.animations.border.is_some(),
+                        self.animations.padding.is_some(),
+                        self.animations.margin.is_some(),
+                        self.animations.corner_radius.is_some(),
+                        self.animations.gap.is_some(),
+                        self.animations.text_size.is_some(),
+                        self.layout_anim_frames,
+                    );
+                }
+            } else {
+                self.layout_anim_frames = 0;
+            }
         }
 
         TickResult {

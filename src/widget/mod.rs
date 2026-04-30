@@ -98,6 +98,14 @@ pub struct UI {
     layout_count: u32,
     #[cfg(debug_assertions)]
     layout_window_start: Option<std::time::Instant>,
+    /// Debug-only: per-source breakdown of what dirtied the layout for
+    /// the warning print. Indices: 0=rerender, 1=event, 2=animation, 3=dims.
+    #[cfg(debug_assertions)]
+    dirty_sources: [u32; 4],
+    /// Debug-only: which source set `needs_layout = true` most recently.
+    /// Used to attribute the next `layout()` call to the right bucket.
+    #[cfg(debug_assertions)]
+    last_dirty_source: u8,
 }
 
 impl UI {
@@ -116,6 +124,10 @@ impl UI {
             layout_count: 0,
             #[cfg(debug_assertions)]
             layout_window_start: None,
+            #[cfg(debug_assertions)]
+            dirty_sources: [0; 4],
+            #[cfg(debug_assertions)]
+            last_dirty_source: 0,
         }
     }
 
@@ -245,6 +257,12 @@ impl UI {
         if !self.needs_layout && !dims_changed {
             return;
         }
+        #[cfg(debug_assertions)]
+        let attributed_source = if dims_changed && !self.needs_layout {
+            3 // dims-only
+        } else {
+            self.last_dirty_source as usize
+        };
         self.needs_layout = false;
         self.needs_repaint = false;
         self.last_layout_width = width;
@@ -255,15 +273,22 @@ impl UI {
             let now = std::time::Instant::now();
             let start = self.layout_window_start.get_or_insert(now);
             self.layout_count += 1;
+            self.dirty_sources[attributed_source.min(3)] += 1;
             if now.duration_since(*start).as_secs_f32() >= 1.0 {
                 if self.layout_count > 5 {
                     eprintln!(
                         "[ogham] WARNING: layout() called {} times in the last second \
+                         (rerender={}, event={}, anim={}, dims={}) \
                          — check for unnecessary dirty-marking",
                         self.layout_count,
+                        self.dirty_sources[0],
+                        self.dirty_sources[1],
+                        self.dirty_sources[2],
+                        self.dirty_sources[3],
                     );
                 }
                 self.layout_count = 0;
+                self.dirty_sources = [0; 4];
                 self.layout_window_start = Some(now);
             }
         }
@@ -321,6 +346,10 @@ impl UI {
     pub fn mark_needs_layout(&mut self) {
         self.needs_layout = true;
         self.needs_repaint = true;
+        #[cfg(debug_assertions)]
+        {
+            self.last_dirty_source = 0; // rerender (called from lib::update)
+        }
     }
 
     /// Mark the UI as needing a visual refresh only (e.g. hover state change).
@@ -329,9 +358,17 @@ impl UI {
         self.needs_repaint = true;
     }
 
-    /// Backward-compatible alias for [`mark_needs_layout`].
+    /// Backward-compatible alias for [`mark_needs_layout`].  Used by
+    /// `call_event` when an event handler reports `handled=true`, so we
+    /// attribute the resulting dirty-marking to "event" rather than the
+    /// rerender path.
     pub fn mark_dirty(&mut self) {
-        self.mark_needs_layout();
+        self.needs_layout = true;
+        self.needs_repaint = true;
+        #[cfg(debug_assertions)]
+        {
+            self.last_dirty_source = 1; // event
+        }
     }
 
     /// Whether a full layout pass is required.
@@ -368,6 +405,10 @@ impl UI {
         if result.needs_layout {
             self.needs_layout = true;
             self.needs_repaint = true;
+            #[cfg(debug_assertions)]
+            {
+                self.last_dirty_source = 2; // animation
+            }
         } else if result.needs_repaint {
             self.needs_repaint = true;
         }
