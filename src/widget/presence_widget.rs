@@ -20,7 +20,7 @@
 
 use super::flex_widget::FlexWidget;
 use super::style::{Direction, FlexStyle, Size};
-use super::{RenderEffects, TickResult, Widget, WidgetRef};
+use super::{RenderEffects, TickResult, UpdateResult, Widget, WidgetRef};
 use crate::widget::event::{Event, EventContext};
 use crate::widget::point::Point;
 use crate::widget::rect::Rect;
@@ -110,11 +110,11 @@ impl Default for PresenceWidget {
 }
 
 impl Widget for PresenceWidget {
-    fn update(&mut self, new_widget: WidgetRef) -> bool {
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget_guard = new_widget.lock().expect("widget lock poisoned");
         let new_presence = match new_widget_guard.downcast_mut::<PresenceWidget>() {
             Some(p) => p,
-            None => return false,
+            None => return UpdateResult::REPLACE,
         };
 
         let new_key = new_presence.generation_key.clone();
@@ -128,7 +128,7 @@ impl Widget for PresenceWidget {
             }
             let mut new_children = std::mem::take(&mut new_presence.inner.children);
             self.inner.reconcile_children(&mut new_children);
-            return true;
+            return UpdateResult::LAYOUT_CHANGED;
         }
 
         // Generation changed. If no transition is in flight yet, start
@@ -148,7 +148,7 @@ impl Widget for PresenceWidget {
             self.commit_pending();
         }
 
-        true
+        UpdateResult::LAYOUT_CHANGED
     }
 
     fn tick_animations(&mut self, dt: f32) -> TickResult {

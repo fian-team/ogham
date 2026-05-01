@@ -17,7 +17,7 @@ use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::style::*;
-use super::Widget;
+use super::{UpdateResult, Widget};
 
 struct TextLayoutCache {
     font_collection: FontCollection,
@@ -133,9 +133,16 @@ impl TextWidget {
 }
 
 impl Widget for TextWidget {
-    fn update(&mut self, new_widget: WidgetRef) -> bool {
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_text_widget) = new_widget.downcast_mut::<TextWidget>() {
+            // Text content is the dominant trigger for relayout (size/wrap
+            // depends on it). Style fields don't have PartialEq across the
+            // board, so we conservatively assume they changed if text
+            // changed — same outcome in the common HUD case (text update
+            // with stable style).
+            let text_changed = self.text != new_text_widget.text;
+
             self.text = new_text_widget.text.clone();
             self.style = new_text_widget.style.clone();
             self.hover_style = new_text_widget.hover_style.clone();
@@ -145,9 +152,14 @@ impl Widget for TextWidget {
                 &mut self.event_listeners,
                 &mut new_text_widget.event_listeners,
             );
-            true
+
+            UpdateResult {
+                absorbed: true,
+                needs_layout: text_changed,
+                needs_repaint: text_changed,
+            }
         } else {
-            false
+            UpdateResult::REPLACE
         }
     }
 

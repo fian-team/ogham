@@ -25,11 +25,14 @@ pub mod compiler;
 pub mod config;
 pub mod environment;
 pub mod error;
+pub mod host_state;
 pub mod opcode;
 pub mod ops;
 pub mod value;
 pub mod vm;
 pub mod descriptor;
+
+pub use host_state::{HostStateSink, HostStateSinkExt, IntoHostValue};
 
 /// Built-in prelude source that defines helper functions available in all modules.
 /// Compiled and executed once when the runtime is first created via
@@ -256,10 +259,32 @@ impl Runtime {
 
     /// Like `inject_host_state`, but only inserts the value when it differs
     /// from the currently stored value (avoiding unnecessary HashMap churn
-    /// on every frame when state hasn't changed).
+    /// on every frame when state hasn't changed). Triggers a rerender when
+    /// the value actually changed, matching the contract of
+    /// `inject_host_state_batch`.
     pub fn inject_host_state_if_changed(&mut self, name: String, value: Value) {
         if self.host_state.get(&name) != Some(&value) {
             self.host_state.insert(name, value);
+            self.request_rerender();
+        }
+    }
+
+    /// Push a single host-state binding using the [`IntoHostValue`] trait
+    /// to pick the right `Value` variant. Skips the insert and the rerender
+    /// when the new value equals the stored one, and avoids allocating a
+    /// `String` for the key on the no-change path. Prefer this over the
+    /// hand-rolled `inject_host_state_batch([...])` shape for binding sites
+    /// that build state from a Rust struct.
+    pub fn set_host_state(&mut self, name: &str, value: impl IntoHostValue) {
+        self.set_host_state_value(name, value.into_host_value());
+    }
+
+    /// `Value`-typed inner of [`set_host_state`]. Kept separate so the
+    /// [`HostStateSink`] trait can be object-safe.
+    pub(crate) fn set_host_state_value(&mut self, name: &str, value: Value) {
+        if self.host_state.get(name) != Some(&value) {
+            self.host_state.insert(name.to_string(), value);
+            self.request_rerender();
         }
     }
 

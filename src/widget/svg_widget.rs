@@ -8,7 +8,7 @@ use super::rect::*;
 use super::Widget;
 use crate::widget::event::EventContext;
 use crate::widget::style::{Color, Direction};
-use crate::widget::{LayoutContext, WidgetRef};
+use crate::widget::{LayoutContext, UpdateResult, WidgetRef};
 
 /// Widget for rendering SVG files.
 /// Loads the SVG at creation time. If the SVG file doesn't exist or fails to load,
@@ -177,7 +177,7 @@ impl SvgWidget {
 }
 
 impl Widget for SvgWidget {
-    fn update(&mut self, new_widget: WidgetRef) -> bool {
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_svg_widget) = new_widget.downcast_mut::<SvgWidget>() {
             // Update path and reload SVG if path or color changed
@@ -187,6 +187,8 @@ impl Widget for SvgWidget {
                 (Some(a), Some(b)) => a.r != b.r || a.g != b.g || a.b != b.b || a.a != b.a,
                 _ => true, // One is Some, one is None
             };
+            let dims_changed = self.width != new_svg_widget.width
+                || self.height != new_svg_widget.height;
 
             if path_changed || color_changed {
                 self.path = new_svg_widget.path.clone();
@@ -201,9 +203,13 @@ impl Widget for SvgWidget {
                 &mut self.event_listeners,
                 &mut new_svg_widget.event_listeners,
             );
-            true
+            UpdateResult {
+                absorbed: true,
+                needs_layout: dims_changed,
+                needs_repaint: dims_changed || path_changed || color_changed,
+            }
         } else {
-            false
+            UpdateResult::REPLACE
         }
     }
 

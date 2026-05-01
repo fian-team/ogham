@@ -325,8 +325,17 @@ impl Ogham {
         let widget_ref =
             widget::builder::widget_value_to_widget_ref(&registry, &self.runtime, &widget_value)?;
 
-        self.ui.reconcile(widget_ref);
-        self.ui.mark_needs_layout();
+        // Reconcile reports whether anything in the new tree actually
+        // differed from the cached widgets. When the module re-executes
+        // because of a host_state change but produces identical widget
+        // output, both flags are false and we skip the layout/repaint
+        // invalidation entirely — the previous frame's layout stays valid.
+        let result = self.ui.reconcile(widget_ref);
+        if result.needs_layout {
+            self.ui.mark_needs_layout();
+        } else if result.needs_repaint {
+            self.ui.mark_needs_repaint();
+        }
         Ok(true)
     }
 }

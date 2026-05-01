@@ -9,7 +9,7 @@ use super::style::*;
 use super::{TickResult, Widget};
 use crate::widget::event::EventContext;
 use crate::widget::style::Direction;
-use crate::widget::{LayoutContext, WidgetRef};
+use crate::widget::{LayoutContext, UpdateResult, WidgetRef};
 
 /// Flexbox-like layout widget. Supports rendering child elements in either a row or a column with styling applied to the surrounding box.
 ///
@@ -267,7 +267,15 @@ impl FlexWidget {
     /// without exit capability (e.g. no `exit_style`) are dropped
     /// immediately, matching the old behavior. Unkeyed children can't
     /// be ghosts (no identity to carry).
-    pub fn reconcile_children(&mut self, new_children: &mut Vec<WidgetRef>) {
+    /// Returns an [`UpdateResult`] aggregating across the new child set:
+    /// `needs_layout` is true if any child was added/removed/replaced or if
+    /// any matched child's `update()` reported layout-affecting changes.
+    pub fn reconcile_children(&mut self, new_children: &mut Vec<WidgetRef>) -> UpdateResult {
+        let mut agg = UpdateResult {
+            absorbed: true,
+            needs_layout: false,
+            needs_repaint: false,
+        };
         // Pre-pass: if a new child's key matches a currently-exiting
         // ghost, cancel the exit so the ghost re-enters normal matching.
         let new_key_set: std::collections::HashSet<String> = new_children
@@ -351,7 +359,9 @@ impl FlexWidget {
                             .expect("widget lock poisoned");
                         child.update(new_child.clone())
                     };
-                    if updated_in_place {
+                    agg.needs_layout |= updated_in_place.needs_layout;
+                    agg.needs_repaint |= updated_in_place.needs_repaint;
+                    if updated_in_place.absorbed {
                         next.push(self.children[idx].clone());
                     } else {
                         // Type mismatch: the old widget can't absorb the
@@ -359,6 +369,8 @@ impl FlexWidget {
                         // an exit animation before being dropped —
                         // otherwise the button rows inside a panel that
                         // just got swapped would vanish instantly.
+                        agg.needs_layout = true;
+                        agg.needs_repaint = true;
                         let can_ghost = {
                             let mut g = self.children[idx]
                                 .lock()
@@ -372,6 +384,10 @@ impl FlexWidget {
                     }
                 }
             } else {
+                // Brand-new keyed child or a fresh tail entry — structural
+                // change, layout has to re-flow.
+                agg.needs_layout = true;
+                agg.needs_repaint = true;
                 next.push(new_child.clone());
             }
         }
@@ -395,6 +411,9 @@ impl FlexWidget {
             };
             if !begin_ok {
                 // No exit capability and not already exiting — drop.
+                // Dropping a child shifts siblings, so layout needs to re-flow.
+                agg.needs_layout = true;
+                agg.needs_repaint = true;
                 continue;
             }
             let _ = is_exiting;
@@ -403,6 +422,7 @@ impl FlexWidget {
         }
 
         self.children = next;
+        agg
     }
 
     /// Drop any children whose exit animation has fully settled. Called
@@ -433,9 +453,24 @@ impl FlexWidget {
 }
 
 impl Widget for FlexWidget {
-    fn update(&mut self, new_widget: WidgetRef) -> bool {
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_flex_widget) = new_widget.downcast_mut::<FlexWidget>() {
+            // Compare own props before overwriting so we know whether to
+            // bubble a `needs_layout` signal up to our parent. Skips
+            // paint-only fields via `layout_equal`.
+            let style_changed = !self
+                .declared_style
+                .layout_equal(&new_flex_widget.declared_style);
+            let hover_changed = match (&self.hover_style, &new_flex_widget.hover_style) {
+                (None, None) => false,
+                (Some(a), Some(b)) => !a.layout_equal(b),
+                _ => true,
+            };
+            let block_changed = self.block_interactions != new_flex_widget.block_interactions;
+            let key_changed = self.key != new_flex_widget.key;
+            let own_layout_changed = style_changed || hover_changed || block_changed || key_changed;
+
             // Snapshot the current rendered style — this is what the user
             // last saw on screen, including any mid-animation values — so
             // transitions seed from there rather than from the old target.
@@ -471,11 +506,15 @@ impl Widget for FlexWidget {
                 self.style = new_target;
             }
 
-            self.reconcile_children(&mut new_flex_widget.children);
+            let children_result = self.reconcile_children(&mut new_flex_widget.children);
 
-            true
+            UpdateResult {
+                absorbed: true,
+                needs_layout: own_layout_changed || children_result.needs_layout,
+                needs_repaint: own_layout_changed || children_result.needs_repaint,
+            }
         } else {
-            false
+            UpdateResult::REPLACE
         }
     }
 
@@ -1585,8 +1624,8 @@ mod tests {
             self.layout = Some(Rect::new(cursor_x, cursor_y, self.width, self.height));
         }
 
-        fn update(&mut self, _new_widget: WidgetRef) -> bool {
-            false
+        fn update(&mut self, _new_widget: WidgetRef) -> UpdateResult {
+            UpdateResult::REPLACE
         }
 
         fn contains_point(&self, _point: &Point) -> bool {

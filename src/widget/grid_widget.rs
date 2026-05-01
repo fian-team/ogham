@@ -7,7 +7,7 @@ use super::Widget;
 use crate::widget::event::EventContext;
 use crate::widget::image::ImageCache;
 use crate::widget::style::{Color, CornerRadii, Direction, Spacing};
-use crate::widget::{LayoutContext, RenderContext, WidgetRef};
+use crate::widget::{LayoutContext, RenderContext, UpdateResult, WidgetRef};
 
 /// Grid placement metadata for a child within a GridWidget.
 #[derive(Debug, Clone)]
@@ -228,7 +228,7 @@ impl Widget for GridWidget {
         }
     }
 
-    fn update(&mut self, new_widget: WidgetRef) -> bool {
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_grid) = new_widget.downcast_mut::<GridWidget>() {
             self.style = new_grid.style.clone();
@@ -243,7 +243,7 @@ impl Widget for GridWidget {
                 if i < old_iter.len() {
                     let (_, old_child) = &old_iter[i];
                     let mut old = old_child.lock().expect("widget lock poisoned");
-                    if old.update(new_child) {
+                    if old.update(new_child).absorbed {
                         drop(old);
                         result.push((placement, old_iter[i].1.clone()));
                     } else {
@@ -255,9 +255,9 @@ impl Widget for GridWidget {
                 }
             }
             self.children = result;
-            true
+            UpdateResult::LAYOUT_CHANGED
         } else {
-            false
+            UpdateResult::REPLACE
         }
     }
 

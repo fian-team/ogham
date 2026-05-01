@@ -7,7 +7,7 @@ use super::style::*;
 use super::Widget;
 use crate::widget::event::EventContext;
 use crate::widget::style::Direction;
-use crate::widget::{LayoutContext, WidgetRef};
+use crate::widget::{LayoutContext, UpdateResult, WidgetRef};
 
 pub struct TextInputWidget {
     pub value: String,
@@ -155,9 +155,10 @@ impl TextInputWidget {
 }
 
 impl Widget for TextInputWidget {
-    fn update(&mut self, new_widget: WidgetRef) -> bool {
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_text_input_widget) = new_widget.downcast_mut::<TextInputWidget>() {
+            let style_changed = !self.style.layout_equal(&new_text_input_widget.style);
             self.style = new_text_input_widget.style.clone();
             self.hover_style = new_text_input_widget.hover_style.clone();
             self.focus_style = new_text_input_widget.focus_style.clone();
@@ -178,9 +179,14 @@ impl Widget for TextInputWidget {
             } else {
                 self.value.len()
             };
-            true
+            let value_changed = !value_unchanged;
+            UpdateResult {
+                absorbed: true,
+                needs_layout: style_changed || value_changed,
+                needs_repaint: style_changed || value_changed,
+            }
         } else {
-            false
+            UpdateResult::REPLACE
         }
     }
 

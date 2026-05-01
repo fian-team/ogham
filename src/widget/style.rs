@@ -188,6 +188,30 @@ impl FlexStyle {
         self.inset_top() + self.inset_bottom()
     }
 
+    /// Compare only the fields that affect layout — skipping paint-only
+    /// fields (`opacity`, `transform`, `*_color`, `background_image`),
+    /// `corner_radii` (visual rounding doesn't change box dimensions), and
+    /// `transitions` (which doesn't impl `PartialEq` and gates how
+    /// animations interpolate, not what the layout pass produces).
+    ///
+    /// Used by [`FlexWidget::update`] to decide whether to bubble a
+    /// `needs_layout` signal up the tree on reconcile.
+    pub fn layout_equal(&self, other: &Self) -> bool {
+        self.position == other.position
+            && self.width == other.width
+            && self.height == other.height
+            && self.direction == other.direction
+            && self.main_alignment == other.main_alignment
+            && self.cross_alignment == other.cross_alignment
+            && self.flex_wrap == other.flex_wrap
+            && self.gap == other.gap
+            && self.padding == other.padding
+            && self.margin == other.margin
+            && self.border == other.border
+            && self.text_size == other.text_size
+            && self.overflow == other.overflow
+    }
+
     /// Returns the size along the given axis.
     pub fn size_on_axis(&self, axis: Axis) -> &Size {
         match axis {
@@ -324,7 +348,7 @@ impl Default for FlexStyleBuilder {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum Position {
     #[default]
     Static,
@@ -332,7 +356,7 @@ pub enum Position {
     Absolute(f32, f32),
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum Size {
     Grow(f32),
     #[default]
@@ -565,7 +589,7 @@ impl Direction {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum Alignment {
     #[default]
     Start,
@@ -616,7 +640,7 @@ impl Alignment {
 }
 
 /// Generic four-sided spacing (used for both padding and margin).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Spacing {
     pub top: f32,
     pub right: f32,
@@ -702,7 +726,7 @@ impl Spacing {
 pub type Padding = Spacing;
 pub type Margin = Spacing;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Border {
     pub top: BorderSide,
     pub right: BorderSide,
@@ -767,7 +791,7 @@ impl Border {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct BorderSide {
     pub width: f32,
     pub color: Color,
@@ -792,7 +816,7 @@ impl BorderSide {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct CornerRadii {
     pub top_left: f32,
     pub top_right: f32,
@@ -838,7 +862,7 @@ impl CornerRadii {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum BorderStyle {
     #[default]
     Solid,

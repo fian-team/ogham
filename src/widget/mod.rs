@@ -318,18 +318,20 @@ impl UI {
     /// hierarchy or are of incompatible types) will be replaced along with
     /// all of their descendants.
     ///
-    /// Does **not** trigger a layout pass. Call `layout()` separately after
-    /// reconciliation when you are ready to recompute element bounds.
-    pub fn reconcile(&mut self, new_root: WidgetRef) {
-        {
+    /// Returns an [`UpdateResult`] aggregating across the tree — the caller
+    /// uses `needs_layout` / `needs_repaint` to decide whether to invalidate
+    /// the layout cache. Does **not** itself trigger a layout pass.
+    pub fn reconcile(&mut self, new_root: WidgetRef) -> UpdateResult {
+        let result = {
             // Check if the root references are the same Arc to avoid deadlock
             if Arc::ptr_eq(&self.root, &new_root) {
-                // Same widget reference, skip reconciliation to avoid deadlock
+                // Same widget reference: nothing to reconcile.
+                UpdateResult::UNCHANGED
             } else {
                 let mut root = self.root.lock().expect("widget lock poisoned");
-                root.update(new_root);
+                root.update(new_root)
             }
-        }
+        };
         if let Some(focused_widget) = self.focused.as_ref() {
             let focused_ref_count = Arc::strong_count(focused_widget);
             // If there's only one reference to the focused widget, it must have
@@ -339,6 +341,7 @@ impl UI {
                 self.focused = None;
             }
         }
+        result
     }
 
     /// Mark the UI as needing a full layout pass (structural / content change).
@@ -528,6 +531,62 @@ impl TickResult {
     }
 }
 
+/// Result of reconciling one widget against a new descriptor. Bubbled up
+/// the widget tree by `reconcile()` / `reconcile_children()` so the UI
+/// root can decide whether to mark layout dirty — host_state changes that
+/// produce identical widget output should NOT trigger a relayout.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UpdateResult {
+    /// True if the new widget's type matched the old widget's type, so
+    /// props were copied in place rather than the old widget being
+    /// replaced. False means the caller (`reconcile_children`) should
+    /// swap the old WidgetRef out for the new one.
+    pub absorbed: bool,
+    /// True if any prop that affects layout (size, content, children) is
+    /// different from the cached value. The UI relayouts the whole tree
+    /// when this bubbles up — a future change can localise this further.
+    pub needs_layout: bool,
+    /// True if a render-only prop (color, opacity) changed. Implies a
+    /// repaint without a relayout.
+    pub needs_repaint: bool,
+}
+
+impl UpdateResult {
+    /// Type mismatch: the old widget could not absorb the new one, so the
+    /// caller will replace it. A replacement always implies relayout +
+    /// repaint of the affected subtree.
+    pub const REPLACE: Self = Self {
+        absorbed: false,
+        needs_layout: true,
+        needs_repaint: true,
+    };
+
+    /// Type matched and every prop was identical: no work needed.
+    pub const UNCHANGED: Self = Self {
+        absorbed: true,
+        needs_layout: false,
+        needs_repaint: false,
+    };
+
+    /// Type matched but layout-affecting props differ.
+    pub const LAYOUT_CHANGED: Self = Self {
+        absorbed: true,
+        needs_layout: true,
+        needs_repaint: true,
+    };
+
+    /// Aggregate two results. `absorbed` from `self` is preserved (it
+    /// describes the parent widget's own absorption); the `needs_*` flags
+    /// are unioned (any descendant change bubbles up).
+    pub fn merge(self, other: UpdateResult) -> UpdateResult {
+        UpdateResult {
+            absorbed: self.absorbed,
+            needs_layout: self.needs_layout || other.needs_layout,
+            needs_repaint: self.needs_repaint || other.needs_repaint,
+        }
+    }
+}
+
 /// All widgets (boxes, text inputs, etc) must implement the Widget trait.
 /// Can be used to implement custom rendering systems (e.g. grid instead of
 /// flexbox).
@@ -570,9 +629,10 @@ pub trait Widget: Downcast {
     );
     /// Accepts a reference to a widget. If the widget is of the same type,
     /// the current widget will be updated in place. Otherwise, the current
-    /// widget will be replaced along with all of its descendants. Returns
-    /// true if the widget was successfully updated.
-    fn update(&mut self, new_widget: WidgetRef) -> bool;
+    /// widget will be replaced along with all of its descendants. The
+    /// returned [`UpdateResult`] reports whether the new widget was
+    /// absorbed and whether layout-affecting props actually differed.
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult;
     fn contains_point(&self, point: &Point) -> bool;
     // fn is_focused(&self) -> bool;
     // fn focus(&mut self);

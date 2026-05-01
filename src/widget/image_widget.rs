@@ -7,7 +7,7 @@ use super::Widget;
 use crate::widget::event::EventContext;
 use crate::widget::image::ImageCache;
 use crate::widget::style::Direction;
-use crate::widget::{LayoutContext, RenderContext, WidgetRef};
+use crate::widget::{LayoutContext, RenderContext, UpdateResult, WidgetRef};
 
 /// Widget for rendering raster images (PNG).
 /// Uses the shared `ImageCache` to avoid reloading images every frame.
@@ -108,17 +108,23 @@ impl Widget for ImageWidget {
         self.layout = Some(Rect::new(cursor_x, cursor_y, self.width, self.height));
     }
 
-    fn update(&mut self, new_widget: WidgetRef) -> bool {
+    fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_image) = new_widget.downcast_mut::<ImageWidget>() {
+            let dims_changed = self.width != new_image.width || self.height != new_image.height;
+            let path_changed = self.path != new_image.path;
             self.path = new_image.path.clone();
             self.width = new_image.width;
             self.height = new_image.height;
             self.layout = new_image.layout.clone();
             std::mem::swap(&mut self.event_listeners, &mut new_image.event_listeners);
-            true
+            UpdateResult {
+                absorbed: true,
+                needs_layout: dims_changed,
+                needs_repaint: dims_changed || path_changed,
+            }
         } else {
-            false
+            UpdateResult::REPLACE
         }
     }
 
