@@ -483,7 +483,6 @@ impl Widget for FlexWidget {
             self.initial_style = new_flex_widget.initial_style.clone();
             self.exit_style = new_flex_widget.exit_style.clone();
             self.block_interactions = new_flex_widget.block_interactions;
-            self.layout = new_flex_widget.layout.clone();
             self.key = new_flex_widget.key.clone();
             std::mem::swap(
                 &mut self.event_listeners,
@@ -916,24 +915,98 @@ impl Widget for FlexWidget {
 
         self.layout = Some(Rect::new(cursor_x, cursor_y, width, height));
 
+        // Per-child grow basis along the parent's main axis. Zero for any
+        // child whose main-axis size is not Grow (Fixed, Shrink, Percent,
+        // or absolute-positioned).
+        let child_main_basis: Vec<f32> = self
+            .children
+            .iter()
+            .map(|child| {
+                let child = child.lock().expect("widget lock poisoned");
+                if child.is_absolute_positioned() {
+                    return 0.0;
+                }
+                child.get_basis(&self.style.direction)
+            })
+            .collect();
+
+        // Pre-pass: measure Shrink siblings on the main axis so we can
+        // subtract their natural size from the pool we hand to Grow
+        // siblings. Without this, a Grow child takes the full
+        // `available_main` and pushes Shrink siblings past the parent's
+        // edge. Fixed-size children are already excluded via
+        // `get_children_fixed_*()` so we skip them here.
+        let mut shrink_main_total: f32 = 0.0;
+        for (i, child_ref) in self.children.iter().enumerate() {
+            let child = child_ref.lock().expect("widget lock poisoned");
+            if child.is_absolute_positioned() {
+                continue;
+            }
+            if child_main_basis[i] > 0.0 {
+                continue;
+            }
+            let main_is_fixed = if self.style.direction.is_row() {
+                child.get_fixed_width().is_some()
+            } else {
+                child.get_fixed_height().is_some()
+            };
+            if main_is_fixed {
+                continue;
+            }
+            let dims = child.get_dimensions(
+                ctx,
+                &self.style.direction,
+                content_width,
+                available_width,
+                content_height,
+                available_height,
+                children_basis,
+            );
+            shrink_main_total += if self.style.direction.is_row() {
+                dims.0
+            } else {
+                dims.1
+            };
+        }
+
+        // Pool that Grow children divide among themselves. Non-grow
+        // children still see the full `available_*` so their Shrink-clamp
+        // upper bound matches their pre-pass measurement.
+        let available_width_for_grow = if self.style.direction.is_row() {
+            (available_width - shrink_main_total).max(0.0)
+        } else {
+            available_width
+        };
+        let available_height_for_grow = if !self.style.direction.is_row() {
+            (available_height - shrink_main_total).max(0.0)
+        } else {
+            available_height
+        };
+
         // Compute dimensions for every child once and cache the results.
         // Absolute-positioned children get None so they are skipped in the
         // normal-flow calculations below.
         let child_dims: Vec<Option<(f32, f32)>> = self
             .children
             .iter()
-            .map(|child| {
+            .enumerate()
+            .map(|(i, child)| {
                 let child = child.lock().expect("widget lock poisoned");
                 if child.is_absolute_positioned() {
                     return None;
                 }
+                let (avail_w, avail_h) = if child_main_basis[i] > 0.0 {
+                    (available_width_for_grow, available_height_for_grow)
+                } else {
+                    (available_width, available_height)
+                };
                 Some(child.get_dimensions(
                     ctx,
                     &self.style.direction,
                     content_width,
-                    available_width,
+                    avail_w,
                     content_height,
-                    available_height,
+                    avail_h,
                     children_basis,
                 ))
             })
@@ -974,6 +1047,11 @@ impl Widget for FlexWidget {
                 if !is_first_on_line {
                     cursor_x += self.style.gap;
                 }
+                let (avail_w, avail_h) = if child_main_basis[i] > 0.0 {
+                    (available_width_for_grow, available_height_for_grow)
+                } else {
+                    (available_width, available_height)
+                };
                 let mut child = child_ref.lock().expect("widget lock poisoned");
                 child.layout(
                     ctx,
@@ -981,9 +1059,9 @@ impl Widget for FlexWidget {
                     cursor_y,
                     &self.style.direction,
                     content_width,
-                    available_width,
+                    avail_w,
                     content_height,
-                    available_height,
+                    avail_h,
                     children_basis,
                 );
                 cursor_x += dims.0;
@@ -1127,15 +1205,20 @@ impl Widget for FlexWidget {
                 }
             }
 
+            let (avail_w, avail_h) = if child_main_basis[i] > 0.0 {
+                (available_width_for_grow, available_height_for_grow)
+            } else {
+                (available_width, available_height)
+            };
             child.layout(
                 ctx,
                 child_x,
                 child_y,
                 &self.style.direction,
                 content_width,
-                available_width,
+                avail_w,
                 content_height,
-                available_height,
+                avail_h,
                 children_basis,
             );
 
@@ -2019,6 +2102,268 @@ mod tests {
             "Shrink child height ({}) should be clamped to parent height ({})",
             shrink_height,
             parent_height
+        );
+    }
+
+    #[test]
+    fn test_grow_respects_shrink_sibling_width() {
+        let ctx = test_ctx();
+        // Row parent containing [Grow, Shrink]. The Grow child must leave
+        // room for the Shrink sibling so the Shrink stays inside the
+        // parent's right edge.
+        let parent_width = 300.0;
+        let parent_height = 100.0;
+        let shrink_inner_width = 80.0;
+
+        let mut shrink_child = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Shrink)
+                .height(Size::Fixed(parent_height))
+                .direction(Direction::Row)
+                .build(),
+        );
+        shrink_child.add_child(Arc::new(Mutex::new(TestWidget::new(
+            shrink_inner_width,
+            parent_height,
+        ))));
+
+        let grow_child = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Grow(1.0))
+                .height(Size::Fixed(parent_height))
+                .direction(Direction::Row)
+                .build(),
+        );
+
+        let mut parent = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(parent_width))
+                .height(Size::Fixed(parent_height))
+                .direction(Direction::Row)
+                .build(),
+        );
+        parent.add_child(Arc::new(Mutex::new(grow_child)));
+        parent.add_child(Arc::new(Mutex::new(shrink_child)));
+
+        let parent_ref = Arc::new(Mutex::new(parent));
+        {
+            let mut p = parent_ref.lock().expect("widget lock poisoned");
+            p.layout(
+                &ctx,
+                0.0,
+                0.0,
+                &Direction::Row,
+                parent_width,
+                parent_width,
+                parent_height,
+                parent_height,
+                0.0,
+            );
+        }
+
+        let p = parent_ref.lock().expect("widget lock poisoned");
+        let grow_layout = p.children[0]
+            .lock()
+            .expect("widget lock poisoned")
+            .get_layout_rect()
+            .cloned()
+            .expect("grow child laid out");
+        let shrink_layout = p.children[1]
+            .lock()
+            .expect("widget lock poisoned")
+            .get_layout_rect()
+            .cloned()
+            .expect("shrink child laid out");
+
+        let expected_grow_width = parent_width - shrink_inner_width;
+        assert!(
+            (grow_layout.width - expected_grow_width).abs() < 0.001,
+            "Grow child width should be {} but was {}",
+            expected_grow_width,
+            grow_layout.width,
+        );
+        assert!(
+            (shrink_layout.width - shrink_inner_width).abs() < 0.001,
+            "Shrink child width should be {} but was {}",
+            shrink_inner_width,
+            shrink_layout.width,
+        );
+        let shrink_right = shrink_layout.x + shrink_layout.width;
+        assert!(
+            shrink_right <= parent_width + 0.001,
+            "Shrink sibling overflowed parent. shrink_right={}, parent_width={}",
+            shrink_right,
+            parent_width,
+        );
+    }
+
+    #[test]
+    fn test_grow_respects_shrink_sibling_height() {
+        let ctx = test_ctx();
+        // Column parent containing [Grow, Shrink]. Same invariant on the
+        // vertical axis.
+        let parent_width = 100.0;
+        let parent_height = 300.0;
+        let shrink_inner_height = 80.0;
+
+        let mut shrink_child = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(parent_width))
+                .height(Size::Shrink)
+                .direction(Direction::Column)
+                .build(),
+        );
+        shrink_child.add_child(Arc::new(Mutex::new(TestWidget::new(
+            parent_width,
+            shrink_inner_height,
+        ))));
+
+        let grow_child = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(parent_width))
+                .height(Size::Grow(1.0))
+                .direction(Direction::Column)
+                .build(),
+        );
+
+        let mut parent = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(parent_width))
+                .height(Size::Fixed(parent_height))
+                .direction(Direction::Column)
+                .build(),
+        );
+        parent.add_child(Arc::new(Mutex::new(grow_child)));
+        parent.add_child(Arc::new(Mutex::new(shrink_child)));
+
+        let parent_ref = Arc::new(Mutex::new(parent));
+        {
+            let mut p = parent_ref.lock().expect("widget lock poisoned");
+            p.layout(
+                &ctx,
+                0.0,
+                0.0,
+                &Direction::Column,
+                parent_width,
+                parent_width,
+                parent_height,
+                parent_height,
+                0.0,
+            );
+        }
+
+        let p = parent_ref.lock().expect("widget lock poisoned");
+        let grow_layout = p.children[0]
+            .lock()
+            .expect("widget lock poisoned")
+            .get_layout_rect()
+            .cloned()
+            .expect("grow child laid out");
+        let shrink_layout = p.children[1]
+            .lock()
+            .expect("widget lock poisoned")
+            .get_layout_rect()
+            .cloned()
+            .expect("shrink child laid out");
+
+        let expected_grow_height = parent_height - shrink_inner_height;
+        assert!(
+            (grow_layout.height - expected_grow_height).abs() < 0.001,
+            "Grow child height should be {} but was {}",
+            expected_grow_height,
+            grow_layout.height,
+        );
+        assert!(
+            (shrink_layout.height - shrink_inner_height).abs() < 0.001,
+            "Shrink child height should be {} but was {}",
+            shrink_inner_height,
+            shrink_layout.height,
+        );
+        let shrink_bottom = shrink_layout.y + shrink_layout.height;
+        assert!(
+            shrink_bottom <= parent_height + 0.001,
+            "Shrink sibling overflowed parent. shrink_bottom={}, parent_height={}",
+            shrink_bottom,
+            parent_height,
+        );
+    }
+
+    #[test]
+    fn test_grow_respects_shrink_with_fixed_and_gap() {
+        let ctx = test_ctx();
+        // [Fixed, Grow, Shrink] in a row with a gap. The Grow sibling
+        // must leave room for both the fixed and shrink children plus
+        // gaps.
+        let parent_width = 400.0;
+        let parent_height = 100.0;
+        let fixed_width = 60.0;
+        let shrink_inner_width = 90.0;
+        let gap = 10.0;
+
+        let mut shrink_child = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Shrink)
+                .height(Size::Fixed(parent_height))
+                .direction(Direction::Row)
+                .build(),
+        );
+        shrink_child.add_child(Arc::new(Mutex::new(TestWidget::new(
+            shrink_inner_width,
+            parent_height,
+        ))));
+
+        let mut parent = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(parent_width))
+                .height(Size::Fixed(parent_height))
+                .gap(gap)
+                .direction(Direction::Row)
+                .build(),
+        );
+        parent.add_child(Arc::new(Mutex::new(TestWidget::new(
+            fixed_width,
+            parent_height,
+        ))));
+        parent.add_child(Arc::new(Mutex::new(FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Grow(1.0))
+                .height(Size::Fixed(parent_height))
+                .direction(Direction::Row)
+                .build(),
+        ))));
+        parent.add_child(Arc::new(Mutex::new(shrink_child)));
+
+        let parent_ref = Arc::new(Mutex::new(parent));
+        {
+            let mut p = parent_ref.lock().expect("widget lock poisoned");
+            p.layout(
+                &ctx,
+                0.0,
+                0.0,
+                &Direction::Row,
+                parent_width,
+                parent_width,
+                parent_height,
+                parent_height,
+                0.0,
+            );
+        }
+
+        let p = parent_ref.lock().expect("widget lock poisoned");
+        let grow_layout = p.children[1]
+            .lock()
+            .expect("widget lock poisoned")
+            .get_layout_rect()
+            .cloned()
+            .expect("grow child laid out");
+
+        // Available pool = parent - fixed - 2 gaps. Shrink takes 90 of it.
+        let expected_grow_width = parent_width - fixed_width - shrink_inner_width - 2.0 * gap;
+        assert!(
+            (grow_layout.width - expected_grow_width).abs() < 0.001,
+            "Grow child width should be {} but was {}",
+            expected_grow_width,
+            grow_layout.width,
         );
     }
 

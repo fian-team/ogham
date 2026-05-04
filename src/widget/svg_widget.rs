@@ -197,7 +197,6 @@ impl Widget for SvgWidget {
             }
             self.width = new_svg_widget.width;
             self.height = new_svg_widget.height;
-            self.layout = new_svg_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
             std::mem::swap(
                 &mut self.event_listeners,

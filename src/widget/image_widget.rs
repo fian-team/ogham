@@ -116,7 +116,6 @@ impl Widget for ImageWidget {
             self.path = new_image.path.clone();
             self.width = new_image.width;
             self.height = new_image.height;
-            self.layout = new_image.layout.clone();
             std::mem::swap(&mut self.event_listeners, &mut new_image.event_listeners);
             UpdateResult {
                 absorbed: true,

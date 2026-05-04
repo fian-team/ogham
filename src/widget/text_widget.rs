@@ -146,7 +146,6 @@ impl Widget for TextWidget {
             self.text = new_text_widget.text.clone();
             self.style = new_text_widget.style.clone();
             self.hover_style = new_text_widget.hover_style.clone();
-            self.layout = new_text_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
             std::mem::swap(
                 &mut self.event_listeners,

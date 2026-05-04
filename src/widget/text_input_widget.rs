@@ -165,7 +165,6 @@ impl Widget for TextInputWidget {
             self.text_style = new_text_input_widget.text_style.clone();
             self.hover_text_style = new_text_input_widget.hover_text_style.clone();
             self.focus_text_style = new_text_input_widget.focus_text_style.clone();
-            self.layout = new_text_input_widget.layout.clone();
             // Swap event listeners - we can't clone closures, so we swap them
             std::mem::swap(
                 &mut self.event_listeners,
