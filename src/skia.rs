@@ -574,6 +574,12 @@ impl Surface for SkiaEnv {
             Self::paint_portal_entry(self, &entry, focused.as_ref(), &mut ui.image_cache);
         }
 
+        // Phase 2 M4: reconcile the focus stack now that
+        // portal_layer reflects this frame's open portals.
+        // Pushes new focus_trap entries; pops + restores
+        // closed ones.
+        ui.sync_focus_stack();
+
         if let Some(old) = saved_fc {
             self.font_collection = old;
         }

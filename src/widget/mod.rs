@@ -93,6 +93,21 @@ pub struct PortalInfo {
     pub focus_trap: bool,
 }
 
+/// Phase 2 M4: a stack entry tracking what to restore when a
+/// focus_trap portal unmounts. Pushed when a focus_trap portal
+/// first appears in `UI.portal_layer`; popped when the portal
+/// is no longer in the layer (closed or unmounted).
+#[derive(Clone)]
+pub struct FocusRestoration {
+    /// Identifies which portal in the layer this restoration
+    /// belongs to — matched by `Arc::ptr_eq` with the portal's
+    /// `WidgetRef`.
+    pub portal: WidgetRef,
+    /// What `UI.focused` was when this portal mounted; restored
+    /// when it pops.
+    pub previous_focus: Option<WidgetRef>,
+}
+
 /// The UI root containing the widget tree and global state.
 pub struct UI {
     /// The root element in the widget hierarchy.
@@ -104,6 +119,11 @@ pub struct UI {
     /// when it encounters open portals; consumed by Pass B
     /// (Skia's `draw` and the hit-test path).
     pub portal_layer: Vec<PortalEntry>,
+    /// Phase 2 M4: focus restoration stack. Persists across
+    /// frames; reconciled from `portal_layer` via
+    /// `sync_focus_stack` after each render. Top of stack
+    /// determines whether `try_set_focus` accepts a move.
+    pub focus_stack: Vec<FocusRestoration>,
     /// Set when the widget tree structure or content changed and a full
     /// flexbox layout pass is required (expensive: involves Skia text
     /// measurement). Cleared by `layout()`.
@@ -149,6 +169,7 @@ impl UI {
             root,
             image_cache: ImageCache::new(),
             portal_layer: Vec::new(),
+            focus_stack: Vec::new(),
             needs_layout: true,
             needs_repaint: true,
             focused: None,
@@ -200,9 +221,11 @@ impl UI {
             // and call their event handlers in order from child to parent
             let handled = self.handle_click_event(event, point, &mut ctx);
 
-            // Process focus request from context
+            // Process focus request from context. Phase 2 M4:
+            // route through try_set_focus so a focus_trap
+            // portal can reject moves outside its subtree.
             if let Some(focus_target) = ctx.take_focus_request() {
-                self.focused = Some(focus_target);
+                self.try_set_focus(focus_target);
             }
 
             if handled {
@@ -219,9 +242,11 @@ impl UI {
             let handled = root.handle_event(event, &mut ctx, &self.root.clone());
             drop(root);
 
-            // Process focus request from context
+            // Process focus request from context. Phase 2 M4:
+            // route through try_set_focus so a focus_trap
+            // portal can reject moves outside its subtree.
             if let Some(focus_target) = ctx.take_focus_request() {
-                self.focused = Some(focus_target);
+                self.try_set_focus(focus_target);
             }
 
             if handled {
@@ -473,6 +498,86 @@ impl UI {
 
     pub fn get_focused(&self) -> Option<&WidgetRef> {
         self.focused.as_ref()
+    }
+
+    /// Phase 2 M4: returns `true` if any portal currently in
+    /// `portal_layer` has `focus_trap: true`. Hosts use this to
+    /// derive their own input-gating booleans (UL audit:
+    /// replaces the manual `overlay_active: bool` plumbing).
+    /// Reflects the most recent draw's portal_layer state.
+    pub fn has_input_blocking_portal(&self) -> bool {
+        self.portal_layer.iter().any(|e| e.focus_trap)
+    }
+
+    /// Phase 2 M4: attempt to move focus to `target`. Rejects
+    /// the move if a focus_trap portal is active and `target`
+    /// is not within its subtree. Returns `true` on accept.
+    /// Direct callers can use this instead of writing
+    /// `self.focused = Some(target)` to honor the focus trap.
+    pub fn try_set_focus(&mut self, target: WidgetRef) -> bool {
+        if let Some(top) = self.focus_stack.last() {
+            if !widget_subtree_contains(&top.portal, &target) {
+                return false;
+            }
+        }
+        self.focused = Some(target);
+        true
+    }
+
+    /// Phase 2 M4: reconcile `focus_stack` with the current
+    /// `portal_layer`. Pushes restoration entries for newly-
+    /// open focus_trap portals; pops entries for portals that
+    /// have left the layer (closed or unmounted), restoring
+    /// their captured `previous_focus`. Called after every
+    /// `draw()` and any state change that may have flipped a
+    /// portal's focus_trap.
+    pub fn sync_focus_stack(&mut self) {
+        // Walk current focus_trap entries, push any not yet
+        // tracked.
+        for entry in &self.portal_layer {
+            if !entry.focus_trap {
+                continue;
+            }
+            let already_tracked = self
+                .focus_stack
+                .iter()
+                .any(|r| Arc::ptr_eq(&r.portal, &entry.widget));
+            if !already_tracked {
+                let prev = self.focused.clone();
+                self.focus_stack.push(FocusRestoration {
+                    portal: entry.widget.clone(),
+                    previous_focus: prev,
+                });
+            }
+        }
+        // Walk current stack from top, pop any whose portal is
+        // no longer in the layer.
+        let mut still_active = self.focus_stack.clone();
+        still_active.retain(|r| {
+            self.portal_layer
+                .iter()
+                .any(|e| e.focus_trap && Arc::ptr_eq(&e.widget, &r.portal))
+        });
+        // Pop loop: detect popped entries and restore their
+        // previous_focus in reverse order.
+        while self.focus_stack.len() > still_active.len() {
+            if let Some(popped) = self.focus_stack.pop() {
+                // Only restore if the popped entry isn't still
+                // present further up the surviving stack
+                // (would be unusual but safe to check).
+                self.focused = popped.previous_focus;
+            }
+        }
+        self.focus_stack = still_active;
+    }
+
+    /// Phase 2 M4: clear all M4 state (focus stack +
+    /// portal_layer + focused). Called on hot-reload to
+    /// prevent stale focus restoration into a torn-down tree.
+    pub fn clear_lifecycle_state(&mut self) {
+        self.focus_stack.clear();
+        self.portal_layer.clear();
+        self.focused = None;
     }
 
     /// Advance all active animations in the widget tree by `dt` seconds.
@@ -851,3 +956,27 @@ impl_downcast!(Widget);
 /// wrapped in an Arc and Mutex to support references and mutability
 /// across the entire tree.
 pub type WidgetRef = Arc<Mutex<dyn Widget>>;
+
+/// Phase 2 M4: depth-first search to determine whether
+/// `target` is reachable from `root` via the get_children
+/// chain. Used by `try_set_focus` to verify that a focus
+/// move stays within a focus_trap portal's subtree. Bounded
+/// recursion via an explicit visited cap.
+fn widget_subtree_contains(root: &WidgetRef, target: &WidgetRef) -> bool {
+    if Arc::ptr_eq(root, target) {
+        return true;
+    }
+    let children = {
+        let g = root.lock().expect("widget lock poisoned");
+        g.get_children()
+    };
+    for child in &children {
+        if Arc::ptr_eq(child, target) {
+            return true;
+        }
+        if widget_subtree_contains(child, target) {
+            return true;
+        }
+    }
+    false
+}

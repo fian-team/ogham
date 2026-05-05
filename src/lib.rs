@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use skia_safe::textlayout::FontCollection;
 use skia_safe::{FontMgr, Typeface};
 
+pub mod diagnostics;
 mod file_watcher;
 pub mod parser;
 pub mod runtime;
@@ -216,6 +217,16 @@ impl Ogham {
     /// Get a mutable reference to the UI
     pub fn get_ui_mut(&mut self) -> &mut widget::UI {
         &mut self.ui
+    }
+
+    /// Phase 2 M4: returns `true` if any active Portal in the
+    /// most recent draw has `focus_trap: true`. Hosts use this
+    /// to derive their own input-gating booleans (e.g. UL
+    /// replaces its manual `overlay_active: bool` with one
+    /// derivation: `let overlay_active =
+    /// ogham.has_input_blocking_portal();`).
+    pub fn has_input_blocking_portal(&self) -> bool {
+        self.ui.has_input_blocking_portal()
     }
 
     /// Get a reference to the runtime
