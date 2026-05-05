@@ -1,6 +1,6 @@
 # Typed Bindings — Phase 1 Implementation Plan
 
-> **Status: Working plan (in-progress).**
+> **Status: Phase 1 implementation complete (Ogham side).**
 >
 > Concrete, merge-by-merge implementation plan for Phase 1 of the
 > typed-bindings work. Builds on
@@ -8,14 +8,35 @@
 > and [`TYPED_BINDINGS_UL_AUDIT.md`](TYPED_BINDINGS_UL_AUDIT.md)
 > (the validation against Untold Lore). This doc adds the file-
 > level "what to change, in what order, with what validation
-> gate." It assumes the design and the open-question answers in
-> those docs are settled.
+> gate."
 >
 > **Scope:** the seven merges (M0 through M6) that ship Phase 1
 > end-to-end, plus cross-cutting concerns (workspace
 > restructure, test corpus, branch strategy, risk register).
 > Does not cover Phase 2+ work (custom widget property schemas,
 > body type-checking, sum types, `draft<T>`, signals, scenes).
+>
+> **Status by merge** (all on the `phase1-typed-bindings` branch):
+> - M0 — Foundational diagnostics. ✅ Shipped.
+> - M1 — Front-end (scanner + parser + ModuleSchema). ✅ Shipped.
+> - M2 — Strict-mode resolution + diagnostics. ✅ Shipped.
+> - M3 v1 — LSP schema-aware diagnostics + hover. ✅ Shipped.
+>   (Schema-aware completion + record goto-definition deferred to
+>   M3.5 — purely additive, doesn't block downstream work.)
+> - M4 — Workspace + ogham-derive macros. ✅ Shipped.
+> - M5 — TypedOgham + watch_typed + schema match. ✅ Shipped.
+> - M6 — Hot-reload preservation. ✅ Shipped (Ogham side).
+>   The chest_ui smoke test in Untold Lore is a separate-repo
+>   migration that lives on the consumer side; it's the
+>   validation gate for declaring "Phase 1 production-ready" but
+>   doesn't block any further Ogham work.
+>
+> **Test posture (current):** 22 derive smoke tests, 11 typed
+> Ogham e2e tests, 3 hot-reload tests, 24 strict-mode tests, 9
+> LSP integration tests, 35 parser typed-binding tests, 24
+> schema unit tests, 6 SyntaxError builder tests, 4 LSP
+> diagnostic-rendering tests, plus all pre-existing tests
+> (~270+ tests total) — all green, no regressions.
 
 ---
 

@@ -1,6 +1,6 @@
-# Ogham — Typed Rust↔Ogham Bindings (Phase 1 Design)
+# Ogham — Typed Rust↔Ogham Bindings (Phase 1)
 
-> **Status: Design draft (not yet implemented).**
+> **Status: Live contract — Phase 1 shipped.**
 >
 > This document specifies Phase 1 of the typed-bindings work: a
 > per-module schema declared in `.ogh` source, paired with Rust
@@ -13,13 +13,36 @@
 > flow out") for the asymmetry this design preserves. See
 > [`RUNTIME.md`](RUNTIME.md) for the loose path being extended.
 > See [`LANGUAGE.md`](LANGUAGE.md) for the front-end this design
-> grafts onto.
+> grafts onto. See
+> [`TYPED_BINDINGS_IMPLEMENTATION.md`](TYPED_BINDINGS_IMPLEMENTATION.md)
+> for the per-merge implementation history.
 >
-> **Implementation status:** none of this exists yet. The doc
-> records design decisions agreed during the audit conversation
-> so implementers can pick up cold. Once Phase 1 ships, this doc
-> graduates to a Live contract and grows the standard "Tenets +
-> Drift indicators" shape used by sibling docs.
+> **Implementation status (2026-05):** Phase 1 is implemented
+> end-to-end in the `phase1-typed-bindings` branch. Merges M0–M6
+> are landed:
+> - M0: SyntaxError carries length/note/help; LSP renders rich
+>   diagnostics.
+> - M1: scanner keywords (`record`, `host_state`, `events`,
+>   `Self`, `?`); parser declarations + grammar; ModuleSchema +
+>   two-pass resolver + standalone load_schema.
+> - M2: strict-mode compiler integration (identifier resolution,
+>   event-call validation, Levenshtein-1 suggestions).
+> - M3 v1: LSP diagnostics flow through the full pipeline;
+>   schema-aware hover for host_state fields and record names.
+>   (Schema-aware completion + record goto-definition are a
+>   future M3.5.)
+> - M4: Cargo workspace; `ogham-derive` proc-macro crate with
+>   OghamRecord/OghamState/OghamMsg derives.
+> - M5: TypedOgham<S, M> handle, watch_typed/from_source_typed,
+>   startup schema-match check, MPSC event channel.
+> - M6: hot-reload preserves typed state across schema-stable
+>   reloads, fails loud on schema-incompatible reloads.
+>
+> One Untold-Lore-side smoke-test step (chest_ui migration) is
+> the natural validation gate but lives in a separate repo;
+> coordinate that migration when ready to start landing the
+> 17-UI migration sequence in
+> [`TYPED_BINDINGS_UL_AUDIT.md`](TYPED_BINDINGS_UL_AUDIT.md).
 
 ---
 
@@ -1155,3 +1178,138 @@ If any of those becomes a blocker for Phase 1's value (e.g.
 typed bindings *require* Scenes to be useful), the design needs
 to be revisited. None look like blockers from the audit
 evidence.
+
+---
+
+## Migration cookbook
+
+Three patterns surfaced by the Untold Lore audit
+([`TYPED_BINDINGS_UL_AUDIT.md`](TYPED_BINDINGS_UL_AUDIT.md))
+need explicit handling during the per-UI migration. None
+require Ogham changes; they're rewrites in `.ogh` and Rust
+calling code.
+
+### F1 — Computed event names (strict-mode blocker)
+
+**Pattern in production code** (place_inspector.ogh):
+
+```ogh
+let pill_btn = fn (label: string, is_active: bool, evt: string, key: string) {
+  Flex {
+    mouse_down: fn () { event(evt, key); },  // ← computed name
+    ...
+  }
+};
+```
+
+Strict mode requires the first arg to `event(...)` to be a
+string literal so the schema can validate the call statically.
+Three migration options:
+
+1. **Inline expansion (recommended for ≤ 4 call sites)** —
+   replace each `pill_btn(...)` with an explicit
+   `Flex { mouse_down: fn () { event("set_arrival_mode", key); }, ... }`
+   block. Adds line count but keeps the closure pattern.
+2. **Per-event helpers** — define
+   `arrival_pill_btn(label, is_active, key)` and similar
+   per-group helpers, each hardcoding its event name.
+   Preserves abstraction; small line cost.
+3. **Tagged dispatch event** — `set_pill(string, string)`
+   taking `(group, key)` with the game side switching on
+   group. Trades event count for type-safety value; only
+   worth it for large groups.
+
+**Recommendation:** option 2. Keeps closure ergonomics, costs
+~10 lines, no Ogham changes.
+
+### F5 — Numeric-as-string draft fields
+
+**Pattern across ~5 form-heavy UIs** (settings_ui, sea_config_ui,
+ruleset_editor_ui, life_stages_editor_ui, map_editor_ui):
+
+```rust
+struct SettingsState {
+    master_volume: String,    // not f32 — preserves "0." mid-edit
+    base_xp: String,
+    fov: String,
+}
+```
+
+These fields hold raw user input strings during editing
+(`"0."`, `"3.14e"`, etc.) so partial input doesn't snap or
+parse to NaN. The Phase 1 idiom: declare them as `string` in
+both the schema and the Rust struct. Pair with a sibling
+validation flag when the field has constraints:
+
+```ogh
+host_state {
+    base_xp: string,
+    base_xp_invalid: bool,
+};
+```
+
+```rust
+#[derive(OghamState, ...)]
+struct State {
+    base_xp: String,
+    base_xp_invalid: bool,
+}
+```
+
+**Recommendation:** keep the draft-as-string convention for
+form fields. A future `draft<T>` type with built-in validation
+flags is on the roadmap but doesn't block Phase 1.
+
+### F13 — Optional fields stored as empty-string sentinels
+
+**Pattern across ~10 UIs** (place_inspector, character_select,
+ruleset_editor, dm_hud, etc.):
+
+```rust
+// today
+selected_character_id: String,    // "" means "no selection"
+selected_entity: HashMap<...>,    // empty map means "no entity"
+```
+
+```ogh
+// today's idiom
+match (selected_character_id != "") {
+    true => render_selected(),
+    false => render_empty_state(),
+}
+```
+
+These can migrate opportunistically to `T?`:
+
+```rust
+selected_character_id: Option<String>,
+selected_entity: Option<EntityInspector>,
+```
+
+```ogh
+host_state {
+    selected_character_id: string?,
+    selected_entity: EntityInspector?,
+};
+
+// .ogh becomes
+match selected_character_id {
+    Some(id) => render_selected(),
+    None     => render_empty_state(),
+}
+```
+
+**Recommendation:** opportunistic — migrate when touching the
+UI for other reasons. Don't block the typed-bindings migration
+on Optional adoption; the empty-string sentinel still works in
+strict mode.
+
+### How the cookbook applies to the migration sequence
+
+The audit's 21-step migration sequence (in
+[`TYPED_BINDINGS_UL_AUDIT.md`](TYPED_BINDINGS_UL_AUDIT.md))
+flags F1 against `place_inspector_ui` (slot 11). F5 applies
+to settings/sea_config/ruleset/life_stages/map_editor (slots
+13, 14, 17, 18, 21). F13 applies to roughly half the UIs.
+None of the F-patterns block any other migration; each can be
+fixed in isolation when its UI is migrated.

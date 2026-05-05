@@ -80,6 +80,54 @@ impl<S: OghamState + Clone, M: OghamMsg> TypedOgham<S, M> {
     pub fn inner_mut(&mut self) -> &mut Ogham {
         &mut self.inner
     }
+
+    /// Forward to [`Ogham::check_for_changes`] so callers don't
+    /// have to reach through `inner()` for the common hot-reload
+    /// poll path.
+    pub fn check_for_changes(&self) -> bool {
+        self.inner.check_for_changes()
+    }
+
+    /// Reload the watched file. Re-runs the schema-match check
+    /// against `S` and `M` — schema-incompatible reloads return
+    /// [`RuntimeError::SchemaMismatch`] and leave the existing
+    /// runtime untouched. Schema-compatible reloads preserve the
+    /// last typed state by pushing `self.last_state` into the
+    /// freshly-reloaded runtime, so user-driven changes survive
+    /// the reload.
+    ///
+    /// This intentionally fails loud on schema drift rather than
+    /// silently coercing — see [`docs/internal/INTENT.md`](../../docs/internal/INTENT.md)
+    /// §7 ("Hot reload preserves what it can, drops what it
+    /// can't").
+    pub fn reload(&mut self) -> Result<(), RuntimeError> {
+        // Pull the watched path from the inner Ogham; if there
+        // isn't one (constructed via from_source_typed), reload
+        // is a no-op.
+        let Some(path) = self.inner.get_path() else {
+            return Ok(());
+        };
+        let path = path.to_string();
+
+        // (1) Re-check the schema against the new file's shape.
+        let parsed = load_schema_or_runtime_err(LoadSource::Path(&path))?;
+        check_schemas_match::<S, M>(&parsed)?;
+
+        // (2) Schema is compatible — reload the inner runtime.
+        //     The inner.reload() path uses the stored config
+        //     which still has the *initial* host_state. The
+        //     module's first execution after reload sees that
+        //     initial state.
+        self.inner.reload()?;
+
+        // (3) Overlay the latest typed state on top so any
+        //     user-driven changes since construction are
+        //     preserved across the reload.
+        let runtime = self.inner.get_runtime().clone();
+        let mut rt = runtime.lock().unwrap_or_else(|e| e.into_inner());
+        self.last_state.ogham_snapshot_into(&mut *rt);
+        Ok(())
+    }
 }
 
 impl Ogham {
@@ -200,11 +248,19 @@ where
     S: OghamState,
     M: OghamMsg,
 {
-    if parsed.host_state.is_none() {
+    let derived_hs = S::ogham_record_schema();
+    // SchemaMissing only fires when the Rust state has fields
+    // but the module declares no `host_state {}`. An empty Rust
+    // state matched against an absent `host_state` is fine —
+    // event-only modules (like chest_ui) live here.
+    if parsed.host_state.is_none() && !derived_hs.fields.is_empty() {
         return Err(RuntimeError::SchemaMissing);
     }
-    let parsed_hs = parsed.host_state.as_ref().unwrap();
-    let derived_hs = S::ogham_record_schema();
+    let empty = crate::runtime::schema::RecordSchema {
+        fields: std::collections::BTreeMap::new(),
+        decl_span: None,
+    };
+    let parsed_hs = parsed.host_state.as_ref().unwrap_or(&empty);
     let mut diffs: Vec<String> = Vec::new();
 
     diff_record(parsed_hs, &derived_hs, "host_state", &mut diffs);

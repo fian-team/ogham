@@ -219,22 +219,50 @@ fn extra_event_on_rust_fails_with_diff() {
 }
 
 #[test]
-fn no_host_state_returns_schema_missing() {
+fn no_host_state_returns_schema_missing_when_rust_state_has_fields() {
+    // The Rust state has at least one field, but the module
+    // omits `host_state {}` entirely → SchemaMissing.
+    // (Event-only modules with empty Rust state are allowed —
+    // see `event_only_module_with_empty_state_constructs_ok`.)
+    #[derive(OghamState, PartialEq, Debug, Clone, Default)]
+    struct StateWithField {
+        x: i32,
+    }
     #[derive(OghamMsg, PartialEq, Debug)]
     enum AnyMsg {
         Close,
     }
-    let err = Ogham::from_source_typed::<ChestState, AnyMsg>(
-        // chest schema declares events but no host_state
+    let err = Ogham::from_source_typed::<StateWithField, AnyMsg>(
         r#"
         events { close() };
-        let main = fn () { event("close"); };
+        let main = fn () { event("close"); Flex { children: [] } };
+        "#,
+        StateWithField::default(),
+        RuntimeConfig::default(),
+    )
+    .err()
+    .expect("expected error");
+    assert!(matches!(err, RuntimeError::SchemaMissing));
+}
+
+#[test]
+fn event_only_module_with_empty_state_constructs_ok() {
+    // chest_ui's exact shape: events declared, no host_state,
+    // and an empty Rust state struct. This must succeed —
+    // SchemaMissing is over-strict when both sides are empty.
+    #[derive(OghamMsg, PartialEq, Debug)]
+    enum AnyMsg {
+        Close,
+    }
+    let typed = Ogham::from_source_typed::<ChestState, AnyMsg>(
+        r#"
+        events { close() };
+        let main = fn () { event("close"); Flex { children: [] } };
         "#,
         ChestState::default(),
         RuntimeConfig::default(),
-    )
-    .err().expect("expected error");
-    assert!(matches!(err, RuntimeError::SchemaMissing));
+    );
+    assert!(typed.is_ok(), "expected ok, got {:?}", typed.err());
 }
 
 // ---------------------------------------------------------------------
