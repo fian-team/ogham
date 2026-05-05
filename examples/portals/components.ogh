@@ -1,0 +1,120 @@
+// Phase 2 reference library: Modal, Tooltip, Dropdown.
+//
+// Each is a thin wrapper around the Portal primitive that
+// composes a common pattern. Authors copy these into their
+// own components.ogh-style file or import them directly.
+//
+// These are LIBRARY CODE — not part of the language. The
+// Portal primitive is intentionally minimal (open + focus_trap
+// + children); composition happens here.
+
+// Modal: centered dialog with a backdrop that dismisses on
+// outside click. focus_trap=true so the modal isolates input.
+//
+// Usage:
+//   Modal({
+//     open: state.modal_open,
+//     on_dismiss: fn () { state.modal_open = false; },
+//     children: [my_dialog_body()],
+//   })
+let Modal = fn (config) {
+  Portal {
+    open: config.open,
+    focus_trap: true,
+    children: [
+      // Backdrop child: full viewport, semi-transparent, click
+      // dismisses. on_dismiss is the consumer's flip-state-off
+      // callback.
+      Flex {
+        style: {
+          width: "100%",
+          height: "100%",
+          background_color: { r: 0, g: 0, b: 0, a: 160 },
+        },
+        on_click: config.on_dismiss,
+      },
+      // Centered dialog wrapper. The actual dialog body is
+      // passed in via config.children.
+      Flex {
+        style: {
+          width: "100%",
+          height: "100%",
+          justify: "center",
+          align: "center",
+        },
+        children: config.children,
+      },
+    ],
+  }
+};
+
+// Tooltip: non-modal popover positioned by transform (anchor
+// offset). focus_trap defaults to false — tooltips don't trap
+// keyboard focus.
+//
+// Usage:
+//   Tooltip({
+//     open: state.hover,
+//     offset_y: 32,
+//     children: [Text { text: "Save your changes" }],
+//   })
+let Tooltip = fn (config) {
+  Portal {
+    open: config.open,
+    focus_trap: false,
+    children: [
+      Flex {
+        style: {
+          transform: { translate_y: config.offset_y },
+          background_color: { r: 32, g: 32, b: 32, a: 240 },
+          padding: 8,
+          radius: 4,
+        },
+        children: config.children,
+      },
+    ],
+  }
+};
+
+// Dropdown: anchor-positioned list with outside-click dismiss.
+// The trigger remains in the base tree; only the items list
+// goes through the portal. focus_trap=false so the trigger
+// can keep keyboard focus during the dropdown's lifetime.
+//
+// Usage:
+//   Dropdown({
+//     open: state.open,
+//     on_dismiss: fn () { state.open = false; },
+//     offset_y: 32,
+//     children: [/* item Flexes */],
+//   })
+let Dropdown = fn (config) {
+  Portal {
+    open: config.open,
+    focus_trap: false,
+    children: [
+      // Outside-click dismiss layer. Covers the viewport but
+      // is transparent (no background). Click anywhere
+      // outside the items list dismisses.
+      Flex {
+        style: {
+          width: "100%",
+          height: "100%",
+        },
+        on_click: config.on_dismiss,
+      },
+      // The items list, anchored below the trigger via
+      // transform. Stops click propagation (clicks on items
+      // shouldn't dismiss).
+      Flex {
+        style: {
+          transform: { translate_y: config.offset_y },
+          background_color: { r: 24, g: 24, b: 28, a: 255 },
+          radius: 4,
+          padding: 4,
+        },
+        children: config.children,
+      },
+    ],
+  }
+};

@@ -1,12 +1,19 @@
 # Ogham — Lifecycle Hooks + Portal Widget (Phase 2)
 
-> **Status: Live design contract — implementation pending.**
+> **Status: Live contract — Phase 2 shipped 2026-05-05.**
 >
 > This document specifies Phase 2 of the post-audit roadmap: a
 > path-based callback lifecycle (`on_mount`, `on_unmount`,
 > `effect` with `cleanup`) and a minimal `Portal` widget. It
 > supersedes none of the existing live contracts; it adds two
 > opt-in subsystems that compose with today's primitives.
+>
+> All four hook kinds and the Portal widget are implemented
+> end-to-end. UL adoption (Settings save, escape menu Portal,
+> inventory tooltip) is deferred to a post-Phase-2 backlog
+> per the audit doc — UL's `overlay_state` instance-swap
+> pattern requires restructuring beyond the M5 scope, and
+> in-progress UL combat work raises cross-repo risk.
 >
 > See [`INTENT.md`](INTENT.md) §3 for the path-based identity
 > story this design extends from `state` to lifecycle.

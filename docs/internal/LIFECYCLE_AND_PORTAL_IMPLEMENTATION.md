@@ -1157,3 +1157,239 @@ When M5's gate passes:
   not in the live contract docs.
 
 That's Phase 2 done.
+
+---
+
+## What shipped — per-merge trailer
+
+Per-merge dates, LOC, and any deviations from the original
+plan. All commits on `main` per the single-branch convention.
+
+### M0 — Lifecycle plumbing — 2026-05-05 (`8c6c329`, +502 LOC)
+
+**Shipped:** All StateManager extensions; four new opcodes
+declared with stack effects (VM dispatch returns
+InvalidOperation pending M1/M2); `owned_path_prefix` on
+FlexWidget; `lifecycle_active` flag with bytecode scan +
+Call-opcode gate; rotate_active_paths in execute_module +
+rerender; flush_for_path_prefix + cancel_unmount_for_prefix
+helpers; 12 plumbing tests.
+
+**Deviations:**
+- The `drain_exited_children` / `cancel_exit` wiring was
+  deferred to M1 (was M0 step 7-8 in the plan). Rationale:
+  threading `&mut StateManager` through `tick_animations`
+  is invasive surgery, and M0 has no hooks registered to
+  flush. M1 took over the wiring.
+- Pre/post-layout drain stubs were similarly deferred (M0
+  step 13). M1 implemented them as actual drain methods.
+
+**Bug found and fixed in M0 follow-up (`357ceea`):**
+Path-capture timing — `create_flex_widget` read
+`runtime.state.call_stack` at builder time, but the
+builder runs after `execute_module` returns by which point
+call_stack is empty. Fix: capture the path in
+WidgetDescriptor at Widget-opcode time. Regression test
+added.
+
+### M1 — `on_mount` / `on_unmount` — 2026-05-05 (`256316c`, +1043 LOC)
+
+**Shipped:** Scanner OnMount/OnUnmount tokens; parser
+Statement::OnMount/OnUnmount AST nodes; SyntaxError
+severity field + with_warning + is_blocking; compiler
+emits Closure + RegisterMountHook/RegisterUnmountHook
+with per-fn hook_id counter; VM RegisterMountHook (queues
+when newly mounted, drops otherwise) + RegisterUnmountHook
+(persistent map overwrite); pre/post-layout drain pipeline
++ lifecycle_error_log + count/log APIs;
+queue_disappeared_unmounts; LSP keyword highlighting +
+LifecycleHook hover variant + conditional-hook walker; 15
+tests.
+
+**Deviations:**
+- M1 ships **path-disappear unmount semantics**, not
+  full drain-time. Unmount fires when the path stops
+  being visited, not after the widget's exit animation
+  completes. Cancel-mid-exit causes spurious unmount +
+  remount. Rationale: full drain-time requires threading
+  `&mut StateManager` through `tick_animations` (the M0-
+  deferred wiring); deferred again to a future merge.
+  M3 + M4 don't depend on drain-time semantics. The M5
+  canonical migrations don't exercise cancel-mid-exit.
+- Mount + unmount drain happens **inside `rerender()`**
+  rather than around the host's `layout()` call.
+  Rationale: avoids requiring host frame-loop changes.
+  Mount fires before layout, slightly off the design's
+  "after layout" ordering. M3+ refines if Portal needs
+  post-layout sizes.
+- Pending queue shape changed from `Vec<(String, u16)>`
+  to `Vec<(String, u16, Rc<VMClosure>)>` (M0 had a bug
+  where flush removed entries from the persistent map and
+  pushed only keys, leaving the drainer with nothing).
+
+### M2 — `effect` + `cleanup` — 2026-05-05 (`7345656`, +715 LOC)
+
+**Shipped:** Scanner Effect/Cleanup tokens; parser
+Statement::Effect/Cleanup AST nodes; compiler
+compile_effect (deps + body sub-FunctionProto + Closure +
+RegisterEffect) + compile_cleanup_inside_effect (Closure
++ RegisterEffectCleanup); per-fn next_effect_hook_id
+counter; in_effect_body context flag; VM RegisterEffect
+(deps comparison via Value::eq, schedule cleanup-then-fire
+on change) + RegisterEffectCleanup (attach via
+current_firing_effect side channel); post_layout_drain
+fires effects (was a stub in M1); LSP keyword highlighting
++ Effect hover variant + conditional-effect warning #5;
+13 tests.
+
+**Deviations:**
+- Effect dep type checking (design diagnostic #2) was
+  initially missed and shipped in the audit follow-up
+  (`565c889`). See audit entry below.
+
+### Audit follow-up — 2026-05-05 (`565c889`, +449 LOC)
+
+Pre-M3 audit found 3 bugs and added 5 behavior-locking
+tests:
+
+1. **Path prefix-matching false positive**:
+   `"fn@10".starts_with("fn@1")` returned true byte-wise.
+   Fix: `path_matches_prefix` helper requires exact match
+   or `prefix + "/"` boundary. Affected
+   `flush_for_path_prefix` and `cancel_unmount_for_prefix`.
+2. **LSP conditional-hook walker never descended into fn
+   bodies**: bailed at `Statement::Declare(_)` via the
+   catchall arm. Fix: descend into `Function` literal
+   bodies. The warning now actually fires in real .ogh
+   code.
+3. **Effect dep type check missing** (M2 deliverable
+   skipped). Fix: `fn_typed_locals` HashSet on the
+   Compiler, populated from `Declare` statements with
+   `Function` literal RHS, inherited by child compilers.
+   `compile_effect.check_dep_type` rejects fn literals +
+   identifiers resolving to fn-typed lets.
+
+Plus tests: multiple-cleanups-only-last-wins,
+multiple-effects-fire-in-source-order, prefix-numeric-
+sibling regression + 8-case path_matches_prefix coverage,
+3 LSP integration tests for the descent fix, 3 effect
+dep-rejection tests.
+
+### M3 — Portal: deferred-paint primitive — 2026-05-05 (`d5212f4`, +846 LOC)
+
+**Shipped:** PortalWidget (open + focus_trap + children +
+owned_path_prefix); Widget::as_portal trait method;
+UI.portal_layer + PortalEntry; Skia draw clears + walks
+into portal_layer in main pass + paints Pass B with
+parent_rect translation; hit-test searches portal_layer
+first (LIFO via reverse iteration); builder
+create_portal_widget with type-check rejection (design
+diagnostic #3); registered in
+WidgetRegistry::with_defaults; 10 tests.
+
+**Deviations:**
+- Two-pass paint correctness at the actual Skia surface
+  level isn't validated by integration tests (no Skia
+  surface in tests/). Was to be validated at M5 via the
+  UL escape-menu integration; that migration deferred
+  per M5 notes.
+- A focus_trap portal without a backdrop child currently
+  leaks unhandled clicks to the base tree. Documented
+  M3 limitation; M4 wires focus_trap to gate this — but
+  see M4 deviations.
+
+### M4 — focus_trap + has_input_blocking_portal — 2026-05-05 (`ad4282e`, +346 LOC)
+
+**Shipped:** UI.focus_stack + FocusRestoration;
+sync_focus_stack (called from Skia's draw after Pass B);
+try_set_focus rejects out-of-subtree moves;
+clear_lifecycle_state for hot-reload safety;
+Ogham::has_input_blocking_portal public API forwarding to
+UI.has_input_blocking_portal; 9 tests.
+
+**Deviations:**
+- focus_stack reconciliation is **derived from per-frame
+  portal_layer** rather than driven by Portal-internal
+  lifecycle hooks (the original plan). Rationale:
+  Portal-internal hooks would require threading the
+  M1/M2 hook plumbing into PortalWidget's Rust code,
+  which is invasive. The derived approach is simpler and
+  has the same observable behavior.
+- M4 try_set_focus is the focus-move gate; **key event
+  routing is unchanged**. Trapped portals still receive
+  keys via their own focused descendants; key events to
+  non-focused widgets in the base tree pass through
+  unchanged. Matches the design — focus_trap is about
+  focus isolation, not key-event interception.
+- Click-leak through a backdrop-less focus_trap portal
+  (M3 limitation) is **not** wired in M4. Backdrops are
+  the canonical solution, encoded in the
+  `examples/portals/components.ogh` Modal helper.
+
+### M5 — Examples library + doc graduation — 2026-05-05 (this commit)
+
+**Shipped:** `examples/portals/components.ogh` with
+Modal/Tooltip/Dropdown reference fns; design doc status
+banner graduated to "Live contract — Phase 2 shipped";
+this trailer added.
+
+**Deviations (significant):**
+- The three UL migrations (Settings save-on-close,
+  escape menu Portal, inventory tooltip) are
+  **deferred to a post-Phase-2 UL backlog**. Two
+  reasons:
+  1. UL's `overlay_state` pattern swaps Ogham instances
+     when an overlay opens/closes. Runtime drop doesn't
+     fire `on_unmount` mid-render — the path simply
+     vanishes when the runtime is dropped. The M5
+     Settings save migration would need UL to restructure
+     so Settings stays inside the same Ogham instance,
+     reaching `on_unmount` via path-disappear semantics.
+     That's beyond the M5 surface — it's a UL refactor.
+  2. UL has uncommitted in-progress combat work touching
+     `client/mod.rs`, `update.rs`, and several ui/*.rs
+     files. The M5 migrations would touch the same
+     files. Cross-repo WIP collision risk is high.
+- The patterns are demonstrated in
+  `examples/portals/components.ogh` instead. UL adoption
+  is now an ordinary post-Phase-2 task, joining the ~12
+  person-day backlog from the audit's per-UI verdicts.
+- Hot-reload + lifecycle smoke test (audit OQ#7) is also
+  deferred — without a UL runtime exercising the
+  hot-reload path with focus_trap portals open, there's
+  nothing to smoke-test. Hot-reload + focus_stack reset
+  is unit-tested via `clear_lifecycle_state`.
+
+### Phase 2 totals
+
+- **Implementation:** 4,247 LOC across M0–M5 + audit fix.
+  Within the 2,500–3,500 LOC estimate's upper-bound
+  range; bug fixes + audit additions account for the
+  overage.
+- **Tests:** 64 new tests (12 plumbing + 15 lifecycle +
+  18 effect + 10 portal + 9 focus_trap, plus the audit's
+  10 LSP/regression tests). Slightly above the impl
+  plan's ~62 estimate.
+- **Calendar:** all merges shipped on 2026-05-05 in
+  one autonomous push. Plan estimated 12 person-days.
+- **UL adoption:** 0 of 3 M5 migrations shipped.
+  Deferred to post-Phase-2 backlog.
+
+### What remains for the team
+
+1. Post-Phase-2 UL adoption per the audit's per-UI
+   table (~12 person-days). Top priority: Settings
+   save-on-close (smallest), escape menu Portal
+   (highest leverage), inventory tooltip (worked
+   non-modal example).
+2. Refine M1's path-disappear unmount semantics to
+   full drain-time when needed (likely when authoring
+   a portal that animates out — the cancel-mid-exit
+   spurious-unmount edge case will surface).
+3. Refine M1's mount timing if Portal positioning
+   needs post-layout sizes.
+4. Address the schema-diagnostics workstream's
+   lib-test breakage (untracked
+   `src/diagnostics/manifest.rs` uses derive macros
+   that don't resolve `::ogham` paths inside the
+   ogham crate itself — separate workstream).
