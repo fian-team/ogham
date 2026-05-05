@@ -23,6 +23,10 @@ pub mod flex_widget;
 /// Lifecycle-sequencing container that holds one generation of content
 /// at a time and waits for exits before mounting the next.
 pub mod presence_widget;
+/// Phase 2 Portal widget — defers paint + hit-test to the
+/// per-frame `UI.portal_layer`, rendering in front of all
+/// base-tree siblings.
+pub mod portal_widget;
 /// Grid layout widget.
 pub mod grid_widget;
 pub mod image;
@@ -63,12 +67,43 @@ pub struct LayoutContext<'a> {
     pub default_font: Option<&'a str>,
 }
 
+/// Phase 2 Portal: per-frame entry on `UI.portal_layer`. The
+/// renderer pushes one of these whenever it walks past a Portal
+/// node with `open: true` in the main render pass; Pass B
+/// iterates the layer and paints each portal's children with the
+/// viewport as the clip rect.
+#[derive(Clone)]
+pub struct PortalEntry {
+    pub widget: WidgetRef,
+    /// The rect the portal node would have occupied if it weren't
+    /// a portal. Used as the layout origin for the children when
+    /// painted in Pass B (so transforms work as anchor offsets).
+    pub parent_rect: rect::Rect,
+    pub focus_trap: bool,
+}
+
+/// Phase 2 Portal: returned by `Widget::as_portal()` to mark a
+/// widget as a Portal. Used by the renderer to detect the defer-
+/// to-portal-layer branch and by the runtime API
+/// `has_input_blocking_portal()` to derive UL's overlay-active
+/// boolean.
+#[derive(Clone, Copy, Debug)]
+pub struct PortalInfo {
+    pub open: bool,
+    pub focus_trap: bool,
+}
+
 /// The UI root containing the widget tree and global state.
 pub struct UI {
     /// The root element in the widget hierarchy.
     pub root: WidgetRef,
     /// Cached images to prevent reloading on render.
     pub image_cache: ImageCache,
+    /// Phase 2 Portal: per-frame portal layer. Cleared at start
+    /// of each render pass; populated by the main render walk
+    /// when it encounters open portals; consumed by Pass B
+    /// (Skia's `draw` and the hit-test path).
+    pub portal_layer: Vec<PortalEntry>,
     /// Set when the widget tree structure or content changed and a full
     /// flexbox layout pass is required (expensive: involves Skia text
     /// measurement). Cleared by `layout()`.
@@ -113,6 +148,7 @@ impl UI {
         Self {
             root,
             image_cache: ImageCache::new(),
+            portal_layer: Vec::new(),
             needs_layout: true,
             needs_repaint: true,
             focused: None,
@@ -196,10 +232,53 @@ impl UI {
     }
 
     fn handle_click_event(&mut self, event: &Event, point: &Point, ctx: &mut EventContext) -> bool {
-        // First, check if the root widget contains the point
+        // Phase 2 Portal: search the portal layer first
+        // (top-most-portal first via reverse iteration). The
+        // portal_layer was populated by the most recent draw()
+        // call. A portal child whose layout covers the
+        // viewport (the backdrop pattern) swallows clicks
+        // naturally. Falls through to the base tree only if no
+        // portal claims the click.
+        let entries = self.portal_layer.clone();
+        for entry in entries.iter().rev() {
+            // Translate the click into the portal's child
+            // coordinate space (subtract the portal's
+            // parent_rect origin, just like a normal
+            // widget's child-coords translation).
+            let child_point = Point::new(
+                point.x() - entry.parent_rect.x,
+                point.y() - entry.parent_rect.y,
+            );
+            let widget_ref = entry.widget.clone();
+            let mut widget = widget_ref.lock().expect("widget lock poisoned");
+            // Check children directly because the Portal node
+            // itself returns false from contains_point.
+            let children = widget.get_children_mut();
+            drop(widget);
+            for child in &children {
+                let mut g = child.lock().expect("widget lock poisoned");
+                if g.contains_point(&child_point) {
+                    let handled = g.handle_event(event, ctx, child);
+                    if handled {
+                        return true;
+                    }
+                }
+            }
+            // Backdrop pattern: even if no specific child
+            // claims, an open focus_trap portal should swallow
+            // the click rather than let it fall through to the
+            // base tree. M3 leaves this as fall-through;
+            // backdrops are explicit Flex children that
+            // contain the entire viewport, so a backdrop with
+            // an on_click handler will catch via the loop
+            // above. Modal portals without a backdrop will
+            // leak clicks — documented limitation; M4 wires
+            // focus_trap to gate this.
+        }
+
+        // Fall through to the base tree.
         let mut root = self.root.lock().expect("widget lock poisoned");
         if root.contains_point(point) {
-            // If it does, handle the event on the root
             return root.handle_event(event, ctx, &self.root.clone());
         }
         false
@@ -734,6 +813,12 @@ pub trait Widget: Downcast {
 
     /// Returns true if this widget needs post_render called after children render.
     fn needs_post_render(&self) -> bool { false }
+
+    /// Phase 2 Portal: returns Some when this widget is a Portal.
+    /// The renderer uses this to detect the defer-to-portal-layer
+    /// branch — Portal widgets paint nothing in the main pass and
+    /// their children render in Pass B against the viewport.
+    fn as_portal(&self) -> Option<PortalInfo> { None }
 
     /// Phase 2 lifecycle: the call-stack path at which this widget
     /// was constructed. Used to identify which paths a draining

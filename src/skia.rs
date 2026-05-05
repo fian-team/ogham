@@ -550,8 +550,29 @@ impl Surface for SkiaEnv {
             None
         };
 
+        // Phase 2 Portal: clear the per-frame portal layer; the
+        // main render walk repopulates it. Pass B paints each
+        // entry's children with the viewport as the clip rect.
+        ui.portal_layer.clear();
+
         let focused = ui.get_focused().cloned();
-        Self::draw_widget_recursive(self, &ui.root, focused.as_ref(), &mut ui.image_cache);
+        Self::draw_widget_recursive(
+            self,
+            &ui.root,
+            focused.as_ref(),
+            &mut ui.image_cache,
+            &mut ui.portal_layer,
+        );
+
+        // Pass B: portal_layer in mount order (LIFO would put
+        // the most-recently-opened on top — we're already in
+        // push order, which is the same as mount order, so a
+        // forward iteration paints last-opened on top).
+        let entries: Vec<crate::widget::PortalEntry> =
+            ui.portal_layer.clone();
+        for entry in entries {
+            Self::paint_portal_entry(self, &entry, focused.as_ref(), &mut ui.image_cache);
+        }
 
         if let Some(old) = saved_fc {
             self.font_collection = old;
@@ -566,12 +587,36 @@ impl SkiaEnv {
         widget_ref: &WidgetRef,
         focused: Option<&WidgetRef>,
         image_cache: &mut ImageCache,
+        portal_layer: &mut Vec<crate::widget::PortalEntry>,
     ) {
         use crate::widget::RenderContext;
 
         let is_focused = focused
             .map(|f| std::ptr::eq(Arc::as_ptr(f), Arc::as_ptr(widget_ref)))
             .unwrap_or(false);
+
+        // Phase 2 Portal: detect a Portal node and defer to the
+        // portal layer instead of recursing. The portal node
+        // itself paints nothing; its children will render with
+        // viewport bounds in Pass B.
+        {
+            let widget = widget_ref.lock().expect("widget lock poisoned");
+            if let Some(info) = widget.as_portal() {
+                if info.open {
+                    let parent_rect = widget
+                        .get_layout_rect()
+                        .cloned()
+                        .unwrap_or_else(crate::widget::rect::Rect::zero);
+                    drop(widget);
+                    portal_layer.push(crate::widget::PortalEntry {
+                        widget: widget_ref.clone(),
+                        parent_rect,
+                        focus_trap: info.focus_trap,
+                    });
+                }
+                return;
+            }
+        }
 
         let widget = widget_ref.lock().expect("widget lock poisoned");
         let effects = widget.render_effects();
@@ -613,7 +658,7 @@ impl SkiaEnv {
         }
 
         for child in &children {
-            Self::draw_widget_recursive(env, child, focused, image_cache);
+            Self::draw_widget_recursive(env, child, focused, image_cache, portal_layer);
         }
 
         if needs_transform {
@@ -628,6 +673,45 @@ impl SkiaEnv {
         if effects.is_some() {
             env.pop_effects();
         }
+    }
+
+    /// Phase 2 Portal Pass B: paint a single portal entry's
+    /// children. The entry's `parent_rect` is the layout origin
+    /// the portal would have occupied in the base tree; we
+    /// translate by it so anchored children appear at the
+    /// "expected" position. Within Pass B, the portal_layer is
+    /// not re-populated (a portal nested inside another portal
+    /// is rare; in M3 we recurse normally — children of a portal
+    /// are not portals themselves under the M3 use cases).
+    fn paint_portal_entry(
+        env: &mut SkiaEnv,
+        entry: &crate::widget::PortalEntry,
+        focused: Option<&WidgetRef>,
+        image_cache: &mut ImageCache,
+    ) {
+        // Translate to the portal's slot so child layouts are
+        // relative to where the portal would have appeared.
+        let dpi = env.dpi_scale;
+        env.save();
+        env.translate(entry.parent_rect.x * dpi, entry.parent_rect.y * dpi);
+
+        let children = {
+            let widget = entry.widget.lock().expect("widget lock poisoned");
+            widget.get_children()
+        };
+        // M3: nested portals inside a portal go through a
+        // throwaway second-level layer (unused in shipped UL but
+        // keeps the recursion complete).
+        let mut nested: Vec<crate::widget::PortalEntry> = Vec::new();
+        for child in &children {
+            Self::draw_widget_recursive(env, child, focused, image_cache, &mut nested);
+        }
+        // Paint nested portals if any.
+        for nested_entry in &nested {
+            Self::paint_portal_entry(env, nested_entry, focused, image_cache);
+        }
+
+        env.surface.canvas().restore();
     }
 }
 

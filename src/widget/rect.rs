@@ -16,6 +16,17 @@ impl Rect {
         }
     }
 
+    /// All-zero rect — a sane fallback for widgets that
+    /// haven't been laid out yet.
+    pub fn zero() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        }
+    }
+
     /// Returns `true` if `point` lies within this rectangle (inclusive edges).
     pub fn contains(&self, point: &super::point::Point) -> bool {
         point.x() >= self.x

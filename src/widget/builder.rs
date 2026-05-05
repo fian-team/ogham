@@ -41,6 +41,9 @@ impl WidgetRegistry {
         reg.register("image", |_reg, rt, desc| create_image_widget(rt, desc));
         reg.register("grid", |reg, rt, desc| create_grid_widget(reg, rt, desc));
         reg.register("presence", |reg, rt, desc| create_presence_widget(reg, rt, desc));
+        // Phase 2 Portal — built-in widget; consumer .ogh writes
+        // `Portal { open, focus_trap, children }`.
+        reg.register("portal", |reg, rt, desc| create_portal_widget(reg, rt, desc));
         reg
     }
 
@@ -717,6 +720,102 @@ fn create_presence_widget(
     presence.inner.children = children;
 
     Ok(Arc::new(Mutex::new(presence)))
+}
+
+/// Phase 2 Portal builder. Three properties:
+/// - `open: bool` (default false)
+/// - `focus_trap: bool` (default false; M4 wires it into the
+///   focus stack)
+/// - `children: array<widget>` (default empty)
+///
+/// `children` MUST be an array (or a single widget that we
+/// promote to a 1-element array). Anything else triggers
+/// design diagnostic #3.
+fn create_portal_widget(
+    registry: &WidgetRegistry,
+    runtime: &Arc<Mutex<Runtime>>,
+    descriptor: &WidgetDescriptor,
+) -> Result<WidgetRef, BridgeError> {
+    let mut portal = crate::widget::portal_widget::PortalWidget::new();
+    portal.owned_path_prefix = descriptor.owned_path.clone();
+
+    if let Some(value) = descriptor.properties.get("open") {
+        match value {
+            Value::Boolean(b) => portal.open = *b,
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "open".to_string(),
+                    format!("Portal expects 'open' as a boolean; got {:?}", other),
+                ));
+            }
+        }
+    }
+
+    if let Some(value) = descriptor.properties.get("focus_trap") {
+        match value {
+            Value::Boolean(b) => portal.focus_trap = *b,
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "focus_trap".to_string(),
+                    format!(
+                        "Portal expects 'focus_trap' as a boolean; got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+
+    let mut children: Vec<WidgetRef> = Vec::new();
+    if let Some(value) = descriptor.properties.get("children") {
+        match value {
+            Value::Array(children_array) => {
+                for child_value in children_array {
+                    match child_value {
+                        Value::Widget(child_widget) => {
+                            let child_ref = widget_value_to_widget_ref(
+                                registry,
+                                runtime,
+                                &Value::Widget(child_widget.clone()),
+                            )?;
+                            children.push(child_ref);
+                        }
+                        other => {
+                            return Err(BridgeError::InvalidPropertyType(
+                                "children".to_string(),
+                                format!(
+                                    "Portal expects 'children' (array of widgets); \
+                                     got non-widget element {:?}",
+                                    other
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            // Single widget: promote to a 1-element array.
+            Value::Widget(child_widget) => {
+                let child_ref = widget_value_to_widget_ref(
+                    registry,
+                    runtime,
+                    &Value::Widget(child_widget.clone()),
+                )?;
+                children.push(child_ref);
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "children".to_string(),
+                    format!(
+                        "Portal expects 'children' (array of widgets); got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+    portal.inner.children = children;
+
+    Ok(Arc::new(Mutex::new(portal)))
 }
 
 fn create_text_widget(
