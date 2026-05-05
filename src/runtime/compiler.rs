@@ -428,6 +428,13 @@ impl Compiler {
             OpCode::PopContext => 0,
             // Push the looked-up context value
             OpCode::GetContext(_) => 1,
+
+            // Lifecycle (Phase 2): each pops a closure (and effect
+            // additionally pops dep_count values).
+            OpCode::RegisterMountHook(_)
+            | OpCode::RegisterUnmountHook(_)
+            | OpCode::RegisterEffectCleanup => -1,
+            OpCode::RegisterEffect { dep_count, .. } => -(*dep_count as i32 + 1),
         }
     }
 

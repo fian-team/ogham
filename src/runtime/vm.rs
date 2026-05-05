@@ -608,6 +608,22 @@ impl VM {
                             runtime.state.call_stack.push(unique_id);
                             runtime.state.has_branched = false;
 
+                            // Phase 2 lifecycle: when the module
+                            // uses any lifecycle hooks, mark every
+                            // function-call's path as visited so
+                            // the per-render diff can identify
+                            // newly-mounted/unmounted paths even
+                            // for hookless functions. Modules
+                            // without hooks pay one branch-
+                            // predicted bool check and skip the
+                            // allocation.
+                            if runtime.lifecycle_active {
+                                let path = runtime.state.get_call_stack_path();
+                                if !path.is_empty() {
+                                    runtime.state.active_state_paths.insert(path);
+                                }
+                            }
+
                             self.call_vm_closure(&closure, arg_count)?;
 
                             // Store restore info on the new frame so
@@ -964,6 +980,21 @@ impl VM {
                             "SpreadForExpr: no collector array found".to_string(),
                         ));
                     }
+                }
+
+                // -- Lifecycle hooks (Phase 2) -------------------------------
+                // M0 reserves the bytecode shape but does not implement
+                // dispatch — these are unreachable until M1/M2 fills in
+                // the handlers. The compiler does not yet emit any of
+                // these opcodes (no `.ogh` source can produce them).
+                OpCode::RegisterMountHook(_)
+                | OpCode::RegisterUnmountHook(_)
+                | OpCode::RegisterEffect { .. }
+                | OpCode::RegisterEffectCleanup => {
+                    return Err(VMError::InvalidOperation(
+                        "lifecycle opcode not implemented until M1/M2"
+                            .to_string(),
+                    ));
                 }
             }
         }

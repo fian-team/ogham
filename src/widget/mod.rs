@@ -735,6 +735,22 @@ pub trait Widget: Downcast {
     /// Returns true if this widget needs post_render called after children render.
     fn needs_post_render(&self) -> bool { false }
 
+    /// Phase 2 lifecycle: the call-stack path at which this widget
+    /// was constructed. Used to identify which paths a draining
+    /// widget "owns" — when the widget is removed from the tree
+    /// (drain after exit animation), the runtime queues any
+    /// `unmount_hooks` / `effects` whose key-path starts with this
+    /// prefix for the next frame's pre-layout drain step.
+    ///
+    /// The actual flush is performed by
+    /// `StateManager::flush_for_path_prefix`, called from the
+    /// drain path. Widgets only need to expose their prefix.
+    ///
+    /// Default `""` means "owns no specific paths" (most widgets —
+    /// only function-call containers like `FlexWidget` produced
+    /// by an `fn` invocation own a path).
+    fn owned_path_prefix(&self) -> &str { "" }
+
     /// Called after all children have been rendered. Used by scrollable
     /// containers to pop their clip rect.
     fn post_render(

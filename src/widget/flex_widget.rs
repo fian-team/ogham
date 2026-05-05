@@ -66,6 +66,15 @@ pub struct FlexWidget {
     /// after a threshold of frames.
     #[cfg(debug_assertions)]
     pub layout_anim_frames: u32,
+
+    /// Phase 2 lifecycle: the call-stack path at which this widget
+    /// was constructed. Set by the builder when constructing from
+    /// a `Value::Widget` descriptor, using
+    /// `runtime.state.get_call_stack_path()`. Empty string means
+    /// "no path" (top-level module or test construction).
+    /// Used by the drain machinery to flush matching lifecycle
+    /// hooks. See [`Widget::owned_path_prefix`].
+    pub owned_path_prefix: String,
 }
 
 impl FlexWidget {
@@ -90,6 +99,7 @@ impl FlexWidget {
             exiting: false,
             #[cfg(debug_assertions)]
             layout_anim_frames: 0,
+            owned_path_prefix: String::new(),
         }
     }
 
@@ -114,6 +124,7 @@ impl FlexWidget {
             exiting: false,
             #[cfg(debug_assertions)]
             layout_anim_frames: 0,
+            owned_path_prefix: String::new(),
         }
     }
 
@@ -453,6 +464,10 @@ impl FlexWidget {
 }
 
 impl Widget for FlexWidget {
+    fn owned_path_prefix(&self) -> &str {
+        &self.owned_path_prefix
+    }
+
     fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_flex_widget) = new_widget.downcast_mut::<FlexWidget>() {

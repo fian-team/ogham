@@ -547,6 +547,16 @@ fn create_flex_widget(
 ) -> Result<WidgetRef, BridgeError> {
     let mut flex_widget = FlexWidget::new();
 
+    // Phase 2 lifecycle: capture the call-stack path at the moment
+    // this widget descriptor is being materialized. A widget owns
+    // any lifecycle hooks (state cells, on_unmount, effects) whose
+    // path-prefix matches its owned_path_prefix; on drain, the
+    // runtime queues those hooks for firing.
+    {
+        let rt = runtime.lock().expect("runtime lock poisoned");
+        flex_widget.owned_path_prefix = rt.state.get_call_stack_path();
+    }
+
     // block_interactions: when false, clicks are only "handled" if a child or listener handled them
     if let Some(Value::Boolean(b)) = descriptor.properties.get("block_interactions") {
         flex_widget.block_interactions = *b;
