@@ -114,7 +114,7 @@ impl LanguageServer for OghamLanguageServer {
         // LSP positions are 0-indexed; our spans are 1-indexed.
         let line = pos.line as usize + 1;
         let col = pos.character as usize + 1;
-        let Some(info) = hover::hover_at(ast, line, col) else {
+        let Some(info) = hover::hover_at(ast, line, col, doc.schema.as_ref()) else {
             return Ok(None);
         };
         Ok(Some(Hover {
@@ -219,10 +219,13 @@ fn byte_offset_of_utf16_cu(line: &str, utf16_offset: usize) -> usize {
     line.len()
 }
 
-/// Collect diagnostics from a document's scan+parse results.
+/// Collect diagnostics from a document's scan+parse+schema+compile
+/// results. The pipeline cascades — once a stage errors, later
+/// stages skip — to avoid drowning the editor in derivative noise.
 fn collect_diagnostics(doc: &crate::document::Document) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    // 1. Scanner errors (Error tokens).
     for token in &doc.tokens {
         if let ogham::scanner::TokenType::Error(msg) = &token.token_type {
             let line = token.line.saturating_sub(1) as u32;
@@ -237,24 +240,59 @@ fn collect_diagnostics(doc: &crate::document::Document) -> Vec<Diagnostic> {
         }
     }
 
+    // 2. Parser errors. Re-run the parser here (cheap, gives us
+    //    the typed Err shape rather than relying on the cached
+    //    Option<Function> in the Document).
     let mut parser = ogham::parser::Parser::new(doc.tokens.clone());
-    if let Err(err) = parser.parse() {
-        let line = err.line.saturating_sub(1) as u32;
-        let col = err.column.saturating_sub(1) as u32;
-        // length 0 falls back to a one-character highlight, matching the
-        // pre-typed-bindings behavior. Strict-mode errors set length
-        // explicitly via `SyntaxError::with_length`.
-        let length = if err.length > 0 { err.length as u32 } else { 1 };
-        diagnostics.push(Diagnostic {
-            range: Range::new(Position::new(line, col), Position::new(line, col + length)),
-            severity: Some(DiagnosticSeverity::ERROR),
-            source: Some("ogham".to_string()),
-            message: format_diagnostic_message(&err.message, err.note.as_deref(), err.help.as_deref()),
-            ..Default::default()
-        });
+    let parsed = parser.parse();
+    if let Err(err) = &parsed {
+        diagnostics.push(syntax_error_to_diagnostic(err));
+        return diagnostics; // schema/compile checks need a successful parse
+    }
+
+    // 3. Schema resolver errors (already cached on the Document
+    //    for hover/completion to use, but we render here too).
+    if let Some(err) = &doc.schema_error {
+        diagnostics.push(syntax_error_to_diagnostic(err));
+        return diagnostics; // compile check needs a successful schema
+    }
+
+    // 4. Strict-mode compile errors. The compiler builds its own
+    //    schema internally; that's fine — duplicate work but
+    //    quick. Surface only StrictMode errors here; other VMError
+    //    variants (e.g. UndefinedVariable in loose mode) aren't
+    //    LSP-actionable.
+    if let Ok(module) = parsed {
+        if let Err(ogham::runtime::error::VMError::StrictMode(err)) =
+            ogham::runtime::compiler::Compiler::compile_module(&module)
+        {
+            diagnostics.push(syntax_error_to_diagnostic(&err));
+        }
     }
 
     diagnostics
+}
+
+/// Convert a [`SyntaxError`] into an LSP [`Diagnostic`], rendering
+/// the optional `note:` / `help:` lines into the message field.
+fn syntax_error_to_diagnostic(err: &ogham::parser::SyntaxError) -> Diagnostic {
+    let line = err.line.saturating_sub(1) as u32;
+    let col = err.column.saturating_sub(1) as u32;
+    // length 0 falls back to a one-character highlight, matching the
+    // pre-typed-bindings behavior. Strict-mode errors set length
+    // explicitly via `SyntaxError::with_length`.
+    let length = if err.length > 0 { err.length as u32 } else { 1 };
+    Diagnostic {
+        range: Range::new(Position::new(line, col), Position::new(line, col + length)),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some("ogham".to_string()),
+        message: format_diagnostic_message(
+            &err.message,
+            err.note.as_deref(),
+            err.help.as_deref(),
+        ),
+        ..Default::default()
+    }
 }
 
 /// Render a parser/scanner diagnostic into the multi-line shape clients

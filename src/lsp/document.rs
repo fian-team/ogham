@@ -1,4 +1,5 @@
-use ogham::parser::Function;
+use ogham::parser::{Function, SyntaxError};
+use ogham::runtime::schema::ModuleSchema;
 use ogham::scanner::Token;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::Url;
@@ -8,6 +9,15 @@ pub struct Document {
     pub source: String,
     pub tokens: Vec<Token>,
     pub ast: Option<Function>,
+    /// The module's resolved schema, when both parsing and the
+    /// schema resolver succeed. `None` for parse-failed or
+    /// schema-rejected documents (the latter case also produces
+    /// an entry in `schema_error`).
+    pub schema: Option<ModuleSchema>,
+    /// Schema-resolution error surfaced by the LSP as a diagnostic.
+    /// Stored alongside the schema so hover/completion can fall
+    /// back when present.
+    pub schema_error: Option<SyntaxError>,
 }
 
 impl Document {
@@ -16,15 +26,30 @@ impl Document {
             source,
             tokens: Vec::new(),
             ast: None,
+            schema: None,
+            schema_error: None,
         }
     }
 
-    /// Re-scan and re-parse the current source text.
+    /// Re-scan, re-parse, and re-resolve the current source text.
+    /// Cheap to call on every keystroke (nothing is cached
+    /// across calls).
     pub fn analyze(&mut self) {
         let mut scanner = ogham::scanner::Scanner::new(self.source.clone());
         self.tokens = scanner.scan();
         let mut parser = ogham::parser::Parser::new(self.tokens.clone());
         self.ast = parser.parse().ok();
+        // Schema resolution is best-effort: only attempt it when
+        // the parser produced an AST. Failures surface as a
+        // diagnostic via `schema_error`.
+        self.schema = None;
+        self.schema_error = None;
+        if let Some(ast) = &self.ast {
+            match ModuleSchema::from_module(ast) {
+                Ok(schema) => self.schema = Some(schema),
+                Err(err) => self.schema_error = Some(err),
+            }
+        }
     }
 }
 

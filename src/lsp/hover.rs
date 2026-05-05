@@ -1,4 +1,6 @@
+use ogham::parser::typed_bindings::TypeRef;
 use ogham::parser::*;
+use ogham::runtime::schema::ModuleSchema;
 
 /// Result of looking up a position in the AST.
 pub enum HoverInfo {
@@ -25,6 +27,19 @@ pub enum HoverInfo {
     },
     ImportPath {
         path: String,
+    },
+    /// An identifier that resolves to a `host_state {}` field.
+    /// M3 schema-aware hover: shows the declared type and the
+    /// optional default value.
+    HostStateField {
+        name: String,
+        type_label: String,
+        default_label: Option<String>,
+    },
+    /// An identifier that resolves to a declared `record`.
+    RecordName {
+        name: String,
+        field_count: usize,
     },
 }
 
@@ -72,6 +87,26 @@ impl HoverInfo {
             HoverInfo::ImportPath { path } => {
                 format!("```ogham\nimport \"{path}\"\n```")
             }
+            HoverInfo::HostStateField {
+                name,
+                type_label,
+                default_label,
+            } => {
+                let mut out = format!("```ogham\nhost_state {{ {name}: {type_label} }}\n```");
+                if let Some(d) = default_label {
+                    out.push_str(&format!("\n\n*default*: `{d}`"));
+                }
+                out.push_str(
+                    "\n\nDeclared in this module's `host_state` block.",
+                );
+                out
+            }
+            HoverInfo::RecordName { name, field_count } => {
+                format!(
+                    "```ogham\nrecord {name}\n```\n\n{field_count} field{}",
+                    if *field_count == 1 { "" } else { "s" }
+                )
+            }
         }
     }
 }
@@ -85,9 +120,92 @@ struct Declaration {
 }
 
 /// Compute hover info for a position (1-indexed line and column).
-pub fn hover_at(module: &Function, line: usize, col: usize) -> Option<HoverInfo> {
+/// Pass the module's resolved [`ModuleSchema`] when available so
+/// hover on host_state fields and record names surfaces declared
+/// types and field counts.
+pub fn hover_at(
+    module: &Function,
+    line: usize,
+    col: usize,
+    schema: Option<&ModuleSchema>,
+) -> Option<HoverInfo> {
     let mut decls: Vec<Declaration> = Vec::new();
-    hover_in_function(module, line, col, &mut decls)
+    let info = hover_in_function(module, line, col, &mut decls);
+    // Schema-aware refinement: if the walker returned a fallback
+    // Variable hover (no matching local declaration) and the
+    // identifier is actually a host_state field or a declared
+    // record, replace with the more informative variant.
+    info.map(|info| schema_refine(info, schema))
+}
+
+/// Replace a generic `Variable` hover with a schema-aware variant
+/// when the identifier matches a `host_state` field or a declared
+/// record. Locals/parameters/state always win — only the
+/// "unknown identifier" fallback that today returns
+/// `HoverInfo::Variable` with an empty `value_hint` gets refined.
+fn schema_refine(info: HoverInfo, schema: Option<&ModuleSchema>) -> HoverInfo {
+    let Some(schema) = schema else { return info };
+    let HoverInfo::Variable {
+        name,
+        kind: DeclKind::Let,
+        value_hint,
+    } = &info
+    else {
+        return info;
+    };
+    if !value_hint.is_empty() {
+        // Real declared local — leave it alone.
+        return info;
+    }
+    if let Some(hs) = &schema.host_state {
+        if let Some(field) = hs.fields.get(name) {
+            return HoverInfo::HostStateField {
+                name: name.clone(),
+                type_label: format_type_ref(&field.ty),
+                default_label: field.default.as_ref().map(format_schema_literal),
+            };
+        }
+    }
+    if let Some(record) = schema.lookup_record(name) {
+        return HoverInfo::RecordName {
+            name: name.clone(),
+            field_count: record.fields.len(),
+        };
+    }
+    info
+}
+
+/// Render a [`TypeRef`] as the surface syntax users typed.
+fn format_type_ref(ty: &TypeRef) -> String {
+    use ogham::parser::typed_bindings::{KeyType, PrimType};
+    match ty {
+        TypeRef::Primitive(PrimType::Int) => "int".to_string(),
+        TypeRef::Primitive(PrimType::Float) => "float".to_string(),
+        TypeRef::Primitive(PrimType::Bool) => "bool".to_string(),
+        TypeRef::Primitive(PrimType::String) => "string".to_string(),
+        TypeRef::Record(name) => name.clone(),
+        TypeRef::Array(inner) => format!("array<{}>", format_type_ref(inner)),
+        TypeRef::Map(k, v) => {
+            let k = match k {
+                KeyType::String => "string",
+                KeyType::Int => "int",
+            };
+            format!("map<{}, {}>", k, format_type_ref(v))
+        }
+        TypeRef::Optional(inner) => format!("{}?", format_type_ref(inner)),
+        TypeRef::SelfRef => "Self".to_string(),
+    }
+}
+
+/// Render a schema literal default for hover display.
+fn format_schema_literal(lit: &ogham::parser::typed_bindings::SchemaLiteral) -> String {
+    use ogham::parser::typed_bindings::SchemaLiteral;
+    match lit {
+        SchemaLiteral::Int(v) => v.to_string(),
+        SchemaLiteral::Float(v) => v.to_string(),
+        SchemaLiteral::Bool(v) => v.to_string(),
+        SchemaLiteral::String(s) => format!("\"{}\"", s),
+    }
 }
 
 fn contains(span: &Span, line: usize, col: usize) -> bool {
