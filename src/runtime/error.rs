@@ -18,6 +18,11 @@ pub enum VMError {
     StackUnderflow,
     ExecutionLimitExceeded(String),
     CallStackOverflow,
+    /// A strict-mode rule was violated during compilation. Wraps a
+    /// rich [`SyntaxError`] so the LSP / consumer renders the same
+    /// `note:` and `help:` shape as parser errors. Strict mode is
+    /// enabled by declaring `host_state {}` in the module.
+    StrictMode(SyntaxError),
 }
 
 /// Aggregated error type for all runtime execution stages.

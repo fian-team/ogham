@@ -94,10 +94,20 @@ pub struct EventSig {
 }
 
 impl ModuleSchema {
-    /// True iff the source declared `host_state {}`. Strict-mode
-    /// resolution and diagnostics key off this — there is no
-    /// separate flag elsewhere in the runtime.
+    /// True iff the source declared *any* schema block — either
+    /// `host_state {}` or `events {}`. The compiler's event-call
+    /// validation keys off this (a module that declares its events
+    /// shouldn't be allowed to emit undeclared ones, even if it
+    /// hasn't also declared host_state).
     pub fn is_strict(&self) -> bool {
+        self.host_state.is_some() || !self.events.is_empty()
+    }
+
+    /// True iff the source declared `host_state {}`. Identifier
+    /// resolution against a host_state field list requires this —
+    /// without it, the compiler can't enumerate valid bare
+    /// identifiers, so it stays loose.
+    pub fn has_host_state(&self) -> bool {
         self.host_state.is_some()
     }
 
@@ -510,6 +520,13 @@ fn levenshtein_1<'a>(query: &str, candidates: &'a [&'a str]) -> Option<&'a str> 
         .iter()
         .find(|c| levenshtein_le_1(query, c))
         .copied()
+}
+
+/// Public re-export of [`levenshtein_1`] for use from the
+/// compiler's strict-mode diagnostics. Keeps a single source of
+/// truth for the suggestion algorithm.
+pub fn levenshtein_1_pub<'a>(query: &str, candidates: &'a [&'a str]) -> Option<&'a str> {
+    levenshtein_1(query, candidates)
 }
 
 fn levenshtein_le_1(a: &str, b: &str) -> bool {

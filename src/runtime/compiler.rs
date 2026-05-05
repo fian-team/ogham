@@ -1,13 +1,60 @@
 //! Bytecode compiler: walks the AST and emits [`OpCode`] instructions into
 //! a [`Chunk`] that the VM can execute.
 
+use std::sync::Arc;
+
 use crate::parser::{
     Block, Call, Expression, ForLoopExpression, Function, Literal, MatchExpression, Operator,
-    Statement,
+    Statement, SyntaxError,
 };
 use crate::runtime::error::VMError;
 use crate::runtime::opcode::{Chunk, FunctionProto, ImportMeta, OpCode, UpvalueDescriptor};
+use crate::runtime::schema::ModuleSchema;
 use crate::runtime::value::Value;
+
+/// Names of identifiers that are always available in strict mode
+/// without being declared in `host_state`, parameters, or `state`.
+/// Kept as a single source of truth so the LSP's completion (M3)
+/// can read the same list.
+pub(crate) const BUILTINS: &[&str] = &[
+    "event",
+    "mutation",
+    "use_context",
+    "rgb",
+    "rgba",
+    "true",
+    "false",
+];
+
+/// Render a `Vec<TypeRef>` for display in event-signature
+/// diagnostics. e.g. `[Int, String]` → `"int, string"`.
+fn type_args_for_display(args: &[crate::parser::typed_bindings::TypeRef]) -> String {
+    args.iter()
+        .map(format_type_ref)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_type_ref(ty: &crate::parser::typed_bindings::TypeRef) -> String {
+    use crate::parser::typed_bindings::{KeyType, PrimType, TypeRef};
+    match ty {
+        TypeRef::Primitive(PrimType::Int) => "int".to_string(),
+        TypeRef::Primitive(PrimType::Float) => "float".to_string(),
+        TypeRef::Primitive(PrimType::Bool) => "bool".to_string(),
+        TypeRef::Primitive(PrimType::String) => "string".to_string(),
+        TypeRef::Record(name) => name.clone(),
+        TypeRef::Array(inner) => format!("array<{}>", format_type_ref(inner)),
+        TypeRef::Map(k, v) => {
+            let k = match k {
+                KeyType::String => "string",
+                KeyType::Int => "int",
+            };
+            format!("map<{}, {}>", k, format_type_ref(v))
+        }
+        TypeRef::Optional(inner) => format!("{}?", format_type_ref(inner)),
+        TypeRef::SelfRef => "Self".to_string(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Local – a compile-time record for a local variable on the stack.
@@ -39,6 +86,12 @@ pub struct Compiler {
     current_line: usize,
     /// Tracks actual number of values on the stack relative to frame base.
     stack_depth: usize,
+    /// Module schema, attached only when compiling a top-level
+    /// module. Child compilers (nested fns) inherit a clone via
+    /// the `Arc` so they share strict-mode state without recursive
+    /// ownership headaches. `None` means loose mode — the compiler
+    /// emits the same bytecode it always has.
+    schema: Option<Arc<ModuleSchema>>,
 }
 
 impl Compiler {
@@ -53,12 +106,16 @@ impl Compiler {
             enclosing: None,
             current_line: 0,
             stack_depth: 0,
+            schema: None,
         }
     }
 
     /// Create a child compiler for a nested function and move `self` into
-    /// its `enclosing` slot. Returns the child.
+    /// its `enclosing` slot. Returns the child. The child inherits the
+    /// parent's schema (cheaply via `Arc::clone`) so strict-mode
+    /// resolution applies inside nested closures too.
     fn child(self, name: String, arity: u8) -> Self {
+        let schema = self.schema.clone();
         Self {
             function: FunctionProto::new(name, arity),
             locals: Vec::new(),
@@ -67,7 +124,202 @@ impl Compiler {
             enclosing: Some(Box::new(self)),
             current_line: 0,
             stack_depth: 0,
+            schema,
         }
+    }
+
+    /// True iff the module being compiled has declared *any*
+    /// schema block (host_state or events). Used for event-call
+    /// validation.
+    fn is_strict(&self) -> bool {
+        self.schema.as_ref().map(|s| s.is_strict()).unwrap_or(false)
+    }
+
+    /// True iff the module being compiled has declared
+    /// `host_state {}`. Used for strict identifier resolution
+    /// (which requires a known list of valid host_state fields).
+    fn has_host_state_schema(&self) -> bool {
+        self.schema
+            .as_ref()
+            .map(|s| s.has_host_state())
+            .unwrap_or(false)
+    }
+
+    /// In strict mode, decide whether `name` resolves to something
+    /// the body is allowed to reference: a local, an upvalue,
+    /// a host_state field, a declared/imported record, or a built-in.
+    /// Locals/upvalues are pre-checked by the caller (we already
+    /// tried `resolve_local` and `resolve_upvalue` before reaching
+    /// this), so this only checks the schema-level slots.
+    fn is_known_in_schema(&self, name: &str) -> bool {
+        if BUILTINS.contains(&name) {
+            return true;
+        }
+        let Some(schema) = self.schema.as_ref() else {
+            return false;
+        };
+        if let Some(hs) = &schema.host_state {
+            if hs.fields.contains_key(name) {
+                return true;
+            }
+        }
+        if schema.lookup_record(name).is_some() {
+            return true;
+        }
+        false
+    }
+
+    /// Build a strict-mode "unknown identifier" diagnostic, with a
+    /// levenshtein-1 suggestion when one is available.
+    fn strict_unknown_identifier(
+        &self,
+        name: &str,
+        line: usize,
+        column: usize,
+    ) -> SyntaxError {
+        let mut err = SyntaxError::new(line, column, format!("unknown identifier `{}`", name))
+            .with_length(name.len())
+            .with_note(
+                "this module declares `host_state {}`; identifiers resolve only to \
+                 declared fields, locals, parameters, state, imports, records, \
+                 and built-ins",
+            );
+        if let Some(suggestion) = self.suggest_identifier(name) {
+            err = err.with_help(format!("did you mean `{}`?", suggestion));
+        }
+        err
+    }
+
+    /// Strict-mode validation for an `event("name", arg, ...)` call:
+    ///
+    /// 1. The first arg must be a string *literal* — computed event
+    ///    names defeat the whole point of declared schemas.
+    /// 2. The literal must name a declared event.
+    /// 3. The number of extra args must match the declared signature
+    ///    (excluding the name itself).
+    ///
+    /// Argument *types* are not checked here. The plan's stretch goal
+    /// (best-effort: bare-identifier args whose type is statically
+    /// known) is deferred to a later sub-merge — production code's
+    /// most common bug is name typos and arg-count mismatches, which
+    /// this catches.
+    fn check_event_call(
+        &self,
+        call: &Call,
+        callee_ident: &crate::parser::Identifier,
+    ) -> Result<(), VMError> {
+        let schema = self
+            .schema
+            .as_ref()
+            .expect("check_event_call requires strict mode");
+
+        // (1) name must be a string literal
+        let Some(first_arg) = call.arguments.first() else {
+            return Err(VMError::StrictMode(
+                SyntaxError::new(
+                    callee_ident.span.start_line,
+                    callee_ident.span.start_column,
+                    "`event(...)` requires at least an event name",
+                )
+                .with_length(5)
+                .with_note("declare events with `events { name(...) };` first"),
+            ));
+        };
+        let (event_name, name_span) = match first_arg {
+            Expression::Literal(Literal::String(s, span)) => (s.clone(), *span),
+            other => {
+                return Err(VMError::StrictMode(
+                    SyntaxError::new(
+                        callee_ident.span.start_line,
+                        callee_ident.span.start_column,
+                        "computed event names are not allowed in strict mode",
+                    )
+                    .with_length(5)
+                    .with_note(
+                        "the first argument to `event()` must be a string literal \
+                         so the schema can validate the call statically",
+                    )
+                    .with_help(format!(
+                        "replace the dynamic value with a literal: \
+                         `event(\"<name>\", ...)`. Saw: {:?}",
+                        std::mem::discriminant(other)
+                    )),
+                ));
+            }
+        };
+
+        // (2) name must be declared
+        let Some(sig) = schema.events.get(&event_name) else {
+            let candidates: Vec<&str> =
+                schema.events.keys().map(|s| s.as_str()).collect();
+            let mut err = SyntaxError::new(
+                name_span.start_line,
+                name_span.start_column,
+                format!("unknown event `{}`", event_name),
+            )
+            .with_length(event_name.len() + 2) // include quotes
+            .with_note("only events declared in `events { ... }` may be emitted");
+            if let Some(suggestion) =
+                crate::runtime::schema::levenshtein_1_pub(&event_name, &candidates)
+            {
+                err = err.with_help(format!("did you mean `{}`?", suggestion));
+            } else if !candidates.is_empty() {
+                err = err.with_help(format!(
+                    "declared events: {}",
+                    candidates.join(", ")
+                ));
+            }
+            return Err(VMError::StrictMode(err));
+        };
+
+        // (3) arg count (excluding the name itself) must match
+        let actual_args = call.arguments.len().saturating_sub(1);
+        let expected_args = sig.args.len();
+        if actual_args != expected_args {
+            return Err(VMError::StrictMode(
+                SyntaxError::new(
+                    callee_ident.span.start_line,
+                    callee_ident.span.start_column,
+                    format!(
+                        "wrong number of arguments to `event(\"{}\", ...)`",
+                        event_name
+                    ),
+                )
+                .with_length(5)
+                .with_note(format!(
+                    "declared signature: {}({})",
+                    event_name,
+                    type_args_for_display(&sig.args)
+                ))
+                .with_help(format!(
+                    "expected {} argument{}, got {}",
+                    expected_args,
+                    if expected_args == 1 { "" } else { "s" },
+                    actual_args
+                )),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Suggest an identifier within Levenshtein-1 of `name` from
+    /// the union of known-in-scope names. Walks built-ins,
+    /// host_state fields, and declared/imported record names.
+    fn suggest_identifier(&self, name: &str) -> Option<String> {
+        let mut candidates: Vec<&str> = BUILTINS.to_vec();
+        if let Some(schema) = self.schema.as_ref() {
+            if let Some(hs) = &schema.host_state {
+                candidates.extend(hs.fields.keys().map(|s| s.as_str()));
+            }
+            candidates.extend(schema.records.keys().map(|s| s.as_str()));
+            candidates.extend(schema.imports.keys().map(|s| s.as_str()));
+        }
+        // Locals are also valid candidates but only at the level
+        // we're compiling at; including them is best-effort.
+        for local in &self.locals {
+            candidates.push(local.name.as_str());
+        }
+        crate::runtime::schema::levenshtein_1_pub(name, &candidates).map(String::from)
     }
 
     /// Finish compiling a child and return the enclosing (parent) compiler
@@ -340,9 +592,19 @@ impl Compiler {
     // -----------------------------------------------------------------------
 
     /// Compile a top-level module (the `Function` returned by the parser for
-    /// the whole file).
+    /// the whole file). If the module declares `host_state {}`, the
+    /// compiler runs strict-mode resolution: identifier references,
+    /// field access, and `event(...)` calls are validated against the
+    /// declared schema. Strict-mode violations surface as
+    /// `VMError::StrictMode(SyntaxError)` carrying rich diagnostics.
     pub fn compile_module(module: &Function) -> Result<FunctionProto, VMError> {
+        // Build the module schema first. Loose-mode modules return
+        // a schema with `host_state == None`; strict-mode modules
+        // return a fully-resolved schema. Either way, the compiler
+        // attaches it so identifier resolution can consult it.
+        let schema = ModuleSchema::from_module(module).map_err(VMError::StrictMode)?;
         let mut compiler = Compiler::new("<module>".to_string(), 0);
+        compiler.schema = Some(Arc::new(schema));
         compiler.compile_block(&module.body)?;
 
         // After executing the module body, look up `main` and call it.
@@ -365,9 +627,12 @@ impl Compiler {
     /// Compile an imported module. Unlike [`compile_module`](Self::compile_module),
     /// this does not look up or call a `main` function. Instead it returns the
     /// top-level local name-to-slot mapping so the caller can extract exported
-    /// bindings from the VM stack after execution.
+    /// bindings from the VM stack after execution. Imported modules also get
+    /// schema resolution (so an imported file's strict-mode errors surface).
     pub fn compile_import(module: &Function) -> Result<(FunctionProto, Vec<(String, u8)>), VMError> {
+        let schema = ModuleSchema::from_module(module).map_err(VMError::StrictMode)?;
         let mut compiler = Compiler::new("<import>".to_string(), 0);
+        compiler.schema = Some(Arc::new(schema));
         compiler.compile_block(&module.body)?;
 
         let local_names: Vec<(String, u8)> = compiler
@@ -958,11 +1223,31 @@ impl Compiler {
                     self.emit(OpCode::GetUpvalue(uv));
                     return Ok(());
                 }
-                // 3. State? (resolved at runtime via the constant name)
-                // 4. Host state?
-                // We cannot distinguish state vs host-state at compile time
-                // because state depends on the call-stack path at runtime.
-                // Emit GetState which falls through to host-state in the VM.
+                // 3. Strict mode (host_state {} declared): the
+                //    identifier MUST be a declared host_state field,
+                //    a declared/imported record name, or a built-in.
+                //    Otherwise it's a typo / missing declaration —
+                //    error with a useful diagnostic.
+                //
+                //    Note: identifier resolution requires
+                //    `host_state {}` specifically (not just any
+                //    schema declaration), because we need a known
+                //    list of valid host_state fields to check
+                //    against. A module with only `events {}`
+                //    declared keeps loose identifier resolution.
+                if self.has_host_state_schema() && !self.is_known_in_schema(&name) {
+                    let err = self.strict_unknown_identifier(
+                        &name,
+                        ident.span.start_line,
+                        ident.span.start_column,
+                    );
+                    return Err(VMError::StrictMode(err));
+                }
+                // 4. Loose mode (or strict-mode known identifier):
+                //    emit GetState which falls through to host-state
+                //    in the VM. We cannot distinguish state from
+                //    host-state at compile time because state depends
+                //    on the call-stack path at runtime.
                 let idx = self.chunk().add_constant(Value::String(name));
                 self.emit(OpCode::GetState(idx));
                 Ok(())
@@ -1081,6 +1366,13 @@ impl Compiler {
         // Special-case: event("name", ...)
         if let Expression::Literal(Literal::Identifier(ident)) = &*call.callee {
             if ident.get() == "event" {
+                // Strict-mode validation: event name must be a
+                // string literal that matches a declared event,
+                // and the arg count must match the declared
+                // signature. Loose mode passes through unchanged.
+                if self.is_strict() {
+                    self.check_event_call(call, ident)?;
+                }
                 // Push all args onto the stack (name first, then extra args).
                 for arg in &call.arguments {
                     self.compile_expression(arg)?;
