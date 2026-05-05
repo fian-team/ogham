@@ -648,11 +648,32 @@ Allowed via normal `SetState` opcodes, which flag
   React's `useEffect` re-render semantics.
 - **From `on_unmount` (drain-time, pre-layout):** writes
   go to a path that's about to be cleaned up by
-  `cleanup_unmounted_state` after the render. The write
-  is harmless (no leak — cleanup walks all keys regardless
-  of who wrote them) but useless. Documented as: "state
-  writes from `on_unmount` are discarded; use it only for
-  `host_state` updates and `event` calls."
+  `cleanup_unmounted_state` after the render. **The write
+  is silently discarded** — the path's state cells are
+  purged in the same frame, before any other code can
+  read them. There is no error and no warning at runtime.
+
+  This is the single most common migration foot-gun. The
+  natural shape for save-on-close logic in `on_unmount`
+  is **dispatch an event**, not write state:
+
+  ```ogh
+  // CORRECT: Rust handler does the I/O.
+  on_unmount {
+    event("save_settings", form);
+  };
+
+  // WRONG: write goes to a path about to be cleaned up.
+  on_unmount {
+    state.committed_form = form;  // discarded
+  };
+  ```
+
+  The LSP hover for the `on_unmount` keyword surfaces this
+  rule; the design intentionally does not warn at the call
+  site (state writes are otherwise legal in any context,
+  and a per-call-site check would cost too much). Author
+  discipline plus the hover hint are the contract.
 
 ### Recursion and re-entrance
 
@@ -1025,10 +1046,13 @@ Portal {
 
 ### What ships in `examples/`
 
-M5 ships `Modal()` and `Tooltip()` `fn` wrappers in
-`examples/portals/components.ogh` so consumers can adopt
-them without re-deriving the boilerplate. They are
-**library code, not language**.
+M5 ships `Modal()`, `Tooltip()`, and `Dropdown()` `fn`
+wrappers in `examples/portals/components.ogh` so consumers
+can adopt them without re-deriving the boilerplate. They
+are **library code, not language**. (`Dropdown()` was
+added based on the UL audit — Settings is an immediate
+consumer; the implementation is ~30 LOC of `.ogh` over
+the bare Portal primitive.)
 
 ---
 
@@ -1740,7 +1764,7 @@ these.
 | 11 | Escape-to-dismiss lives in user code, not on Portal | Same as #10; consumer adds an event handler |
 | 12 | Multiple portals stack; last-opened wins focus-trap | Modal-on-modal works without special handling |
 | 13 | Portal contents get entry/exit animations transparently | `open: false` is a normal reconcile removal on the children |
-| 14 | `Modal` and `Tooltip` ship as `examples/` library `fn`s, not language | Promote later if patterns crystallize |
+| 14 | `Modal`, `Tooltip`, and `Dropdown` ship as `examples/` library `fn`s, not language | Promote later if patterns crystallize. `Dropdown` added per UL audit (Settings consumer). |
 | 15 | `on_visible` / `on_hidden` deferred | Different semantic (visibility, not lifecycle); can add later if demand |
 
 Plus three decisions reached during the implementation-doc
@@ -1876,7 +1900,7 @@ follow-up explicitly.
 | Runtime API | `Runtime::has_input_blocking_portal() -> bool`, `lifecycle_error_count() -> usize`, `lifecycle_error_log() -> &[String]` |
 | LSP | 5 new diagnostics; 3 new hover variants + `cleanup` keyword hover; 4 new keyword tokens |
 | Tests | ~50 new tests across the three layers (lifecycle plumbing, hook semantics, portal paint/hit, focus stack, UL escape menu integration) |
-| `examples/` | `Modal()` and `Tooltip()` library `fn`s in `examples/portals/components.ogh` |
+| `examples/` | `Modal()`, `Tooltip()`, and `Dropdown()` library `fn`s in `examples/portals/components.ogh` |
 | Docs | `LIFECYCLE_AND_PORTAL.md` (this file, promoted to "Live contract" at M5); `LIFECYCLE_AND_PORTAL_UL_AUDIT.md`; `LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md`; cross-doc index updates |
 | UL migration | Settings save-on-close (M5); escape menu → Portal (M5); one tooltip as worked example (M5) |
 
@@ -1894,8 +1918,8 @@ The detailed per-merge breakdown lives in
   migrated as the validation gate.
 - `Runtime::has_input_blocking_portal()` is documented
   and used by UL to derive its overlay-active boolean.
-- `examples/portals/components.ogh` ships with `Modal()`
-  and `Tooltip()` reference wrappers.
+- `examples/portals/components.ogh` ships with `Modal()`,
+  `Tooltip()`, and `Dropdown()` reference wrappers.
 - All Phase 1 functionality continues to work unchanged.
 - Hot reload preserves lifecycle state across reloads (or
   flushes deterministically — see open question #7).
