@@ -7,7 +7,7 @@
 > reconciliation algorithm (live tree absorbs new descriptors in
 > place). Layout-specific behavior is in [`FLEX.md`](FLEX.md);
 > animation rules are in [`STYLE_AND_ANIMATION.md`](STYLE_AND_ANIMATION.md);
-> exit lifecycle is in [`LIFECYCLE.md`](LIFECYCLE.md); event
+> exit lifecycle is in [`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECYCLE.md); event
 > dispatch is in [`EVENTS.md`](EVENTS.md).
 
 ---
@@ -150,7 +150,7 @@ custom widgets (and overrides built-ins on collision).
 - **`image` / `Image`** — Skia image rendering with caching.
 - **`grid` / `Grid`** — grid layout with placement properties.
 - **`presence` / `Presence`** — generation-keyed sequencer; see
-  [LIFECYCLE.md](LIFECYCLE.md).
+  [ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md).
 
 ---
 
@@ -334,7 +334,7 @@ fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
 - `key()` — identity for reconciliation.
 - `render_effects()` — opacity + transform.
 - `is_exiting`, `begin_exit`, `cancel_exit`, `is_exit_complete` —
-  see [LIFECYCLE.md](LIFECYCLE.md).
+  see [ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md).
 - `tick_animations(dt)` — see
   [STYLE_AND_ANIMATION.md](STYLE_AND_ANIMATION.md).
 - `needs_post_render`, `post_render` — used by scroll containers

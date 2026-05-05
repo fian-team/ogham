@@ -30,7 +30,7 @@
 > [`RUNTIME.md`](RUNTIME.md), [`WIDGET_TREE.md`](WIDGET_TREE.md),
 > [`EVENTS.md`](EVENTS.md), [`FLEX.md`](FLEX.md),
 > [`STYLE_AND_ANIMATION.md`](STYLE_AND_ANIMATION.md),
-> [`LIFECYCLE.md`](LIFECYCLE.md), [`SURFACE.md`](SURFACE.md), and
+> [`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECYCLE.md), [`SURFACE.md`](SURFACE.md), and
 > [`LSP.md`](LSP.md).
 
 ---
@@ -363,7 +363,7 @@ hover / exit.
 to sequence transitions between content generations (so a "page"
 fully animates out before the next animates in).
 
-This subsystem has its own document: [`LIFECYCLE.md`](LIFECYCLE.md).
+This subsystem has its own document: [`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECYCLE.md).
 
 **Invariants:**
 - `initial:` is a snapshot the widget is born at; springs

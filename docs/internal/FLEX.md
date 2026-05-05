@@ -6,7 +6,7 @@
 > variants, axis arithmetic, alignment, wrap, gap/padding/margin/
 > border insets, scrolling, and hit-testing. Style transitions
 > live in [`STYLE_AND_ANIMATION.md`](STYLE_AND_ANIMATION.md);
-> entry/exit animations live in [`LIFECYCLE.md`](LIFECYCLE.md);
+> entry/exit animations live in [`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECYCLE.md);
 > reconciliation is in [`WIDGET_TREE.md`](WIDGET_TREE.md).
 >
 > `FlexWidget` is the workhorse of the widget tree; this is the

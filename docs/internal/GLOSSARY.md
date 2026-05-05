@@ -117,7 +117,7 @@ second-class.
 **Ghost** — A widget that has been removed from the declarative
 tree but is still in the live tree because it is playing an exit
 animation. Drained on the next tick after its springs settle. See
-[LIFECYCLE.md](LIFECYCLE.md).
+[ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md).
 
 **Pending** (Presence) — Children staged inside a `Presence`
 container while the previous generation finishes exiting. Mounted
