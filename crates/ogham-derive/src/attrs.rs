@@ -14,12 +14,13 @@ use syn::{Attribute, Lit, Variant};
 pub(crate) struct OghamAttrs {
     pub rename: Option<String>,
     pub skip: bool,
+    pub binding_module: Option<String>,
 }
 
 /// Parse all `#[ogham(...)]` attributes on the given list. Each
 /// nested entry is recognized exhaustively (currently `rename =
-/// "..."` and `skip`); unknown entries are an error so typos like
-/// `#[ogham(skipp)]` surface immediately.
+/// "..."`, `skip`, and `binding_module = "..."`); unknown entries
+/// are an error so typos like `#[ogham(skipp)]` surface immediately.
 pub(crate) fn parse_ogham_attrs(attrs: &[Attribute]) -> syn::Result<OghamAttrs> {
     let mut out = OghamAttrs::default();
     for attr in attrs {
@@ -40,6 +41,15 @@ pub(crate) fn parse_ogham_attrs(attrs: &[Attribute]) -> syn::Result<OghamAttrs> 
                 out.skip = true;
                 return Ok(());
             }
+            if meta.path.is_ident("binding_module") {
+                let value = meta.value()?;
+                let lit: Lit = value.parse()?;
+                if let Lit::Str(s) = lit {
+                    out.binding_module = Some(s.value());
+                    return Ok(());
+                }
+                return Err(meta.error("`binding_module` requires a string literal"));
+            }
             // Tolerate `#[ogham(default)]` for forward-compat with
             // the design's documented field attribute (it has no
             // codegen effect today; it just documents that the
@@ -56,6 +66,16 @@ pub(crate) fn parse_ogham_attrs(attrs: &[Attribute]) -> syn::Result<OghamAttrs> 
 /// Parse `#[ogham(rename = "Foo")]` at the struct/enum level.
 pub(crate) fn record_name_override(attrs: &[Attribute]) -> syn::Result<Option<String>> {
     Ok(parse_ogham_attrs(attrs)?.rename)
+}
+
+/// Parse `#[ogham(binding_module = "data/ui/x.ogh")]` at the
+/// struct/enum level. The path is the consumer-crate-relative
+/// location of the `.ogh` module that this Rust type pairs with —
+/// used by P0-M3 to write a JSON manifest at proc-macro expansion
+/// time. Returns `None` if the attribute isn't set; emits a
+/// `syn::Error` only when the value isn't a string literal.
+pub(crate) fn binding_module_path(attrs: &[Attribute]) -> syn::Result<Option<String>> {
+    Ok(parse_ogham_attrs(attrs)?.binding_module)
 }
 
 /// Parse `#[ogham(rename = "...")]` on a single field.
@@ -100,7 +120,8 @@ fn to_snake_case(camel: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::to_snake_case;
+    use super::{binding_module_path, parse_ogham_attrs, to_snake_case};
+    use syn::{parse_quote, ItemStruct};
 
     #[test]
     fn snake_case_basic() {
@@ -108,5 +129,64 @@ mod tests {
         assert_eq!(to_snake_case("FooBar"), "foo_bar");
         assert_eq!(to_snake_case("SetMasterVolume"), "set_master_volume");
         assert_eq!(to_snake_case("Close"), "close");
+    }
+
+    fn attrs_of(item: ItemStruct) -> Vec<syn::Attribute> {
+        item.attrs
+    }
+
+    #[test]
+    fn binding_module_absent_returns_none() {
+        let item: ItemStruct = parse_quote! {
+            struct State { x: i32 }
+        };
+        assert_eq!(binding_module_path(&attrs_of(item)).unwrap(), None);
+    }
+
+    #[test]
+    fn binding_module_string_extracts_path() {
+        let item: ItemStruct = parse_quote! {
+            #[ogham(binding_module = "data/ui/chest.ogh")]
+            struct State { x: i32 }
+        };
+        assert_eq!(
+            binding_module_path(&attrs_of(item)).unwrap().as_deref(),
+            Some("data/ui/chest.ogh"),
+        );
+    }
+
+    #[test]
+    fn binding_module_non_string_errors() {
+        let item: ItemStruct = parse_quote! {
+            #[ogham(binding_module = 42)]
+            struct State { x: i32 }
+        };
+        let err = binding_module_path(&attrs_of(item)).unwrap_err();
+        assert!(
+            err.to_string().contains("string literal"),
+            "expected string-literal hint, got: {err}",
+        );
+    }
+
+    #[test]
+    fn binding_module_combined_with_rename() {
+        let item: ItemStruct = parse_quote! {
+            #[ogham(rename = "Foo", binding_module = "data/foo.ogh")]
+            struct State { x: i32 }
+        };
+        let parsed = parse_ogham_attrs(&attrs_of(item)).unwrap();
+        assert_eq!(parsed.rename.as_deref(), Some("Foo"));
+        assert_eq!(parsed.binding_module.as_deref(), Some("data/foo.ogh"));
+    }
+
+    #[test]
+    fn binding_module_bare_form_errors() {
+        // `#[ogham(binding_module)]` with no `= "..."` should
+        // surface a parse error so typos are caught early.
+        let item: ItemStruct = parse_quote! {
+            #[ogham(binding_module)]
+            struct State { x: i32 }
+        };
+        assert!(binding_module_path(&attrs_of(item)).is_err());
     }
 }

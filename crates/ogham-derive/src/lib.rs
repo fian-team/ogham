@@ -20,6 +20,7 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 mod attrs;
 mod field_meta;
+mod manifest_emit;
 
 use field_meta::collect_struct_fields;
 
@@ -159,6 +160,23 @@ fn expand_ogham_state(input: DeriveInput) -> syn::Result<proc_macro2::TokenStrea
     };
     let record_name_str =
         attrs::record_name_override(&input.attrs)?.unwrap_or_else(|| name_ident.to_string());
+    // P0-M3: when binding_module is set, emit a JSON manifest
+    // describing the host_state shape for the schema-diagnostic
+    // backend to consume.
+    if let Some(binding_module) = attrs::binding_module_path(&input.attrs)? {
+        let emit_fields: Vec<manifest_emit::StateField> = fields
+            .iter()
+            .map(|f| manifest_emit::StateField {
+                name: f.ogham_name.clone(),
+                ty: f.ty.clone(),
+            })
+            .collect();
+        manifest_emit::emit_state_manifest(
+            &name_ident.to_string(),
+            &binding_module,
+            &emit_fields,
+        );
+    }
 
     // OghamState reuses the OghamRecord derive's schema/value
     // emission verbatim, so the user only writes #[derive(OghamState)]
@@ -252,6 +270,7 @@ fn expand_ogham_msg(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             ));
         }
     };
+    let binding_module_opt = attrs::binding_module_path(&input.attrs)?;
 
     let mut variant_metas: Vec<VariantMeta> = Vec::new();
     for v in variants {
@@ -271,6 +290,24 @@ fn expand_ogham_msg(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             event_name,
             arg_types,
         });
+    }
+
+    // P0-M3: when binding_module is set, emit a JSON manifest
+    // describing the events shape for the schema-diagnostic
+    // backend to consume.
+    if let Some(binding_module) = binding_module_opt {
+        let emit_events: Vec<manifest_emit::EventSig> = variant_metas
+            .iter()
+            .map(|v| manifest_emit::EventSig {
+                name: v.event_name.clone(),
+                args: v.arg_types.clone(),
+            })
+            .collect();
+        manifest_emit::emit_events_manifest(
+            &name_ident.to_string(),
+            &binding_module,
+            &emit_events,
+        );
     }
 
     // const OGHAM_EVENTS — list of (name, arg-type-refs) pairs.

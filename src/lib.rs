@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use skia_safe::textlayout::FontCollection;
 use skia_safe::{FontMgr, Typeface};
 
+pub mod cli;
 pub mod diagnostics;
 mod file_watcher;
 pub mod parser;

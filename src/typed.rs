@@ -25,7 +25,7 @@ use std::sync::Mutex;
 
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::error::RuntimeError;
-use crate::runtime::schema::{ModuleSchema, OghamMsg, OghamRecord, OghamState, RecordSchema};
+use crate::runtime::schema::{ModuleSchema, OghamMsg, OghamState};
 use crate::runtime::value::Value;
 use crate::Ogham;
 
@@ -228,21 +228,19 @@ fn inject_initial_into_config<S: OghamState>(
 }
 
 /// Verify the parsed module's schema matches the Rust-side
-/// derived schemas. Returns a `RuntimeError::SchemaMismatch`
-/// with a diff string on disagreement.
+/// derived schemas. Returns a `RuntimeError::SchemaMismatch` with a
+/// diff string on disagreement.
 ///
-/// The check is structural:
-/// - Every parsed host_state field must exist on `S` with the
-///   same `TypeRef`.
-/// - Every `S` field must exist in the parsed host_state.
-/// - Same for events on `M` vs the parsed events block.
+/// As of P0-M4 this is a thin wrapper around the data-shaped
+/// [`crate::diagnostics::check_against_manifest`] backend: we
+/// synthesize a [`StateManifest`] / [`EventsManifest`] pair from
+/// the generic types and run the same backend the static (CLI / LSP)
+/// paths use. Keeps the runtime path's belt-and-suspenders behaviour
+/// identical while sharing logic with the cross-side diagnostic
+/// surface.
 ///
 /// Records referenced by name don't need their own pass: if both
 /// sides reference `Record("Player")`, they're considered equal.
-/// (A future refinement could resolve and walk record schemas
-/// recursively, but in practice the parser/derive emit identical
-/// `TypeRef::Record(name)` shapes when the record exists in
-/// both.)
 fn check_schemas_match<S, M>(parsed: &ModuleSchema) -> Result<(), RuntimeError>
 where
     S: OghamState,
@@ -256,70 +254,35 @@ where
     if parsed.host_state.is_none() && !derived_hs.fields.is_empty() {
         return Err(RuntimeError::SchemaMissing);
     }
-    let empty = crate::runtime::schema::RecordSchema {
-        fields: std::collections::BTreeMap::new(),
-        decl_span: None,
-    };
-    let parsed_hs = parsed.host_state.as_ref().unwrap_or(&empty);
-    let mut diffs: Vec<String> = Vec::new();
 
-    diff_record(parsed_hs, &derived_hs, "host_state", &mut diffs);
+    // Synthesize manifests from the generic types and run the same
+    // backend the CLI/LSP front-ends use. `ogh_module` is empty in
+    // this path: `check_against_manifest` never reads the field —
+    // matching by .ogh module path is the LSP/CLI's job — so the
+    // empty value is invisible at runtime. If anyone ever serializes
+    // a runtime-synthesized manifest for debugging, that's the
+    // caveat to be aware of.
+    let state_manifest =
+        crate::diagnostics::manifest::StateManifest::from_state::<S>("");
+    let events_manifest =
+        crate::diagnostics::manifest::EventsManifest::from_events::<M>("");
 
-    let derived_events = M::ogham_events();
-    for (name, parsed_sig) in &parsed.events {
-        match derived_events.get(name) {
-            None => diffs.push(format!(
-                "  - event `{name}` is declared in the .ogh module but missing from the Rust enum"
-            )),
-            Some(derived_sig) => {
-                if derived_sig.args != parsed_sig.args {
-                    diffs.push(format!(
-                        "  - event `{name}` arg-types differ:\n      .ogh:  {:?}\n      Rust:  {:?}",
-                        parsed_sig.args, derived_sig.args
-                    ));
-                }
-            }
-        }
-    }
-    for name in derived_events.keys() {
-        if !parsed.events.contains_key(name) {
-            diffs.push(format!(
-                "  - event `{name}` is on the Rust enum but not declared in the .ogh module"
-            ));
-        }
-    }
+    let diags = crate::diagnostics::check_against_manifest(
+        parsed,
+        Some(&state_manifest),
+        Some(&events_manifest),
+        std::any::type_name::<S>(),
+    );
 
-    if diffs.is_empty() {
+    if diags.is_empty() {
         Ok(())
     } else {
-        Err(RuntimeError::SchemaMismatch(diffs.join("\n")))
-    }
-}
-
-/// Compare a parsed `RecordSchema` against a derived one,
-/// appending one diff line per disagreement to `out`.
-fn diff_record(parsed: &RecordSchema, derived: &RecordSchema, label: &str, out: &mut Vec<String>) {
-    for (name, parsed_field) in &parsed.fields {
-        match derived.fields.get(name) {
-            None => out.push(format!(
-                "  - {label} field `{name}` is declared in the .ogh module but missing from the Rust struct"
-            )),
-            Some(derived_field) => {
-                if derived_field.ty != parsed_field.ty {
-                    out.push(format!(
-                        "  - {label} field `{name}` type differs:\n      .ogh:  {:?}\n      Rust:  {:?}",
-                        parsed_field.ty, derived_field.ty
-                    ));
-                }
-            }
-        }
-    }
-    for name in derived.fields.keys() {
-        if !parsed.fields.contains_key(name) {
-            out.push(format!(
-                "  - {label} field `{name}` is on the Rust struct but not declared in the .ogh module"
-            ));
-        }
+        let rendered = diags
+            .iter()
+            .map(|d| format!("  - {}", d.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(RuntimeError::SchemaMismatch(rendered))
     }
 }
 
