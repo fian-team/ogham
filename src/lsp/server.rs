@@ -268,9 +268,102 @@ fn collect_diagnostics(doc: &crate::document::Document) -> Vec<Diagnostic> {
         {
             diagnostics.push(syntax_error_to_diagnostic(&err));
         }
+
+        // 5. Phase 2 conditional-hook warning. Walk the AST for
+        //    `on_mount` / `on_unmount` statements that appear
+        //    inside `if`, `match`, or for-loop bodies — these
+        //    register conditionally and don't behave as authors
+        //    expect. Advisory only.
+        for warning in collect_lifecycle_warnings(&module) {
+            diagnostics.push(syntax_error_to_diagnostic(&warning));
+        }
     }
 
     diagnostics
+}
+
+/// Walk an AST and emit warnings for `on_mount` / `on_unmount`
+/// statements appearing inside `if` branches, `else` blocks, or
+/// for-loop bodies. These register conditionally — at runtime
+/// the hook only registers when its surrounding control-flow
+/// path is taken. Per the design (decision #16), this is legal
+/// at runtime but earns a warning at the LSP because the
+/// semantic almost certainly isn't what the author wanted (use
+/// `effect (cond) { ... }` for "run when the flag changes").
+fn collect_lifecycle_warnings(
+    module: &ogham::parser::Function,
+) -> Vec<ogham::parser::SyntaxError> {
+    let mut warnings = Vec::new();
+    walk_block_for_hooks(&module.body, /* in_conditional */ false, &mut warnings);
+    warnings
+}
+
+fn walk_block_for_hooks(
+    block: &ogham::parser::Block,
+    in_conditional: bool,
+    out: &mut Vec<ogham::parser::SyntaxError>,
+) {
+    for stmt in &block.statement_list {
+        walk_stmt_for_hooks(stmt, in_conditional, out);
+    }
+}
+
+fn walk_stmt_for_hooks(
+    stmt: &ogham::parser::Statement,
+    in_conditional: bool,
+    out: &mut Vec<ogham::parser::SyntaxError>,
+) {
+    use ogham::parser::Statement;
+    match stmt {
+        Statement::OnMount(hook) | Statement::OnUnmount(hook) => {
+            let kind = match stmt {
+                Statement::OnMount(_) => "on_mount",
+                _ => "on_unmount",
+            };
+            if in_conditional {
+                out.push(
+                    ogham::parser::SyntaxError::new(
+                        hook.span.start_line,
+                        hook.span.start_column,
+                        format!(
+                            "{kind} inside a conditional fires only \
+                             if its path is also newly-mounted that \
+                             frame"
+                        ),
+                    )
+                    .with_help(format!(
+                        "for \"run when this flag changes\" use \
+                         `effect (flag) {{ ... }}` instead"
+                    ))
+                    .with_warning(),
+                );
+            }
+            // Recurse into the hook's body — nested hooks (e.g.
+            // an `on_mount` whose body contains a closure that
+            // declares another `on_mount`) follow the same rule.
+            walk_block_for_hooks(&hook.body, in_conditional, out);
+        }
+        Statement::Conditional(cond) => {
+            for (_test, branch) in &cond.branches {
+                walk_block_for_hooks(branch, /* now in conditional */ true, out);
+            }
+            if let Some(else_block) = &cond.else_block {
+                walk_block_for_hooks(else_block, true, out);
+            }
+        }
+        Statement::ForLoop(for_loop) => {
+            walk_block_for_hooks(&for_loop.body, true, out);
+        }
+        // Other statement kinds don't introduce conditional
+        // contexts and don't contain blocks of statements.
+        // Expression statements *can* contain blocks (match arms
+        // produce expressions), but match-arm bodies live in
+        // Expression, not Statement; M1 doesn't walk into
+        // expressions because `on_mount`/`on_unmount` are
+        // statements, not expressions, so they can't appear
+        // inside a match-arm body anyway.
+        _ => {}
+    }
 }
 
 /// Convert a [`SyntaxError`] into an LSP [`Diagnostic`], rendering
@@ -282,9 +375,13 @@ fn syntax_error_to_diagnostic(err: &ogham::parser::SyntaxError) -> Diagnostic {
     // pre-typed-bindings behavior. Strict-mode errors set length
     // explicitly via `SyntaxError::with_length`.
     let length = if err.length > 0 { err.length as u32 } else { 1 };
+    let severity = match err.severity {
+        ogham::parser::DiagnosticLevel::Error => DiagnosticSeverity::ERROR,
+        ogham::parser::DiagnosticLevel::Warning => DiagnosticSeverity::WARNING,
+    };
     Diagnostic {
         range: Range::new(Position::new(line, col), Position::new(line, col + length)),
-        severity: Some(DiagnosticSeverity::ERROR),
+        severity: Some(severity),
         source: Some("ogham".to_string()),
         message: format_diagnostic_message(
             &err.message,

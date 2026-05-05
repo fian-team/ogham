@@ -1,3 +1,13 @@
+/// Severity of a [`SyntaxError`]. Phase 2 added the warning
+/// channel for advisory diagnostics (e.g. conditional-hook
+/// usage); the LSP maps `Warning` to `DiagnosticSeverity::WARNING`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DiagnosticLevel {
+    #[default]
+    Error,
+    Warning,
+}
+
 /// A diagnostic produced by the scanner or parser.
 ///
 /// `line` and `column` are 1-indexed and point at the start of the error.
@@ -9,6 +19,9 @@
 /// primary `message`. They follow the convention of Rust's diagnostic
 /// formatter: `note:` is contextual ("this rule exists because…"),
 /// `help:` is actionable ("did you mean…").
+///
+/// `severity` defaults to `Error`. Use [`with_warning`](Self::with_warning)
+/// for advisory diagnostics that should not block compilation.
 ///
 /// Construct via the [`new`](Self::new) constructor and chain the
 /// `with_*` builder methods to attach optional context. The struct
@@ -23,6 +36,7 @@ pub struct SyntaxError {
     pub length: usize,
     pub note: Option<String>,
     pub help: Option<String>,
+    pub severity: DiagnosticLevel,
 }
 
 impl SyntaxError {
@@ -38,6 +52,7 @@ impl SyntaxError {
             length: 0,
             note: None,
             help: None,
+            severity: DiagnosticLevel::Error,
         }
     }
 
@@ -63,6 +78,23 @@ impl SyntaxError {
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
         self
+    }
+
+    /// Mark this diagnostic as a warning rather than an error.
+    /// Phase 2 uses this for advisory diagnostics like the
+    /// conditional-hook warning — the LSP renders it as a yellow
+    /// squiggle and the compilation is allowed to proceed.
+    pub fn with_warning(mut self) -> Self {
+        self.severity = DiagnosticLevel::Warning;
+        self
+    }
+
+    /// True if this diagnostic should block compilation. Errors
+    /// always block; warnings never do. Mostly used by code that
+    /// wants to filter "real failures" out of a mixed diagnostics
+    /// list.
+    pub fn is_blocking(&self) -> bool {
+        matches!(self.severity, DiagnosticLevel::Error)
     }
 }
 

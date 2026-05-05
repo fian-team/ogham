@@ -82,19 +82,20 @@ pub(crate) struct StateManager {
     pub(crate) has_branched: bool,
     pub(crate) call_counters: HashMap<String, usize>,
 
-    // -- Phase 2 lifecycle (M0 plumbing; M1+ adds behavior) --
-    // pending_mounts and pending_effect_fires are written by the
-    // RegisterMountHook and RegisterEffect opcode handlers (M1/M2);
-    // M0 only declares them.
+    // -- Phase 2 lifecycle --
+    // Pending queues carry the closure with each entry rather
+    // than just the key. This means flush_for_path_prefix can
+    // remove the entry from the persistent map AND queue it for
+    // drain in one step — the drainer doesn't need to keep the
+    // map entry alive while it consumes the queue.
     pub(crate) previous_active_paths: HashSet<String>,
     pub(crate) unmount_hooks: HashMap<(String, u16), Rc<VMClosure>>,
     pub(crate) effects: HashMap<(String, u16), EffectSlot>,
-    #[allow(dead_code)]
     pub(crate) pending_mounts: Vec<(String, u16, Rc<VMClosure>)>,
-    pub(crate) pending_unmounts: Vec<(String, u16)>,
+    pub(crate) pending_unmounts: Vec<(String, u16, Rc<VMClosure>)>,
     #[allow(dead_code)]
     pub(crate) pending_effect_fires: Vec<(String, u16)>,
-    pub(crate) pending_effect_cleanups: Vec<(String, u16)>,
+    pub(crate) pending_effect_cleanups: Vec<(String, u16, Rc<VMClosure>)>,
     pub(crate) candidate_unmounts: HashSet<String>,
 }
 
@@ -141,12 +142,13 @@ impl StateManager {
     /// M0 ships this helper and the synthetic-state tests; M1
     /// wires it into `drain_exited_children` once hook
     /// registration is in place.
-    #[allow(dead_code)]
     pub(crate) fn flush_for_path_prefix(&mut self, prefix: &str) {
         if prefix.is_empty() {
             return;
         }
-        // Queue + remove unmount hooks.
+        // Move matching unmount_hooks into the pending queue.
+        // Carrying the closure in the queue lets the drainer fire
+        // it without consulting the persistent map.
         let unmount_keys: Vec<(String, u16)> = self
             .unmount_hooks
             .keys()
@@ -154,10 +156,13 @@ impl StateManager {
             .cloned()
             .collect();
         for key in unmount_keys {
-            self.pending_unmounts.push(key.clone());
-            self.unmount_hooks.remove(&key);
+            if let Some(closure) = self.unmount_hooks.remove(&key) {
+                self.pending_unmounts.push((key.0, key.1, closure));
+            }
         }
-        // Queue cleanups + remove effect slots.
+        // Move matching effect cleanups into the cleanup queue,
+        // then drop the slot. M2 also queues an effect-fire if
+        // appropriate; M1 only handles the unmount-cleanup case.
         let effect_keys: Vec<(String, u16)> = self
             .effects
             .keys()
@@ -165,10 +170,12 @@ impl StateManager {
             .cloned()
             .collect();
         for key in effect_keys {
-            if self.effects[&key].pending_cleanup.is_some() {
-                self.pending_effect_cleanups.push(key.clone());
+            if let Some(slot) = self.effects.remove(&key) {
+                if let Some(cleanup) = slot.pending_cleanup {
+                    self.pending_effect_cleanups
+                        .push((key.0, key.1, cleanup));
+                }
             }
-            self.effects.remove(&key);
         }
         // Clear any candidate_unmounts entries for this prefix.
         self.candidate_unmounts.retain(|p| !p.starts_with(prefix));
@@ -336,7 +343,19 @@ pub struct Runtime {
     /// VM `Call` opcode handler to gate the per-call path-marking
     /// — modules without hooks pay zero per-call overhead.
     pub(crate) lifecycle_active: bool,
+    /// Phase 2 lifecycle: per-frame log of stringified errors
+    /// from hook bodies. Hook errors are logged and execution
+    /// continues with the next hook in the queue (per design's
+    /// "log-and-continue" policy). Capacity-bounded ring buffer
+    /// (oldest entries dropped at LIFECYCLE_LOG_CAPACITY).
+    /// Cleared at frame start.
+    pub(crate) lifecycle_error_log: Vec<String>,
 }
+
+/// Maximum number of hook-error entries retained in
+/// `Runtime::lifecycle_error_log`. Per impl-plan decision #4
+/// (M0 kickoff), 100 is the default and not configurable in M1.
+pub(crate) const LIFECYCLE_LOG_CAPACITY: usize = 100;
 
 impl Runtime {
     pub fn new() -> Self {
@@ -354,6 +373,139 @@ impl Runtime {
             screen_height: 0.0,
             context_stack: Vec::new(),
             lifecycle_active: false,
+            lifecycle_error_log: Vec::new(),
+        }
+    }
+
+    /// Phase 2: number of hook-body errors logged in the current
+    /// frame. Reset to 0 at frame start. Hosts can surface this
+    /// in debug overlays (UL audit OQ#1 use case).
+    pub fn lifecycle_error_count(&self) -> usize {
+        self.lifecycle_error_log.len()
+    }
+
+    /// Phase 2: a snapshot of the current frame's hook-body
+    /// error messages. Latest at the end. Capped at
+    /// LIFECYCLE_LOG_CAPACITY entries.
+    pub fn lifecycle_error_log(&self) -> &[String] {
+        &self.lifecycle_error_log
+    }
+
+    /// Phase 2: append an error to the per-frame log, dropping
+    /// the oldest entry if capacity is reached.
+    pub(crate) fn log_lifecycle_error(&mut self, msg: impl Into<String>) {
+        if self.lifecycle_error_log.len() >= LIFECYCLE_LOG_CAPACITY {
+            self.lifecycle_error_log.remove(0);
+        }
+        self.lifecycle_error_log.push(msg.into());
+    }
+
+    /// Phase 2: drain `pending_unmounts` and
+    /// `pending_effect_cleanups` from this frame, calling each
+    /// closure with the runtime's current scope. Errors are
+    /// logged to `lifecycle_error_log` (one entry per failure)
+    /// and execution continues with the next entry. Order:
+    /// unmounts deepest-first (sorted by path length descending),
+    /// then effect cleanups in registration order (M2 cares
+    /// about ordering; M1 has none of these to drain).
+    ///
+    /// Hosts call this *before* `UI::layout()`. M1's caller is
+    /// `Ogham::tick()` (in lib.rs), which sequences the new
+    /// per-frame lifecycle dispatch around the existing
+    /// reconcile→tick_animations→layout pipeline.
+    pub fn pre_layout_drain(&mut self) {
+        // Sort deepest-first so a parent's unmount fires after
+        // its children's. Path length is a stand-in for depth
+        // (paths are joined with "/" so depth = number of "/" + 1
+        // — but the byte length grows monotonically with depth
+        // for any single tree, which is sufficient for ordering
+        // siblings vs. parents).
+        self.state
+            .pending_unmounts
+            .sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        let unmounts = std::mem::take(&mut self.state.pending_unmounts);
+        for (path, hook_id, closure) in unmounts {
+            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
+                self.log_lifecycle_error(format!(
+                    "on_unmount at {}#{}: {:?}",
+                    path, hook_id, e
+                ));
+            }
+        }
+        // M1: pending_effect_cleanups is always empty (effects
+        // ship in M2). Drain unconditionally so the M2 wiring
+        // is just "fill the queue."
+        let cleanups = std::mem::take(&mut self.state.pending_effect_cleanups);
+        for (path, hook_id, closure) in cleanups {
+            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
+                self.log_lifecycle_error(format!(
+                    "effect cleanup at {}#{}: {:?}",
+                    path, hook_id, e
+                ));
+            }
+        }
+    }
+
+    /// Phase 2: drain `pending_mounts` and `pending_effect_fires`
+    /// from this frame, calling each closure with the runtime's
+    /// current scope. Mounts run parents-first (sorted by path
+    /// length ascending) so a parent's `on_mount` can read state
+    /// its children populated.
+    ///
+    /// Hosts call this *after* `UI::layout()` so mount bodies
+    /// can read post-layout sizes (per design §"Hook firing
+    /// timing").
+    pub fn post_layout_drain(&mut self) {
+        self.state
+            .pending_mounts
+            .sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+        let mounts = std::mem::take(&mut self.state.pending_mounts);
+        for (path, hook_id, closure) in mounts {
+            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
+                self.log_lifecycle_error(format!(
+                    "on_mount at {}#{}: {:?}",
+                    path, hook_id, e
+                ));
+            }
+        }
+        // M2 fills in pending_effect_fires; M1 leaves it empty.
+        let fires = std::mem::take(&mut self.state.pending_effect_fires);
+        for _key in fires {
+            // No-op in M1.
+        }
+    }
+
+    /// Phase 2: M1 path-disappear unmount semantics. After VM
+    /// execution, walk paths in `previous_active_paths` that are
+    /// no longer in `active_state_paths` and queue their
+    /// registered `on_unmount` hooks for the next pre-layout
+    /// drain. Removes the entries from `unmount_hooks`.
+    ///
+    /// LIMITATION (documented in M1): this fires unmount
+    /// immediately when a path stops being visited, not after
+    /// the widget's exit animation drains. The full drain-time
+    /// semantics from the design require threading mutable
+    /// runtime state through the widget tree's tick_animations
+    /// chain — invasive surgery deferred to a later merge
+    /// (likely M3 when Portal needs it for focus stack
+    /// stability). For the M5 canonical deliverables (Settings
+    /// save-on-close, escape menu Portal), path-disappear is
+    /// sufficient.
+    pub(crate) fn queue_disappeared_unmounts(&mut self) {
+        let disappeared: Vec<String> = self
+            .state
+            .previous_active_paths
+            .difference(&self.state.active_state_paths)
+            .cloned()
+            .collect();
+        for path in disappeared {
+            // Use flush_for_path_prefix with the full path as
+            // prefix — for a path "panel/foo", this catches any
+            // hook key starting with "panel/foo" (children of the
+            // unmounted function). The same path is rarely a
+            // prefix of an unrelated longer path because path
+            // components are function names plus call counters.
+            self.state.flush_for_path_prefix(&path);
         }
     }
 
@@ -541,7 +693,17 @@ impl Runtime {
         self.state.rotate_active_paths();
         self.state.call_stack.clear();
         self.state.call_counters.clear();
+        // Phase 2: clear the per-frame error log. Previous frame's
+        // hook errors are no longer relevant.
+        self.lifecycle_error_log.clear();
         let result = self.execute_module_cached();
+        // Phase 2: compute disappeared paths and queue their
+        // unmount hooks for drain. Then drain all pending hook
+        // queues. M1 path-disappear semantics; M3+ refines to
+        // drain-time once Portal needs it for focus stack.
+        self.queue_disappeared_unmounts();
+        self.pre_layout_drain();
+        self.post_layout_drain();
         self.state.cleanup_unmounted_state();
         result
     }
@@ -564,8 +726,16 @@ impl Runtime {
             proto
         };
 
+        // Phase 2: clear the per-frame error log so first-render
+        // hook errors are surfaced cleanly.
+        self.lifecycle_error_log.clear();
+
         let mut vm = VM::new();
         let result = vm.run(&proto, self);
+        // Phase 2: same drain ordering as rerender.
+        self.queue_disappeared_unmounts();
+        self.pre_layout_drain();
+        self.post_layout_drain();
         self.state.cleanup_unmounted_state();
         result
     }

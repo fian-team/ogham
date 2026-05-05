@@ -990,16 +990,66 @@ impl VM {
                 }
 
                 // -- Lifecycle hooks (Phase 2) -------------------------------
-                // M0 reserves the bytecode shape but does not implement
-                // dispatch — these are unreachable until M1/M2 fills in
-                // the handlers. The compiler does not yet emit any of
-                // these opcodes (no `.ogh` source can produce them).
-                OpCode::RegisterMountHook(_)
-                | OpCode::RegisterUnmountHook(_)
-                | OpCode::RegisterEffect { .. }
+                // RegisterMountHook (M1): pop closure; queue for
+                // post-layout fire IF the path is newly mounted
+                // this frame (i.e. not in previous_active_paths).
+                // Otherwise drop the closure — mount fires once
+                // per path-lifetime.
+                OpCode::RegisterMountHook(hook_id) => {
+                    let closure_value = self.pop()?;
+                    let closure = match closure_value {
+                        Value::BytecodeClosure(c) => c,
+                        other => {
+                            return Err(VMError::InvalidOperation(format!(
+                                "RegisterMountHook expected closure on stack, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let path = runtime.state.get_call_stack_path();
+                    if !path.is_empty()
+                        && !runtime.state.previous_active_paths.contains(&path)
+                    {
+                        runtime
+                            .state
+                            .pending_mounts
+                            .push((path, hook_id, closure));
+                    }
+                    // Else: path was already active last frame, OR
+                    // we're at module top-level (empty path). Drop.
+                }
+                // RegisterUnmountHook (M1): pop closure; insert
+                // into the persistent map at (path, hook_id),
+                // overwriting any prior entry. Re-registration
+                // every render keeps the closure's upvalues fresh.
+                OpCode::RegisterUnmountHook(hook_id) => {
+                    let closure_value = self.pop()?;
+                    let closure = match closure_value {
+                        Value::BytecodeClosure(c) => c,
+                        other => {
+                            return Err(VMError::InvalidOperation(format!(
+                                "RegisterUnmountHook expected closure on stack, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let path = runtime.state.get_call_stack_path();
+                    if !path.is_empty() {
+                        runtime
+                            .state
+                            .unmount_hooks
+                            .insert((path, hook_id), closure);
+                    }
+                    // Top-level (path == "") unmount hooks would
+                    // fire only on runtime shutdown; out of scope.
+                }
+                // M2 will implement these; M1 leaves them as
+                // not-yet-implemented errors. The compiler in M1
+                // does not emit either of these opcodes.
+                OpCode::RegisterEffect { .. }
                 | OpCode::RegisterEffectCleanup => {
                     return Err(VMError::InvalidOperation(
-                        "lifecycle opcode not implemented until M1/M2"
+                        "effect / cleanup not implemented until M2"
                             .to_string(),
                     ));
                 }

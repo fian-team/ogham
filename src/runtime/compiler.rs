@@ -36,24 +36,7 @@ fn type_args_for_display(args: &[crate::parser::typed_bindings::TypeRef]) -> Str
 }
 
 fn format_type_ref(ty: &crate::parser::typed_bindings::TypeRef) -> String {
-    use crate::parser::typed_bindings::{KeyType, PrimType, TypeRef};
-    match ty {
-        TypeRef::Primitive(PrimType::Int) => "int".to_string(),
-        TypeRef::Primitive(PrimType::Float) => "float".to_string(),
-        TypeRef::Primitive(PrimType::Bool) => "bool".to_string(),
-        TypeRef::Primitive(PrimType::String) => "string".to_string(),
-        TypeRef::Record(name) => name.clone(),
-        TypeRef::Array(inner) => format!("array<{}>", format_type_ref(inner)),
-        TypeRef::Map(k, v) => {
-            let k = match k {
-                KeyType::String => "string",
-                KeyType::Int => "int",
-            };
-            format!("map<{}, {}>", k, format_type_ref(v))
-        }
-        TypeRef::Optional(inner) => format!("{}?", format_type_ref(inner)),
-        TypeRef::SelfRef => "Self".to_string(),
-    }
+    ty.to_canonical_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +75,13 @@ pub struct Compiler {
     /// ownership headaches. `None` means loose mode — the compiler
     /// emits the same bytecode it always has.
     schema: Option<Arc<ModuleSchema>>,
+    /// Phase 2: per-kind hook counter, used to assign hook_id
+    /// (1-indexed, source-order) within this function. Each
+    /// `on_mount` block in source order gets the next mount id;
+    /// likewise for `on_unmount`. Reset on entering a child
+    /// compiler (nested fn restarts at 1).
+    next_mount_hook_id: u16,
+    next_unmount_hook_id: u16,
 }
 
 impl Compiler {
@@ -107,6 +97,8 @@ impl Compiler {
             current_line: 0,
             stack_depth: 0,
             schema: None,
+            next_mount_hook_id: 1,
+            next_unmount_hook_id: 1,
         }
     }
 
@@ -125,6 +117,9 @@ impl Compiler {
             current_line: 0,
             stack_depth: 0,
             schema,
+            // Per-function hook id: each function starts at 1.
+            next_mount_hook_id: 1,
+            next_unmount_hook_id: 1,
         }
     }
 
@@ -804,6 +799,12 @@ impl Compiler {
             | Statement::EventsDeclaration(_) => {
                 // Intentionally empty.
             }
+            Statement::OnMount(hook) => {
+                self.compile_lifecycle_hook(hook, /* is_mount */ true)?;
+            }
+            Statement::OnUnmount(hook) => {
+                self.compile_lifecycle_hook(hook, /* is_mount */ false)?;
+            }
         }
         Ok(())
     }
@@ -1304,6 +1305,57 @@ impl Compiler {
     // -----------------------------------------------------------------------
     // Function / closure compilation
     // -----------------------------------------------------------------------
+
+    /// Compile an `on_mount` or `on_unmount` block. The body is
+    /// emitted as a parameterless sub-FunctionProto (mirrors the
+    /// `compile_function` shape but skips the parameter loop and
+    /// uses a synthetic name). The parent function emits
+    /// `Closure(idx)` then `RegisterMountHook(id)` /
+    /// `RegisterUnmountHook(id)`. Per-function `next_*_hook_id`
+    /// counter assigns 1-indexed source-order ids.
+    fn compile_lifecycle_hook(
+        &mut self,
+        hook: &crate::parser::LifecycleHookStatement,
+        is_mount: bool,
+    ) -> Result<(), VMError> {
+        // Allocate the hook id from the right counter.
+        let hook_id = if is_mount {
+            let id = self.next_mount_hook_id;
+            self.next_mount_hook_id += 1;
+            id
+        } else {
+            let id = self.next_unmount_hook_id;
+            self.next_unmount_hook_id += 1;
+            id
+        };
+
+        // Compile the body as a parameterless child function.
+        let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
+        let synthetic_name = if is_mount { "<on_mount>" } else { "<on_unmount>" };
+        let mut child = parent.child(synthetic_name.to_string(), 0);
+        // Reserve slot 0 for the callee, same as compile_function.
+        child.add_param_local(String::new());
+        // Compile the body block.
+        child.compile_block(&hook.body)?;
+        let (mut restored_parent, proto) = child.finish_child();
+
+        // Stash proto in the parent's protos table.
+        restored_parent.function.protos.push(proto);
+        let closure_idx = (restored_parent.function.protos.len() - 1) as u16;
+
+        // Emit Closure to put the closure on the stack, then the
+        // appropriate Register opcode to consume it.
+        restored_parent.emit(OpCode::Closure(closure_idx));
+        restored_parent.emit(if is_mount {
+            OpCode::RegisterMountHook(hook_id)
+        } else {
+            OpCode::RegisterUnmountHook(hook_id)
+        });
+
+        // Restore self.
+        *self = *restored_parent;
+        Ok(())
+    }
 
     fn compile_function(&mut self, func: &Function, name: &str) -> Result<(), VMError> {
         let arity = func.arguments.len() as u8;

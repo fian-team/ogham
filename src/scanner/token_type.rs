@@ -65,6 +65,15 @@ pub enum TokenType {
     /// `Self` — refers to the enclosing record type from inside
     /// its own field declarations. Legal only there.
     SelfTy,
+    // Lifecycle hook keywords (Phase 2).
+    /// `on_mount` — block statement inside an fn body. The body
+    /// runs once when the function's call-stack path first
+    /// becomes active. See `LIFECYCLE_AND_PORTAL.md`.
+    OnMount,
+    /// `on_unmount` — block statement inside an fn body. The body
+    /// runs at drain-time when the function's call-stack path
+    /// stops being active (after any exit animation completes).
+    OnUnmount,
     // Match arms
     FatArrow, // =>
     // String delimiters

@@ -41,6 +41,15 @@ pub enum HoverInfo {
         name: String,
         field_count: usize,
     },
+    /// Phase 2: hover on `on_mount` / `on_unmount` keyword.
+    LifecycleHook { kind: HookKind },
+}
+
+/// Which lifecycle hook keyword the hover landed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookKind {
+    Mount,
+    Unmount,
 }
 
 #[derive(Clone)]
@@ -107,6 +116,22 @@ impl HoverInfo {
                     if *field_count == 1 { "" } else { "s" }
                 )
             }
+            HoverInfo::LifecycleHook { kind } => match kind {
+                HookKind::Mount => format!(
+                    "```ogham\non_mount {{ ... }}\n```\n\n\
+                     Fires once when this function's call-stack \
+                     path first becomes active. Body has access \
+                     to the function's locals via closure capture."
+                ),
+                HookKind::Unmount => format!(
+                    "```ogham\non_unmount {{ ... }}\n```\n\n\
+                     Fires when this function's call-stack path \
+                     stops being visited. Use `event(...)` to \
+                     dispatch — state writes from inside this \
+                     body are silently discarded (path is being \
+                     cleaned up)."
+                ),
+            },
         }
     }
 }
@@ -176,25 +201,10 @@ fn schema_refine(info: HoverInfo, schema: Option<&ModuleSchema>) -> HoverInfo {
 }
 
 /// Render a [`TypeRef`] as the surface syntax users typed.
+/// Delegates to the canonical-string method that is also used by
+/// the schema-diagnostics manifest format.
 fn format_type_ref(ty: &TypeRef) -> String {
-    use ogham::parser::typed_bindings::{KeyType, PrimType};
-    match ty {
-        TypeRef::Primitive(PrimType::Int) => "int".to_string(),
-        TypeRef::Primitive(PrimType::Float) => "float".to_string(),
-        TypeRef::Primitive(PrimType::Bool) => "bool".to_string(),
-        TypeRef::Primitive(PrimType::String) => "string".to_string(),
-        TypeRef::Record(name) => name.clone(),
-        TypeRef::Array(inner) => format!("array<{}>", format_type_ref(inner)),
-        TypeRef::Map(k, v) => {
-            let k = match k {
-                KeyType::String => "string",
-                KeyType::Int => "int",
-            };
-            format!("map<{}, {}>", k, format_type_ref(v))
-        }
-        TypeRef::Optional(inner) => format!("{}?", format_type_ref(inner)),
-        TypeRef::SelfRef => "Self".to_string(),
-    }
+    ty.to_canonical_string()
 }
 
 /// Render a schema literal default for hover display.
@@ -373,6 +383,25 @@ fn hover_in_statement(
         Statement::RecordDeclaration(_)
         | Statement::HostStateDeclaration(_)
         | Statement::EventsDeclaration(_) => None,
+        // Phase 2 lifecycle hooks: try the body first (hover on
+        // identifiers inside the hook), falling back to a
+        // LifecycleHook hover when the cursor is on the keyword
+        // itself (anywhere inside the statement span but outside
+        // the body block).
+        Statement::OnMount(hook) => {
+            hover_in_block(&hook.body, line, col, decls).or_else(|| {
+                Some(HoverInfo::LifecycleHook {
+                    kind: HookKind::Mount,
+                })
+            })
+        }
+        Statement::OnUnmount(hook) => {
+            hover_in_block(&hook.body, line, col, decls).or_else(|| {
+                Some(HoverInfo::LifecycleHook {
+                    kind: HookKind::Unmount,
+                })
+            })
+        }
     }
 }
 

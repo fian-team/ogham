@@ -18,6 +18,14 @@ pub enum Statement {
     HostStateDeclaration(HostStateDecl),
     /// `events { ... };` — top-level only, at most one per module.
     EventsDeclaration(EventsDecl),
+    /// `on_mount { ... };` — Phase 2 lifecycle hook. Body runs
+    /// once when the surrounding fn's call-stack path first
+    /// becomes active. Legal only inside an fn body.
+    OnMount(LifecycleHookStatement),
+    /// `on_unmount { ... };` — Phase 2 lifecycle hook. Body
+    /// runs at drain-time when the surrounding fn's call-stack
+    /// path stops being visited. Legal only inside an fn body.
+    OnUnmount(LifecycleHookStatement),
 }
 
 impl Statement {
@@ -107,8 +115,20 @@ impl Statement {
             Statement::RecordDeclaration(s) => s.span,
             Statement::HostStateDeclaration(s) => s.span,
             Statement::EventsDeclaration(s) => s.span,
+            Statement::OnMount(s) => s.span,
+            Statement::OnUnmount(s) => s.span,
         }
     }
+}
+
+/// Phase 2 lifecycle hook block: `on_mount { ... }` or
+/// `on_unmount { ... }`. The body is executed by the runtime at
+/// well-defined points in the surrounding fn's path-lifetime.
+/// See `LIFECYCLE_AND_PORTAL.md` §"Hook firing timing".
+#[derive(PartialEq, Clone, Debug)]
+pub struct LifecycleHookStatement {
+    pub body: Block,
+    pub span: Span,
 }
 
 #[derive(PartialEq, Clone, Debug)]
