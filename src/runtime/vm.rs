@@ -806,9 +806,16 @@ impl VM {
                         i += 2;
                     }
                     self.stack.truncate(start);
+                    // Capture the call-stack path NOW, while the VM
+                    // is still inside the function that produced
+                    // this descriptor. By the time the widget
+                    // builder runs (after execute_module returns),
+                    // call_stack will be empty.
+                    let owned_path = runtime.state.get_call_stack_path();
                     self.push(Value::Widget(WidgetDescriptor {
                         identifier: Identifier::synthetic(&ident_name),
                         properties: props,
+                        owned_path,
                     }))?;
                 }
 

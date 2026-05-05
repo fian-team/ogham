@@ -1185,6 +1185,42 @@ let main = fn () {
     }
 
     #[test]
+    fn widget_descriptor_captures_owned_path_at_vm_time() {
+        // Regression test: widget descriptors must capture
+        // call_stack at the moment the Widget opcode runs in the
+        // VM, not when the builder later materializes them. By
+        // the time execute_module returns, call_stack is empty;
+        // capturing in the builder would always yield "".
+        //
+        // We verify by running a module whose `panel` fn returns
+        // a Flex; the resulting Value::Widget should carry an
+        // owned_path naming `panel` (with the call-counter
+        // suffix).
+        let source = r#"
+let panel = fn () { Flex { children: [] } };
+let main  = fn () { panel() };
+"#;
+        let mut runtime = Runtime::from_source(source, None)
+            .expect("parse and create runtime");
+        let module = runtime.get_module().expect("module").clone();
+        let result = runtime.execute_module(&module).expect("execute");
+
+        let Value::Widget(descriptor) = result else {
+            panic!("expected top-level Widget value, got {:?}", result);
+        };
+        // The exact format of the path identifier is an
+        // implementation detail (anonymous `fn` bindings get a
+        // synthetic "fn@N" name). The contract is just: when a
+        // widget is produced from inside a function call, its
+        // owned_path is non-empty. A widget produced at module
+        // top level (no surrounding fn) would have owned_path = "".
+        assert!(!descriptor.owned_path.is_empty(),
+            "widget descriptor must capture a non-empty path \
+             when produced from inside an fn call; got: {:?}",
+            descriptor.owned_path);
+    }
+
+    #[test]
     fn call_opcode_skips_path_marking_when_lifecycle_inactive() {
         // Hookless module: lifecycle_active stays false; the Call
         // opcode should not insert paths into active_state_paths.
