@@ -88,6 +88,13 @@ pub struct Compiler {
     /// only legal in this context — outside an effect body,
     /// `Statement::Cleanup` triggers a compile-time error.
     in_effect_body: bool,
+    /// Phase 2: names of let-bindings whose RHS is a function
+    /// literal. Used by `compile_effect` to reject fn refs as
+    /// effect deps (per design diagnostic #2: deps must be
+    /// primitive or record values). Function values can't be
+    /// compared structurally, so they have no defined identity
+    /// for dep-equality purposes.
+    fn_typed_locals: std::collections::HashSet<String>,
 }
 
 impl Compiler {
@@ -107,6 +114,7 @@ impl Compiler {
             next_unmount_hook_id: 1,
             next_effect_hook_id: 1,
             in_effect_body: false,
+            fn_typed_locals: std::collections::HashSet::new(),
         }
     }
 
@@ -116,6 +124,11 @@ impl Compiler {
     /// resolution applies inside nested closures too.
     fn child(self, name: String, arity: u8) -> Self {
         let schema = self.schema.clone();
+        // Phase 2: child inherits parent's fn_typed_locals so
+        // effect dep-type checking sees the enclosing fn-typed
+        // bindings. The child can add its own; conservative
+        // for v1 (no shadow handling).
+        let inherited_fn_typed = self.fn_typed_locals.clone();
         Self {
             function: FunctionProto::new(name, arity),
             locals: Vec::new(),
@@ -130,6 +143,7 @@ impl Compiler {
             next_unmount_hook_id: 1,
             next_effect_hook_id: 1,
             in_effect_body: false,
+            fn_typed_locals: inherited_fn_typed,
         }
     }
 
@@ -733,6 +747,20 @@ impl Compiler {
             }
             Statement::Declare(decl) => {
                 let name = decl.get_identifier_value();
+                // Phase 2: record fn-typed lets so compile_effect
+                // can reject them as deps. We detect direct fn
+                // literals; chained fns (`let f = g;` where `g`
+                // is a fn) escape detection at compile time but
+                // are caught at runtime by best-effort checks
+                // (M2 ships the literal-only check).
+                if matches!(
+                    decl.get_value(),
+                    crate::parser::Expression::Literal(
+                        crate::parser::Literal::Function(_)
+                    )
+                ) {
+                    self.fn_typed_locals.insert(name.clone());
+                }
                 self.compile_expression(&decl.get_value())?;
                 self.add_local(name, false);
             }
@@ -1409,6 +1437,18 @@ impl Compiler {
             )
         })?;
 
+        // Phase 2 design diagnostic #2: deps must be primitive
+        // or record values. Function refs have no defined
+        // structural equality and would either always-compare-
+        // equal-by-pointer or always-compare-different — neither
+        // is useful, so we reject at compile time. We catch
+        // direct fn literals and identifier references to known
+        // fn-typed lets; chained (`let f = g`) cases escape
+        // detection.
+        for dep in &effect.deps {
+            self.check_dep_type(dep, hook_id)?;
+        }
+
         // Compile deps in source order. Each leaves one value
         // on the stack; the VM pops `dep_count` of them in
         // RegisterEffect.
@@ -1433,6 +1473,75 @@ impl Compiler {
         restored_parent.emit(OpCode::RegisterEffect { hook_id, dep_count });
 
         *self = *restored_parent;
+        Ok(())
+    }
+
+    /// Phase 2: reject effect deps that are obviously
+    /// function-typed. Catches direct fn literals and
+    /// identifier references to lets bound to fn literals.
+    /// Identifier chains and call-result deps escape detection
+    /// — runtime equality on those values would be undefined
+    /// but not a panic, so we accept them silently for v1.
+    fn check_dep_type(
+        &self,
+        dep: &crate::parser::Expression,
+        hook_id: u16,
+    ) -> Result<(), VMError> {
+        use crate::parser::{Expression, Literal};
+        let bad_name: Option<&str> = match dep {
+            Expression::Literal(Literal::Function(_)) => Some("fn"),
+            Expression::Literal(Literal::Identifier(ident)) => {
+                let name = ident.get();
+                if self.fn_typed_locals.contains(&name) {
+                    // Identifier resolves to a fn-typed local —
+                    // we recorded the binding earlier. Borrow
+                    // checker requires we leak the name string;
+                    // accept the small alloc.
+                    return Err(VMError::StrictMode(
+                        crate::parser::SyntaxError::new(
+                            ident.span.start_line,
+                            ident.span.start_column,
+                            format!(
+                                "effect deps must be primitive or \
+                                 record values; '{}' is a function",
+                                name
+                            ),
+                        )
+                        .with_help(
+                            "Functions have no structural equality, \
+                             so they can't drive a dep comparison. \
+                             Use a primitive value (a counter, a \
+                             flag, a record field) instead.",
+                        ),
+                    ));
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some(kind) = bad_name {
+            let span = match dep {
+                Expression::Literal(Literal::Function(f)) => f.span,
+                _ => return Ok(()), // unreachable given the match
+            };
+            return Err(VMError::StrictMode(
+                crate::parser::SyntaxError::new(
+                    span.start_line,
+                    span.start_column,
+                    format!(
+                        "effect dep #{} must be a primitive or \
+                         record value; got a {} literal",
+                        hook_id, kind
+                    ),
+                )
+                .with_help(
+                    "Functions have no structural equality, so they \
+                     can't drive a dep comparison. Move the fn out \
+                     of the dep position; use a primitive value \
+                     instead.",
+                ),
+            ));
+        }
         Ok(())
     }
 

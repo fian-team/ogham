@@ -293,6 +293,165 @@ fn scanner_recognizes_effect_and_cleanup() {
 // Hover smoke
 // -----------------------------------------------------------------
 
+// -----------------------------------------------------------------
+// Dep type check (audit fix 3)
+// -----------------------------------------------------------------
+
+#[test]
+fn effect_dep_rejects_direct_fn_literal() {
+    let src = r#"
+let main = fn () {
+  effect (fn () { 1 }) { log "x"; };
+  Flex { children: [] }
+};
+"#;
+    let module = parse(src).expect("parse");
+    let result = ogham::runtime::compiler::Compiler::compile_module(&module);
+    assert!(result.is_err(), "fn literal as dep must be rejected");
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.contains("primitive or record value"),
+        "diagnostic message mismatch: {}",
+        err
+    );
+}
+
+#[test]
+fn effect_dep_rejects_known_fn_typed_let() {
+    let src = r#"
+let helper = fn () { 1 };
+let main = fn () {
+  effect (helper) { log "x"; };
+  Flex { children: [] }
+};
+"#;
+    let module = parse(src).expect("parse");
+    let result = ogham::runtime::compiler::Compiler::compile_module(&module);
+    assert!(
+        result.is_err(),
+        "identifier resolving to fn-typed let must be rejected"
+    );
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.contains("'helper'") && err.contains("function"),
+        "diagnostic should name the binding; got: {}",
+        err
+    );
+}
+
+#[test]
+fn effect_dep_accepts_primitive_values() {
+    let src = r#"
+let main = fn () {
+  state n = 0;
+  effect (n, true, "label") { log "x"; };
+  Flex { children: [] }
+};
+"#;
+    let module = parse(src).expect("parse");
+    ogham::runtime::compiler::Compiler::compile_module(&module)
+        .expect("primitive deps must compile");
+}
+
+// -----------------------------------------------------------------
+// Audit follow-up tests (fixes 4-5)
+// -----------------------------------------------------------------
+
+#[test]
+fn multiple_cleanup_blocks_only_last_wins() {
+    // RegisterEffectCleanup overwrites the slot's
+    // pending_cleanup. So if an effect body calls it twice
+    // (via two cleanup blocks), only the second one fires.
+    let src = r#"
+let main = fn () {
+  state n = 0;
+  effect (n) {
+    cleanup { event("test_log", "first"); };
+    cleanup { event("test_log", "second"); };
+    n = n + 1;
+  };
+  Flex { children: [] }
+};
+"#;
+    // We can't easily change `n` from outside since it's a
+    // state cell. Instead: use a host_state-driven dep so we
+    // can flip it across renders.
+    let src = r#"
+let main = fn () {
+  effect (counter) {
+    cleanup { event("test_log", "first"); };
+    cleanup { event("test_log", "second"); };
+  };
+  Flex { children: [] }
+};
+"#;
+    let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_for = Arc::clone(&log);
+    let mut runtime = Runtime::from_source(src, None).expect("parse");
+    runtime.register_event_handler("test_log", move |args| {
+        if let Some(Value::String(s)) = args.first() {
+            log_for.lock().unwrap().push(s.clone());
+        }
+        Ok(Value::Void)
+    });
+    runtime.inject_host_state("counter".to_string(), Value::Integer(0));
+    let module = runtime.get_module().expect("module").clone();
+    runtime.execute_module(&module).expect("first render");
+
+    // Trigger re-fire → cleanup should run.
+    runtime.inject_host_state("counter".to_string(), Value::Integer(1));
+    runtime.rerender().expect("second render");
+
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(
+        entries,
+        vec!["second".to_string()],
+        "only the LAST cleanup should fire (later RegisterEffectCleanup overwrites)"
+    );
+}
+
+#[test]
+fn multiple_effects_in_one_fn_fire_in_source_order() {
+    let src = r#"
+let main = fn () {
+  effect (counter) { event("test_log", "a"); };
+  effect (counter) { event("test_log", "b"); };
+  effect (counter) { event("test_log", "c"); };
+  Flex { children: [] }
+};
+"#;
+    let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_for = Arc::clone(&log);
+    let mut runtime = Runtime::from_source(src, None).expect("parse");
+    runtime.register_event_handler("test_log", move |args| {
+        if let Some(Value::String(s)) = args.first() {
+            log_for.lock().unwrap().push(s.clone());
+        }
+        Ok(Value::Void)
+    });
+    runtime.inject_host_state("counter".to_string(), Value::Integer(0));
+    let module = runtime.get_module().expect("module").clone();
+    runtime.execute_module(&module).expect("first render");
+
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(
+        entries,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        "effects should fire in source order on first render"
+    );
+
+    // Re-fire (dep change) — order should be preserved.
+    log.lock().unwrap().clear();
+    runtime.inject_host_state("counter".to_string(), Value::Integer(1));
+    runtime.rerender().expect("second render");
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(
+        entries,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        "effects should fire in source order on dep-change re-fire"
+    );
+}
+
 #[test]
 fn effect_statement_is_a_distinct_ast_variant() {
     let src = "let main = fn () { effect (1) {}; Flex { children: [] } };";

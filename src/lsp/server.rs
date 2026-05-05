@@ -378,14 +378,26 @@ fn walk_stmt_for_hooks(
         Statement::ForLoop(for_loop) => {
             walk_block_for_hooks(&for_loop.body, true, out);
         }
+        // `let foo = fn () { ... }` — descend into the function
+        // body so hooks declared inside (the common case) are
+        // visited. Without this descent, the warning never
+        // fires in real consumer code: hooks live in fn bodies,
+        // not at module top level.
+        Statement::Declare(d) => {
+            if let ogham::parser::Expression::Literal(
+                ogham::parser::Literal::Function(f),
+            ) = &d.value
+            {
+                walk_block_for_hooks(&f.body, in_conditional, out);
+            }
+        }
         // Other statement kinds don't introduce conditional
         // contexts and don't contain blocks of statements.
         // Expression statements *can* contain blocks (match arms
         // produce expressions), but match-arm bodies live in
-        // Expression, not Statement; M1/M2 doesn't walk into
-        // expressions because lifecycle hooks are statements,
-        // not expressions, so they can't appear inside a
-        // match-arm body anyway.
+        // Expression, not Statement; lifecycle hooks are
+        // statements, not expressions, so they can't appear
+        // inside a match-arm body anyway.
         _ => {}
     }
 }
@@ -434,7 +446,7 @@ fn format_diagnostic_message(message: &str, note: Option<&str>, help: Option<&st
 
 #[cfg(test)]
 mod diagnostic_tests {
-    use super::format_diagnostic_message;
+    use super::{collect_lifecycle_warnings, format_diagnostic_message};
 
     #[test]
     fn formats_plain_message_unchanged() {
@@ -462,6 +474,80 @@ mod diagnostic_tests {
         assert_eq!(
             format_diagnostic_message("oops", Some("rule"), Some("fix")),
             "oops\n\nnote: rule\nhelp: fix"
+        );
+    }
+
+    #[test]
+    fn lifecycle_warning_descends_into_fn_bodies() {
+        // Regression for the audit finding: the walker used to
+        // bail at Statement::Declare, so warnings on hooks
+        // declared inside `let main = fn () { ... }` (the
+        // common shape) never fired.
+        let src = r#"
+let main = fn () {
+  if true {
+    on_mount { log "x"; };
+  }
+};
+"#;
+        let mut scanner = ogham::scanner::Scanner::new(src.to_string());
+        let mut parser = ogham::parser::Parser::new(scanner.scan());
+        let module = parser.parse().expect("parse");
+        let warnings = collect_lifecycle_warnings(&module);
+        assert_eq!(warnings.len(), 1, "should warn on the conditional on_mount");
+        assert!(
+            warnings[0].message.contains("on_mount inside a conditional"),
+            "warning text mismatch: {}",
+            warnings[0].message
+        );
+        assert_eq!(
+            warnings[0].severity,
+            ogham::parser::DiagnosticLevel::Warning
+        );
+    }
+
+    #[test]
+    fn lifecycle_warning_fires_on_effect_inside_for_loop() {
+        // Companion to the previous test — verifies effects also
+        // get the warning, and that for-loops count as
+        // conditional contexts.
+        let src = r#"
+let main = fn () {
+  for (i in 0..3) {
+    effect (i) { log "x"; };
+  }
+};
+"#;
+        let mut scanner = ogham::scanner::Scanner::new(src.to_string());
+        let mut parser = ogham::parser::Parser::new(scanner.scan());
+        let module = parser.parse().expect("parse");
+        let warnings = collect_lifecycle_warnings(&module);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].message.contains("effect inside a conditional"),
+            "warning text mismatch: {}",
+            warnings[0].message
+        );
+    }
+
+    #[test]
+    fn lifecycle_warning_silent_when_hook_is_top_level_in_fn() {
+        // Hooks at the top of a fn body — the normal, correct
+        // shape — must NOT warn.
+        let src = r#"
+let main = fn () {
+  on_mount { log "ok"; };
+  effect () { log "ok"; };
+};
+"#;
+        let mut scanner = ogham::scanner::Scanner::new(src.to_string());
+        let mut parser = ogham::parser::Parser::new(scanner.scan());
+        let module = parser.parse().expect("parse");
+        let warnings = collect_lifecycle_warnings(&module);
+        assert!(
+            warnings.is_empty(),
+            "hooks at fn top-level should not warn; got {:?}",
+            warnings
         );
     }
 }

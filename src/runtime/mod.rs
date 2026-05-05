@@ -146,13 +146,10 @@ impl StateManager {
         if prefix.is_empty() {
             return;
         }
-        // Move matching unmount_hooks into the pending queue.
-        // Carrying the closure in the queue lets the drainer fire
-        // it without consulting the persistent map.
         let unmount_keys: Vec<(String, u16)> = self
             .unmount_hooks
             .keys()
-            .filter(|(p, _)| p.starts_with(prefix))
+            .filter(|(p, _)| path_matches_prefix(p, prefix))
             .cloned()
             .collect();
         for key in unmount_keys {
@@ -160,13 +157,10 @@ impl StateManager {
                 self.pending_unmounts.push((key.0, key.1, closure));
             }
         }
-        // Move matching effect cleanups into the cleanup queue,
-        // then drop the slot. M2 also queues an effect-fire if
-        // appropriate; M1 only handles the unmount-cleanup case.
         let effect_keys: Vec<(String, u16)> = self
             .effects
             .keys()
-            .filter(|(p, _)| p.starts_with(prefix))
+            .filter(|(p, _)| path_matches_prefix(p, prefix))
             .cloned()
             .collect();
         for key in effect_keys {
@@ -177,8 +171,8 @@ impl StateManager {
                 }
             }
         }
-        // Clear any candidate_unmounts entries for this prefix.
-        self.candidate_unmounts.retain(|p| !p.starts_with(prefix));
+        self.candidate_unmounts
+            .retain(|p| !path_matches_prefix(p, prefix));
     }
 
     /// Phase 2 lifecycle: cancel a widget's pending unmount when
@@ -191,7 +185,8 @@ impl StateManager {
         if prefix.is_empty() {
             return;
         }
-        self.candidate_unmounts.retain(|p| !p.starts_with(prefix));
+        self.candidate_unmounts
+            .retain(|p| !path_matches_prefix(p, prefix));
     }
 
     /// Get the current call stack path as a string.
@@ -362,6 +357,35 @@ pub struct Runtime {
 /// `Runtime::lifecycle_error_log`. Per impl-plan decision #4
 /// (M0 kickoff), 100 is the default and not configurable in M1.
 pub(crate) const LIFECYCLE_LOG_CAPACITY: usize = 100;
+
+/// Phase 2: tight prefix-match for path-keyed lifecycle
+/// registries. `path` matches `prefix` when either:
+///
+/// - they are equal, or
+/// - `path` starts with `prefix + "/"` (i.e. `path` is a child
+///   path under `prefix`).
+///
+/// Plain `str::starts_with` would have a false positive on
+/// path components that share a numeric prefix — e.g.
+/// `"fn@10".starts_with("fn@1")` is true. Path components are
+/// always `name@call_index`, joined with `/`, so the only
+/// safe way to express "this prefix terminates a component"
+/// is to require an explicit `/` separator after.
+pub(crate) fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    if path == prefix {
+        return true;
+    }
+    if path.len() > prefix.len() {
+        let mut bytes = path.bytes();
+        for pb in prefix.bytes() {
+            if bytes.next() != Some(pb) {
+                return false;
+            }
+        }
+        return bytes.next() == Some(b'/');
+    }
+    false
+}
 
 impl Runtime {
     pub fn new() -> Self {
@@ -1351,6 +1375,61 @@ let main = fn () {
         assert_eq!(sm.unmount_hooks.len(), 1,
             "empty prefix must not match anything");
         assert!(sm.pending_unmounts.is_empty());
+    }
+
+    #[test]
+    fn flush_for_path_prefix_does_not_match_numeric_siblings() {
+        // Regression for the prefix-matching bug:
+        // "fn@10".starts_with("fn@1") returns true, but a flush
+        // for "fn@1" should NOT pull in "fn@10". Path components
+        // end at "/" — match must respect the boundary.
+        let mut sm = StateManager::new();
+        sm.unmount_hooks.insert(
+            ("fn@1".to_string(), 0),
+            dummy_closure("h", vec!["fn@1".to_string()]),
+        );
+        sm.unmount_hooks.insert(
+            ("fn@10".to_string(), 0),
+            dummy_closure("h", vec!["fn@10".to_string()]),
+        );
+        sm.unmount_hooks.insert(
+            ("fn@1/inner@1".to_string(), 0),
+            dummy_closure("h", vec!["fn@1/inner@1".to_string()]),
+        );
+
+        sm.flush_for_path_prefix("fn@1");
+
+        // fn@1 itself is matched (exact).
+        assert!(!sm.unmount_hooks.contains_key(&("fn@1".to_string(), 0)));
+        // fn@1/inner@1 is matched (proper child path).
+        assert!(!sm.unmount_hooks.contains_key(&("fn@1/inner@1".to_string(), 0)));
+        // fn@10 must NOT be matched (numeric-prefix false positive
+        // is the bug we're guarding against).
+        assert!(
+            sm.unmount_hooks.contains_key(&("fn@10".to_string(), 0)),
+            "fn@10 must not be flushed by a fn@1 prefix"
+        );
+        // Two pending unmounts queued (fn@1, fn@1/inner@1).
+        assert_eq!(sm.pending_unmounts.len(), 2);
+    }
+
+    #[test]
+    fn path_matches_prefix_boundary_cases() {
+        // Exact match.
+        assert!(path_matches_prefix("fn@1", "fn@1"));
+        // Proper child path.
+        assert!(path_matches_prefix("fn@1/inner@1", "fn@1"));
+        assert!(path_matches_prefix("fn@1/inner@1/leaf@1", "fn@1"));
+        // Numeric-prefix false positive is rejected.
+        assert!(!path_matches_prefix("fn@10", "fn@1"));
+        assert!(!path_matches_prefix("fn@11", "fn@1"));
+        // Different name with same byte prefix is rejected.
+        assert!(!path_matches_prefix("fnordo@1", "fn@1"));
+        // Shorter path can't match a longer prefix.
+        assert!(!path_matches_prefix("fn", "fn@1"));
+        // Empty prefix is rejected by callers (early-return);
+        // here we just verify the helper alone doesn't barf.
+        assert!(path_matches_prefix("", ""));
     }
 
     #[test]
