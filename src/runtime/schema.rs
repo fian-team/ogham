@@ -468,6 +468,22 @@ pub trait OghamState: OghamRecord + PartialEq {
     fn ogham_diff_apply(&self, prev: &Self, sink: &mut dyn HostStateSinkErased);
 }
 
+/// A Rust enum that maps to the module's `events {}` block.
+/// Derived via `#[derive(OghamMsg)]`. The trait abstracts over
+/// "decode an event-name + args into a typed message" so
+/// `TypedOgham` can register handlers generically.
+pub trait OghamMsg: Sized + Send + 'static {
+    /// All declared events as (name, signature) pairs. Computed
+    /// fresh on each call (cheap; the derive emits a vec literal).
+    fn ogham_events() -> std::collections::BTreeMap<String, EventSig>;
+
+    /// Decode a runtime `event(name, args...)` invocation into a
+    /// typed message. Returns `None` if the name or arity doesn't
+    /// match — in strict mode this is unreachable because the
+    /// compiler rejects mismatches at compile time.
+    fn try_from_ogham_event(name: &str, args: &[Value]) -> Option<Self>;
+}
+
 /// Object-safe shim over [`crate::runtime::HostStateSink`] so
 /// `OghamState` can take `&mut dyn` (required because the
 /// `IntoHostValue` generic prevents the original from being

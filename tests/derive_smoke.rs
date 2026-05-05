@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use ogham::runtime::host_state::HostStateSink;
 use ogham::runtime::schema::{
-    KeyType, ModuleSchema, OghamField, OghamRecord, OghamState, PrimType, TypeRef,
+    KeyType, ModuleSchema, OghamField, OghamMsg, OghamRecord, OghamState, PrimType, TypeRef,
 };
 use ogham::runtime::value::Value;
 use ogham_derive::{OghamMsg, OghamRecord, OghamState};

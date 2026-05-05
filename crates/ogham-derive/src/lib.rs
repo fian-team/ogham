@@ -325,10 +325,8 @@ fn expand_ogham_msg(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
     });
 
     Ok(quote! {
-        impl #name_ident {
-            /// All declared events as (name, sig) pairs. Computed
-            /// once on first call via lazy init.
-            pub fn ogham_events() -> ::std::collections::BTreeMap<
+        impl ::ogham::runtime::schema::OghamMsg for #name_ident {
+            fn ogham_events() -> ::std::collections::BTreeMap<
                 ::std::string::String,
                 ::ogham::runtime::schema::EventSig,
             > {
@@ -344,12 +342,7 @@ fn expand_ogham_msg(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                 m
             }
 
-            /// Try to parse a runtime `event(name, args...)` invocation
-            /// into this typed message. Returns `None` if the name
-            /// or arg shape doesn't match a declared variant — in
-            /// strict mode this is unreachable because the compiler
-            /// rejects unknown events at compile time.
-            pub fn try_from_ogham_event(
+            fn try_from_ogham_event(
                 name: &str,
                 args: &[::ogham::runtime::value::Value],
             ) -> ::core::option::Option<Self> {

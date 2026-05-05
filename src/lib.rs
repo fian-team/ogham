@@ -30,6 +30,9 @@ pub mod scanner;
 pub mod skia;
 pub mod widget;
 mod macros;
+mod typed;
+
+pub use typed::TypedOgham;
 
 /// Top-level Ogham instance that owns the runtime, widget tree, and
 /// optional file watcher.

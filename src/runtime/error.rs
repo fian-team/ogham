@@ -36,6 +36,14 @@ pub enum RuntimeError {
     VmError(VMError),
     /// Error during widget builder conversion
     BridgeError(builder::BridgeError),
+    /// Schema-match check (M5) failed: the Rust-side `OghamState` /
+    /// `OghamMsg` types disagree with the parsed `.ogh` module's
+    /// schema. The string is a multi-line diff suitable for direct
+    /// display.
+    SchemaMismatch(String),
+    /// `Ogham::watch_typed` was called on a module that didn't
+    /// declare `host_state {}` — typed mode requires it.
+    SchemaMissing,
 }
 
 impl From<std::io::Error> for RuntimeError {
@@ -75,6 +83,11 @@ impl std::fmt::Display for RuntimeError {
             RuntimeError::BridgeError(e) => {
                 write!(f, "Bridge error: {:?}", e)
             }
+            RuntimeError::SchemaMismatch(diff) => write!(f, "Schema mismatch:\n{}", diff),
+            RuntimeError::SchemaMissing => write!(
+                f,
+                "Schema missing: typed mode requires `host_state {{}}` declaration"
+            ),
         }
     }
 }
