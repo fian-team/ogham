@@ -68,17 +68,24 @@ fn portal_widget_zero_dimensions_in_parent_flow() {
 }
 
 #[test]
-fn closed_portal_exposes_no_children_to_main_walk() {
-    // open = false → renderer should treat the subtree as
-    // absent. Children are still in the inner Flex (so
-    // reconcile can begin_exit them on close), but
-    // get_children() returns empty.
+fn closed_portal_with_ghosts_still_exposes_children() {
+    // M3 audit fix: when a portal closes but its inner
+    // children are still ghosting through their exit
+    // animation, get_children() must continue to expose them
+    // so the renderer paints them in Pass B until drain. The
+    // renderer detects close-with-ghosts via the is_exiting
+    // check and pushes to portal_layer with focus_trap=false
+    // (only fully-open portals trap focus).
     let mut p = PortalWidget::new();
     p.open = false;
     p.inner.children.push(Arc::new(Mutex::new(
         ogham::widget::flex_widget::FlexWidget::new(),
     )));
-    assert!(p.get_children().is_empty());
+    assert_eq!(
+        p.get_children().len(),
+        1,
+        "closed portal still exposes inner children for ghost-paint"
+    );
 }
 
 #[test]

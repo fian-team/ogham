@@ -98,6 +98,7 @@ impl Widget for PortalWidget {
             Some(p) => p,
             None => return UpdateResult::REPLACE,
         };
+        let was_open = self.open;
         let open_changed = self.open != new_portal.open;
         let trap_changed = self.focus_trap != new_portal.focus_trap;
         self.open = new_portal.open;
@@ -105,12 +106,34 @@ impl Widget for PortalWidget {
         // owned_path_prefix is captured at descriptor-build time
         // and shouldn't change for the same path; copy anyway.
         self.owned_path_prefix = new_portal.owned_path_prefix.clone();
-        // Reconcile children through the inner flex. When `open`
-        // flips false → true the children entry-animate; when it
-        // flips true → false the inner flex's reconcile begins
-        // exit on removed children, same as any other tree.
-        let mut new_children = std::mem::take(&mut new_portal.inner.children);
-        let inner_result = self.inner.reconcile_children(&mut new_children);
+        // Reconcile children through the inner flex. The
+        // important case: open flipping true → false. We pass an
+        // EMPTY descriptor list to reconcile_children so it
+        // triggers begin_exit on every current child, producing
+        // ghosts. The renderer still paints the portal in Pass B
+        // while ghosts remain (Skia draw_widget_recursive
+        // checks is_exiting for the close-with-ghosts case).
+        // Once exit animations settle, drain_exited_children
+        // removes them from inner.children.
+        let inner_result = if !self.open && was_open {
+            // open: true → false. Reconcile against empty so
+            // current children begin_exit.
+            let mut empty: Vec<WidgetRef> = Vec::new();
+            self.inner.reconcile_children(&mut empty)
+        } else if !self.open {
+            // Both old and new closed. Don't churn — keep any
+            // ghosts ticking down naturally.
+            UpdateResult {
+                absorbed: true,
+                needs_layout: false,
+                needs_repaint: false,
+            }
+        } else {
+            // Open in both old and new (or open: false → true).
+            // Reconcile children normally.
+            let mut new_children = std::mem::take(&mut new_portal.inner.children);
+            self.inner.reconcile_children(&mut new_children)
+        };
         UpdateResult {
             absorbed: true,
             needs_layout: open_changed || trap_changed || inner_result.needs_layout,
@@ -189,22 +212,16 @@ impl Widget for PortalWidget {
     // ---- Children + delegation to inner -------------------------------
 
     fn get_children(&self) -> Vec<WidgetRef> {
-        // The renderer detects `as_portal` and uses the children
-        // for the portal_layer pass; here we expose them so the
-        // walker for animation ticks etc. still descends.
-        if self.open {
-            self.inner.get_children()
-        } else {
-            Vec::new()
-        }
+        // Always expose inner children so animation ticks +
+        // hit-test can descend. When closed but children are
+        // still ghosting through their exit animation (the
+        // open=true→false case), they need to keep ticking and
+        // remain hit-testable until drain.
+        self.inner.get_children()
     }
 
     fn get_children_mut(&mut self) -> Vec<WidgetRef> {
-        if self.open {
-            self.inner.get_children_mut()
-        } else {
-            Vec::new()
-        }
+        self.inner.get_children_mut()
     }
 
     fn handle_event(
@@ -216,9 +233,9 @@ impl Widget for PortalWidget {
         // Click-routing is handled via the portal_layer hit-test
         // path in `UI::call_event`; this handle_event covers
         // non-click events delivered to focused widgets etc.
-        if !self.open {
-            return false;
-        }
+        // We forward unconditionally — a closed portal whose
+        // children are still ghosting needs key events to flow
+        // (e.g. a focused text input mid-fade).
         self.inner.handle_event(event, ctx, self_ref)
     }
 

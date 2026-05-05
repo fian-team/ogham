@@ -605,10 +605,21 @@ impl SkiaEnv {
         // portal layer instead of recursing. The portal node
         // itself paints nothing; its children will render with
         // viewport bounds in Pass B.
+        //
+        // We push to portal_layer when the portal is open OR
+        // when it has ghost children mid-exit-animation (so the
+        // close transition still paints). focus_trap is only
+        // honored when actually open — ghosting portals don't
+        // continue to trap focus.
         {
             let widget = widget_ref.lock().expect("widget lock poisoned");
             if let Some(info) = widget.as_portal() {
-                if info.open {
+                let children = widget.get_children();
+                let has_ghosts = children.iter().any(|c| {
+                    let g = c.lock().expect("widget lock poisoned");
+                    g.is_exiting()
+                });
+                if info.open || has_ghosts {
                     let parent_rect = widget
                         .get_layout_rect()
                         .cloned()
@@ -617,7 +628,10 @@ impl SkiaEnv {
                     portal_layer.push(crate::widget::PortalEntry {
                         widget: widget_ref.clone(),
                         parent_rect,
-                        focus_trap: info.focus_trap,
+                        // Only trap focus when actually open;
+                        // a closed portal with ghosts shouldn't
+                        // continue to trap.
+                        focus_trap: info.open && info.focus_trap,
                     });
                 }
                 return;
@@ -685,10 +699,20 @@ impl SkiaEnv {
     /// children. The entry's `parent_rect` is the layout origin
     /// the portal would have occupied in the base tree; we
     /// translate by it so anchored children appear at the
-    /// "expected" position. Within Pass B, the portal_layer is
-    /// not re-populated (a portal nested inside another portal
-    /// is rare; in M3 we recurse normally — children of a portal
-    /// are not portals themselves under the M3 use cases).
+    /// "expected" position.
+    ///
+    /// KNOWN LIMITATION (Phase 2): the captured `parent_rect`
+    /// is in the *immediate parent's* coordinate space, not
+    /// viewport-absolute. For portals nested deep in the tree
+    /// (parent isn't at viewport origin), Pass B paints them at
+    /// `parent_rect` but the parent's own translates aren't
+    /// reapplied — so the portal's children appear at the wrong
+    /// viewport position. The shipped use cases (root-level
+    /// portals like the escape menu) work because the parent IS
+    /// the root. Fixing this requires tracking cumulative
+    /// translates during Pass A and capturing
+    /// viewport-absolute coords in `PortalEntry.parent_rect`.
+    /// Tracked in the post-Phase-2 backlog.
     fn paint_portal_entry(
         env: &mut SkiaEnv,
         entry: &crate::widget::PortalEntry,

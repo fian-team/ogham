@@ -1360,16 +1360,52 @@ this trailer added.
   nothing to smoke-test. Hot-reload + focus_stack reset
   is unit-tested via `clear_lifecycle_state`.
 
+### Post-shipping audit — 2026-05-05 (post-M5)
+
+Pre-close audit of M3 + M4 found three issues; two real
+bugs fixed, one documented as known limitation.
+
+1. **`sync_focus_stack` pop logic was wrong for non-top
+   stale entries.** The old code popped from `focus_stack`'s
+   end while comparing against a filtered `still_active`
+   length — but the popped entry might not be one of the
+   removed ones. Result: focus restoration could land on
+   the wrong portal's `previous_focus` when multiple
+   portals closed at once or a non-top portal closed.
+   Fix: walk from top, pop+restore only while top is
+   stale; then filter remaining stale entries silently
+   without restoration. Two regression tests added.
+2. **Closed Portal with ghosts mid-exit-animation
+   wouldn't paint.** `get_children` returned empty when
+   `open=false`, so the renderer's main pass skipped
+   children and Pass B's portal_layer push was gated on
+   open. Result: dialogs would disappear instantly on
+   close instead of fading out. Fix: `get_children`
+   always returns inner.children; `update` reconciles
+   against empty when open flips true→false (triggering
+   begin_exit on every child); renderer pushes to
+   portal_layer when open OR any child is exiting.
+   `focus_trap` is only honored when actually open.
+   Test updated to assert ghost children remain
+   exposed.
+3. **Pass B coordinate transform is parent-relative,
+   not viewport-absolute.** Documented as known
+   limitation in `paint_portal_entry`. Shipped use cases
+   (root-level escape menu) work because parent IS root;
+   nested portals would render at wrong viewport
+   position. Fix requires tracking cumulative translates
+   during Pass A — tracked in post-Phase-2 backlog.
+
 ### Phase 2 totals
 
-- **Implementation:** 4,247 LOC across M0–M5 + audit fix.
-  Within the 2,500–3,500 LOC estimate's upper-bound
-  range; bug fixes + audit additions account for the
-  overage.
-- **Tests:** 64 new tests (12 plumbing + 15 lifecycle +
-  18 effect + 10 portal + 9 focus_trap, plus the audit's
-  10 LSP/regression tests). Slightly above the impl
-  plan's ~62 estimate.
+- **Implementation:** ~4,370 LOC across M0–M5 + initial
+  audit + post-shipping audit. Within the 2,500–3,500
+  LOC estimate's upper-bound range; bug fixes + audit
+  additions account for the overage.
+- **Tests:** 66 new tests in dedicated Phase 2 files
+  (12 plumbing + 15 lifecycle + 18 effect + 10 portal +
+  11 focus_trap), plus the two audits' 10+ regression
+  tests. Slightly above the impl plan's ~62 estimate.
 - **Calendar:** all merges shipped on 2026-05-05 in
   one autonomous push. Plan estimated 12 person-days.
 - **UL adoption:** 0 of 3 M5 migrations shipped.
@@ -1388,7 +1424,12 @@ this trailer added.
    spurious-unmount edge case will surface).
 3. Refine M1's mount timing if Portal positioning
    needs post-layout sizes.
-4. Address the schema-diagnostics workstream's
+4. Pass B viewport-absolute coordinate transform: track
+   cumulative translates during Pass A so portals
+   nested deep in the tree render at the right viewport
+   position. Shipped use cases (root-level portals)
+   aren't affected. Documented in `paint_portal_entry`.
+5. Address the schema-diagnostics workstream's
    lib-test breakage (untracked
    `src/diagnostics/manifest.rs` uses derive macros
    that don't resolve `::ogham` paths inside the

@@ -528,21 +528,30 @@ impl UI {
     /// `portal_layer`. Pushes restoration entries for newly-
     /// open focus_trap portals; pops entries for portals that
     /// have left the layer (closed or unmounted), restoring
-    /// their captured `previous_focus`. Called after every
-    /// `draw()` and any state change that may have flipped a
-    /// portal's focus_trap.
+    /// their captured `previous_focus` for the LIFO close case.
+    /// Called after every `draw()` and any state change that
+    /// may have flipped a portal's focus_trap.
+    ///
+    /// Pop policy: walk from top. While the top entry's portal
+    /// is no longer in `portal_layer`, pop it and restore its
+    /// `previous_focus` (LIFO — the common case where the
+    /// most-recently-opened portal closes). Once the top is
+    /// still present, stop popping and restoring; any deeper
+    /// stale entries are filtered out *without* restoration —
+    /// restoring their saved `previous_focus` would set focus
+    /// to a target outside the surviving top's trapped subtree,
+    /// which `try_set_focus` would reject anyway.
     pub fn sync_focus_stack(&mut self) {
-        // Walk current focus_trap entries, push any not yet
-        // tracked.
+        // Push: new focus_trap entries get a restoration point.
         for entry in &self.portal_layer {
             if !entry.focus_trap {
                 continue;
             }
-            let already_tracked = self
+            let already = self
                 .focus_stack
                 .iter()
                 .any(|r| Arc::ptr_eq(&r.portal, &entry.widget));
-            if !already_tracked {
+            if !already {
                 let prev = self.focused.clone();
                 self.focus_stack.push(FocusRestoration {
                     portal: entry.widget.clone(),
@@ -550,25 +559,30 @@ impl UI {
                 });
             }
         }
-        // Walk current stack from top, pop any whose portal is
-        // no longer in the layer.
-        let mut still_active = self.focus_stack.clone();
-        still_active.retain(|r| {
-            self.portal_layer
+        // Pop from top while stale; restore each popped's
+        // previous_focus. Stops at the first surviving entry.
+        while let Some(top) = self.focus_stack.last() {
+            let still_present = self.portal_layer.iter().any(|e| {
+                e.focus_trap && Arc::ptr_eq(&e.widget, &top.portal)
+            });
+            if still_present {
+                break;
+            }
+            let popped = self.focus_stack.pop().unwrap();
+            self.focused = popped.previous_focus;
+        }
+        // Filter out any deeper stale entries silently. These
+        // are entries below a still-active top — non-top closes
+        // are rare and don't invalidate the surviving trap, so
+        // restoring their previous_focus would do more harm than
+        // good (try_set_focus would reject moves outside the
+        // surviving top's subtree anyway).
+        let layer = &self.portal_layer;
+        self.focus_stack.retain(|r| {
+            layer
                 .iter()
                 .any(|e| e.focus_trap && Arc::ptr_eq(&e.widget, &r.portal))
         });
-        // Pop loop: detect popped entries and restore their
-        // previous_focus in reverse order.
-        while self.focus_stack.len() > still_active.len() {
-            if let Some(popped) = self.focus_stack.pop() {
-                // Only restore if the popped entry isn't still
-                // present further up the surviving stack
-                // (would be unusual but safe to check).
-                self.focused = popped.previous_focus;
-            }
-        }
-        self.focus_stack = still_active;
     }
 
     /// Phase 2 M4: clear all M4 state (focus stack +
