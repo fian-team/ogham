@@ -1043,15 +1043,106 @@ impl VM {
                     // Top-level (path == "") unmount hooks would
                     // fire only on runtime shutdown; out of scope.
                 }
-                // M2 will implement these; M1 leaves them as
-                // not-yet-implemented errors. The compiler in M1
-                // does not emit either of these opcodes.
-                OpCode::RegisterEffect { .. }
-                | OpCode::RegisterEffectCleanup => {
-                    return Err(VMError::InvalidOperation(
-                        "effect / cleanup not implemented until M2"
-                            .to_string(),
-                    ));
+                // RegisterEffect (M2): pop dep_count values + a
+                // closure. Compare deps to the slot's
+                // previous_deps; on first run or change, schedule
+                // cleanup-then-fire.
+                OpCode::RegisterEffect { hook_id, dep_count } => {
+                    // Stack layout (top-down): closure, dep_n,
+                    // ..., dep_1. Pop closure first, then deps in
+                    // reverse so they end up in source order.
+                    let closure_value = self.pop()?;
+                    let closure = match closure_value {
+                        Value::BytecodeClosure(c) => c,
+                        other => {
+                            return Err(VMError::InvalidOperation(format!(
+                                "RegisterEffect expected closure on stack, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let mut current_deps = Vec::with_capacity(dep_count as usize);
+                    for _ in 0..dep_count {
+                        current_deps.push(self.pop()?);
+                    }
+                    current_deps.reverse();
+
+                    let path = runtime.state.get_call_stack_path();
+                    if path.is_empty() {
+                        // Top-level effect: out of scope (no path
+                        // identity). Drop without scheduling.
+                        continue;
+                    }
+                    let key = (path.clone(), hook_id);
+                    let should_fire = match runtime.state.effects.get(&key) {
+                        None => true, // first run
+                        Some(slot) => match &slot.previous_deps {
+                            None => true, // never fired (shouldn't happen — slot has previous_deps after first fire)
+                            Some(prev) => prev != &current_deps,
+                        },
+                    };
+
+                    if should_fire {
+                        // Schedule cleanup-then-fire. Move any
+                        // existing pending_cleanup onto the queue.
+                        if let Some(slot) = runtime.state.effects.get_mut(&key) {
+                            if let Some(cleanup) = slot.pending_cleanup.take() {
+                                runtime
+                                    .state
+                                    .pending_effect_cleanups
+                                    .push((key.0.clone(), key.1, cleanup));
+                            }
+                        }
+                        runtime
+                            .state
+                            .pending_effect_fires
+                            .push((key.0.clone(), key.1));
+                    }
+
+                    // Insert / update the slot regardless. The
+                    // closure is always refreshed so it reflects
+                    // the most recent render's upvalues.
+                    runtime.state.effects.insert(
+                        key,
+                        crate::runtime::EffectSlot {
+                            previous_deps: Some(current_deps),
+                            pending_cleanup: runtime
+                                .state
+                                .effects
+                                .get(&(path.clone(), hook_id))
+                                .and_then(|s| s.pending_cleanup.clone()),
+                            closure,
+                        },
+                    );
+                }
+                // RegisterEffectCleanup (M2): pop closure;
+                // attach as pending_cleanup for the
+                // currently-firing effect. Recorded via
+                // runtime.current_firing_effect.
+                OpCode::RegisterEffectCleanup => {
+                    let closure_value = self.pop()?;
+                    let closure = match closure_value {
+                        Value::BytecodeClosure(c) => c,
+                        other => {
+                            return Err(VMError::InvalidOperation(format!(
+                                "RegisterEffectCleanup expected closure, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    if let Some(key) = runtime.current_firing_effect.clone() {
+                        if let Some(slot) = runtime.state.effects.get_mut(&key) {
+                            slot.pending_cleanup = Some(closure);
+                        }
+                        // If the slot was removed mid-fire (path
+                        // unmounted), drop the cleanup quietly.
+                    }
+                    // If no current_firing_effect is set, we're
+                    // running outside an effect body. The compiler
+                    // already rejects this case with a strict-mode
+                    // error, so reaching here is a bug — but
+                    // tolerate it (drop the closure) rather than
+                    // panic.
                 }
             }
         }

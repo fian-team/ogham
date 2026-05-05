@@ -343,6 +343,30 @@ fn walk_stmt_for_hooks(
             // declares another `on_mount`) follow the same rule.
             walk_block_for_hooks(&hook.body, in_conditional, out);
         }
+        Statement::Effect(effect) => {
+            if in_conditional {
+                out.push(
+                    ogham::parser::SyntaxError::new(
+                        effect.span.start_line,
+                        effect.span.start_column,
+                        "effect inside a conditional won't be tracked \
+                         when the condition is false",
+                    )
+                    .with_help(
+                        "consider moving the effect to top-level and \
+                         using `if` inside the body instead",
+                    )
+                    .with_warning(),
+                );
+            }
+            // Recurse into the body. Effects don't reset the
+            // conditional context — a cleanup inside an effect
+            // inside an if is still inside a conditional.
+            walk_block_for_hooks(&effect.body, in_conditional, out);
+        }
+        Statement::Cleanup(hook) => {
+            walk_block_for_hooks(&hook.body, in_conditional, out);
+        }
         Statement::Conditional(cond) => {
             for (_test, branch) in &cond.branches {
                 walk_block_for_hooks(branch, /* now in conditional */ true, out);
@@ -358,10 +382,10 @@ fn walk_stmt_for_hooks(
         // contexts and don't contain blocks of statements.
         // Expression statements *can* contain blocks (match arms
         // produce expressions), but match-arm bodies live in
-        // Expression, not Statement; M1 doesn't walk into
-        // expressions because `on_mount`/`on_unmount` are
-        // statements, not expressions, so they can't appear
-        // inside a match-arm body anyway.
+        // Expression, not Statement; M1/M2 doesn't walk into
+        // expressions because lifecycle hooks are statements,
+        // not expressions, so they can't appear inside a
+        // match-arm body anyway.
         _ => {}
     }
 }

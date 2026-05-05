@@ -43,6 +43,10 @@ pub enum HoverInfo {
     },
     /// Phase 2: hover on `on_mount` / `on_unmount` keyword.
     LifecycleHook { kind: HookKind },
+    /// Phase 2: hover on `effect` keyword. Dep count surfaces
+    /// in the hover text so authors can see "this effect tracks
+    /// 3 deps."
+    Effect { dep_count: usize },
 }
 
 /// Which lifecycle hook keyword the hover landed on.
@@ -116,6 +120,18 @@ impl HoverInfo {
                     if *field_count == 1 { "" } else { "s" }
                 )
             }
+            HoverInfo::Effect { dep_count } => format!(
+                "```ogham\neffect ({}{}) {{ ... }}\n```\n\n\
+                 Body re-runs whenever any dep changes value \
+                 between renders. {} dep{} tracked. \
+                 Use `cleanup {{ ... }}` inside the body for \
+                 teardown that runs before the next re-fire and \
+                 at path unmount.",
+                "_".repeat(*dep_count),
+                if *dep_count > 0 { "..." } else { "" },
+                dep_count,
+                if *dep_count == 1 { "" } else { "s" },
+            ),
             HoverInfo::LifecycleHook { kind } => match kind {
                 HookKind::Mount => format!(
                     "```ogham\non_mount {{ ... }}\n```\n\n\
@@ -399,6 +415,31 @@ fn hover_in_statement(
             hover_in_block(&hook.body, line, col, decls).or_else(|| {
                 Some(HoverInfo::LifecycleHook {
                     kind: HookKind::Unmount,
+                })
+            })
+        }
+        Statement::Effect(effect) => {
+            // Try the deps first, then the body, then fall back
+            // to the Effect keyword hover.
+            for dep in &effect.deps {
+                if let Some(info) = hover_in_expression(dep, line, col, decls) {
+                    return Some(info);
+                }
+            }
+            hover_in_block(&effect.body, line, col, decls).or_else(|| {
+                Some(HoverInfo::Effect {
+                    dep_count: effect.deps.len(),
+                })
+            })
+        }
+        Statement::Cleanup(hook) => {
+            hover_in_block(&hook.body, line, col, decls).or_else(|| {
+                Some(HoverInfo::Keyword {
+                    name: "cleanup".to_string(),
+                    description: "Runs before this effect re-fires \
+                                  (on dep change) and when the effect's \
+                                  owning path unmounts."
+                        .to_string(),
                 })
             })
         }

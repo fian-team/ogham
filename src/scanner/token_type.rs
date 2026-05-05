@@ -74,6 +74,15 @@ pub enum TokenType {
     /// runs at drain-time when the function's call-stack path
     /// stops being active (after any exit animation completes).
     OnUnmount,
+    /// `effect` — block statement with explicit dep list:
+    /// `effect (dep_a, dep_b) { ... cleanup { ... } }`. Body
+    /// re-runs whenever any dep changes value between renders;
+    /// cleanup runs before next re-fire and at unmount.
+    Effect,
+    /// `cleanup` — block statement, legal only inside an
+    /// `effect` body. Runs before the effect re-fires (on dep
+    /// change) and when the effect's owning path unmounts.
+    Cleanup,
     // Match arms
     FatArrow, // =>
     // String delimiters

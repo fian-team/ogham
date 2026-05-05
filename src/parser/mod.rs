@@ -248,6 +248,8 @@ impl Parser {
             scanner::TokenType::State => self.parse_state(),
             scanner::TokenType::OnMount => self.parse_lifecycle_hook(true),
             scanner::TokenType::OnUnmount => self.parse_lifecycle_hook(false),
+            scanner::TokenType::Effect => self.parse_effect(),
+            scanner::TokenType::Cleanup => self.parse_cleanup(),
             scanner::TokenType::Identifier(_) => self.parse_identifier_statement(),
             scanner::TokenType::Log => self.parse_log(),
             scanner::TokenType::For => self.parse_for_loop_statement(),
@@ -307,6 +309,53 @@ impl Parser {
         } else {
             Statement::OnUnmount(stmt)
         })
+    }
+
+    /// Parse `effect (dep_a, dep_b, ...) { body }`. Empty deps
+    /// `effect () { ... }` is legal — equivalent to "fires once
+    /// on mount, cleanup on unmount." Deps are arbitrary
+    /// expressions (the compiler later validates that they
+    /// resolve to a value type with structural equality).
+    fn parse_effect(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
+        self.consume_if(scanner::TokenType::Effect)?;
+        // Dep list: parens-delimited, comma-separated, possibly
+        // empty.
+        self.consume_if(scanner::TokenType::LeftParenthesis)?;
+        let mut deps = Vec::new();
+        while !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
+            deps.push(self.expression()?);
+            if self.next_is(vec![scanner::TokenType::Comma]) {
+                self.consume_if(scanner::TokenType::Comma)?;
+            }
+        }
+        self.consume_if(scanner::TokenType::RightParenthesis)?;
+        // Body block.
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let body = self.parse_block(false)?;
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        if self.next_is(vec![scanner::TokenType::Semicolon]) {
+            self.consume_if(scanner::TokenType::Semicolon)?;
+        }
+        let span = self.span_from(start);
+        Ok(Statement::Effect(EffectStatement { deps, body, span }))
+    }
+
+    /// Parse `cleanup { body }`. The parser accepts cleanup
+    /// anywhere a statement can appear; the *compiler* rejects
+    /// it outside an effect body (we can't easily check effect-
+    /// nesting at parse time without threading context).
+    fn parse_cleanup(&mut self) -> Result<Statement, SyntaxError> {
+        let start = self.span_start();
+        self.consume_if(scanner::TokenType::Cleanup)?;
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let body = self.parse_block(false)?;
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        if self.next_is(vec![scanner::TokenType::Semicolon]) {
+            self.consume_if(scanner::TokenType::Semicolon)?;
+        }
+        let span = self.span_from(start);
+        Ok(Statement::Cleanup(LifecycleHookStatement { body, span }))
     }
 
     fn parse_import(&mut self) -> Result<Statement, SyntaxError> {

@@ -82,6 +82,12 @@ pub struct Compiler {
     /// compiler (nested fn restarts at 1).
     next_mount_hook_id: u16,
     next_unmount_hook_id: u16,
+    next_effect_hook_id: u16,
+    /// Phase 2: set true while compiling the body of an
+    /// `effect (deps) { body }` block. Cleanup statements are
+    /// only legal in this context — outside an effect body,
+    /// `Statement::Cleanup` triggers a compile-time error.
+    in_effect_body: bool,
 }
 
 impl Compiler {
@@ -99,6 +105,8 @@ impl Compiler {
             schema: None,
             next_mount_hook_id: 1,
             next_unmount_hook_id: 1,
+            next_effect_hook_id: 1,
+            in_effect_body: false,
         }
     }
 
@@ -120,6 +128,8 @@ impl Compiler {
             // Per-function hook id: each function starts at 1.
             next_mount_hook_id: 1,
             next_unmount_hook_id: 1,
+            next_effect_hook_id: 1,
+            in_effect_body: false,
         }
     }
 
@@ -805,6 +815,26 @@ impl Compiler {
             Statement::OnUnmount(hook) => {
                 self.compile_lifecycle_hook(hook, /* is_mount */ false)?;
             }
+            Statement::Effect(effect) => {
+                self.compile_effect(effect)?;
+            }
+            Statement::Cleanup(hook) => {
+                if self.in_effect_body {
+                    self.compile_cleanup_inside_effect(hook)?;
+                } else {
+                    return Err(VMError::StrictMode(
+                        crate::parser::SyntaxError::new(
+                            statement.span().start_line,
+                            statement.span().start_column,
+                            "cleanup can only appear inside an effect block",
+                        )
+                        .with_help(
+                            "move this cleanup into the body of an \
+                             `effect (...) { ... }` block",
+                        ),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1353,6 +1383,78 @@ impl Compiler {
         });
 
         // Restore self.
+        *self = *restored_parent;
+        Ok(())
+    }
+
+    /// Compile an `effect (dep_a, dep_b) { body }` statement.
+    /// Emits each dep expression in source order (leaves
+    /// dep_count values on the stack), then compiles the body
+    /// as a sub-FunctionProto (with `in_effect_body = true` so
+    /// nested cleanup statements emit RegisterEffectCleanup),
+    /// then emits Closure(idx) + RegisterEffect.
+    fn compile_effect(
+        &mut self,
+        effect: &crate::parser::EffectStatement,
+    ) -> Result<(), VMError> {
+        // Allocate hook id BEFORE the dep + body compile. This
+        // guarantees stable ordering even if a dep expression
+        // somehow contains a nested fn that has its own effects
+        // (those go to the child compiler's counter).
+        let hook_id = self.next_effect_hook_id;
+        self.next_effect_hook_id += 1;
+        let dep_count: u8 = effect.deps.len().try_into().map_err(|_| {
+            VMError::InvalidOperation(
+                "effect cannot have more than 255 deps".to_string(),
+            )
+        })?;
+
+        // Compile deps in source order. Each leaves one value
+        // on the stack; the VM pops `dep_count` of them in
+        // RegisterEffect.
+        for dep in &effect.deps {
+            self.compile_expression(dep)?;
+        }
+
+        // Compile body as a parameterless sub-FunctionProto with
+        // in_effect_body = true so nested cleanup statements emit
+        // RegisterEffectCleanup.
+        let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
+        let mut child = parent.child("<effect>".to_string(), 0);
+        child.in_effect_body = true;
+        child.add_param_local(String::new());
+        child.compile_block(&effect.body)?;
+        let (mut restored_parent, proto) = child.finish_child();
+
+        // Push proto, emit Closure + RegisterEffect.
+        restored_parent.function.protos.push(proto);
+        let closure_idx = (restored_parent.function.protos.len() - 1) as u16;
+        restored_parent.emit(OpCode::Closure(closure_idx));
+        restored_parent.emit(OpCode::RegisterEffect { hook_id, dep_count });
+
+        *self = *restored_parent;
+        Ok(())
+    }
+
+    /// Compile a `cleanup { body }` statement appearing inside
+    /// an effect body. Emits the body as a parameterless
+    /// sub-FunctionProto, then Closure(idx) + RegisterEffectCleanup.
+    /// Caller must have verified `self.in_effect_body == true`.
+    fn compile_cleanup_inside_effect(
+        &mut self,
+        hook: &crate::parser::LifecycleHookStatement,
+    ) -> Result<(), VMError> {
+        let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
+        let mut child = parent.child("<cleanup>".to_string(), 0);
+        // Cleanup body itself is NOT inside an effect body for
+        // its own purposes (no nested cleanup-in-cleanup).
+        child.add_param_local(String::new());
+        child.compile_block(&hook.body)?;
+        let (mut restored_parent, proto) = child.finish_child();
+        restored_parent.function.protos.push(proto);
+        let closure_idx = (restored_parent.function.protos.len() - 1) as u16;
+        restored_parent.emit(OpCode::Closure(closure_idx));
+        restored_parent.emit(OpCode::RegisterEffectCleanup);
         *self = *restored_parent;
         Ok(())
     }

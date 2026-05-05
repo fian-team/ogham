@@ -350,6 +350,12 @@ pub struct Runtime {
     /// (oldest entries dropped at LIFECYCLE_LOG_CAPACITY).
     /// Cleared at frame start.
     pub(crate) lifecycle_error_log: Vec<String>,
+    /// Phase 2 (M2): set to `Some((path, hook_id))` while an
+    /// effect closure is firing. Used by the
+    /// RegisterEffectCleanup opcode handler to attach the
+    /// just-built cleanup closure to the right effect slot.
+    /// Cleared back to None after the closure call returns.
+    pub(crate) current_firing_effect: Option<(String, u16)>,
 }
 
 /// Maximum number of hook-error entries retained in
@@ -374,6 +380,7 @@ impl Runtime {
             context_stack: Vec::new(),
             lifecycle_active: false,
             lifecycle_error_log: Vec::new(),
+            current_firing_effect: None,
         }
     }
 
@@ -468,10 +475,27 @@ impl Runtime {
                 ));
             }
         }
-        // M2 fills in pending_effect_fires; M1 leaves it empty.
+        // Phase 2 M2: fire each scheduled effect. The
+        // current_firing_effect side channel lets
+        // RegisterEffectCleanup attach to the right slot.
         let fires = std::mem::take(&mut self.state.pending_effect_fires);
-        for _key in fires {
-            // No-op in M1.
+        for (path, hook_id) in fires {
+            let key = (path.clone(), hook_id);
+            // Look up the closure (clone the Rc so we can drop
+            // the borrow before calling — calling the closure
+            // re-enters the runtime).
+            let closure = match self.state.effects.get(&key) {
+                Some(slot) => slot.closure.clone(),
+                None => continue, // slot was removed (path unmounted mid-frame)
+            };
+            self.current_firing_effect = Some(key.clone());
+            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
+                self.log_lifecycle_error(format!(
+                    "effect at {}#{}: {:?}",
+                    path, hook_id, e
+                ));
+            }
+            self.current_firing_effect = None;
         }
     }
 
