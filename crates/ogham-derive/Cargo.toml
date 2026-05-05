@@ -1,0 +1,16 @@
+[package]
+name = "ogham-derive"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Derive macros for the Ogham typed-bindings boundary"
+license = "MIT"
+repository = "https://github.com/user/ogham"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

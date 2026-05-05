@@ -1903,12 +1903,22 @@ dependencies = [
  "lodepng",
  "nalgebra-glm",
  "notify",
+ "ogham-derive",
  "raw-window-handle",
  "rfd",
  "skia-safe",
  "tokio",
  "tower-lsp",
  "winit",
+]
+
+[[package]]
+name = "ogham-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

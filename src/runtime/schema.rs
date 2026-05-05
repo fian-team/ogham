@@ -41,8 +41,13 @@ use crate::parser::span::Span;
 use crate::parser::{Parser, SyntaxError};
 use crate::scanner::Scanner;
 use crate::parser::typed_bindings::{
-    EventsDecl, FieldDecl, HostStateDecl, KeyType, PrimType, RecordDecl, SchemaLiteral, TypeRef,
+    EventsDecl, FieldDecl, HostStateDecl, RecordDecl,
 };
+
+// Re-export the type-universe items so callers (and the
+// derive macros) have one canonical import path:
+// `use ogham::runtime::schema::{TypeRef, PrimType, KeyType, ...};`.
+pub use crate::parser::typed_bindings::{KeyType, PrimType, SchemaLiteral, TypeRef};
 use crate::parser::{Function, Statement};
 
 /// The resolved schema for one module.
@@ -407,6 +412,236 @@ fn check_no_direct_self_reference(
         // any of them is fine.
         TypeRef::Array(_) | TypeRef::Map(_, _) | TypeRef::Optional(_) => Ok(()),
         TypeRef::Primitive(_) => Ok(()),
+    }
+}
+
+// ---------------------------------------------------------------------
+// Derive trait surface (M4) — used by ogham-derive's macro output
+// ---------------------------------------------------------------------
+
+use crate::runtime::value::Value;
+
+/// Maps a Rust type to its [`TypeRef`] in the schema. Implemented
+/// by the built-in primitive impls below, by the `OghamRecord`
+/// derive for user-defined records, and recursively for `Vec<T>`,
+/// `Option<T>`, `HashMap<String, V>`.
+///
+/// The derive macros emit calls to `<T as OghamField>::ogham_type_ref()`
+/// for each field's type, building up a `RecordSchema` whose
+/// `TypeRef`s match the source `.ogh` declarations exactly. The
+/// startup schema-match check (M5) then compares the derived
+/// schema against the parsed module schema.
+pub trait OghamField {
+    fn ogham_type_ref() -> TypeRef;
+    /// Convert a value of this type into a [`Value`] for host-state
+    /// injection. Mirrors [`IntoHostValue`](crate::runtime::IntoHostValue)
+    /// but works through a borrowed reference, which composes
+    /// better through `Vec<T>`, `Option<T>`, etc.
+    fn into_ogham_value(&self) -> Value;
+}
+
+/// A Rust type that maps to a declared `record` in the schema.
+/// Derived via `#[derive(OghamRecord)]`. The derive emits both
+/// this impl and an `OghamField` impl that converts the record
+/// into a `Value::Map`.
+pub trait OghamRecord {
+    /// The record's name on the `.ogh` side. Used by the
+    /// schema-match check to ensure Rust and `.ogh` agree.
+    const OGHAM_RECORD_NAME: &'static str;
+    /// The full record schema (field name → field schema).
+    /// Constructed lazily on first access since [`RecordSchema`]
+    /// uses `BTreeMap` which isn't const-constructible.
+    fn ogham_record_schema() -> RecordSchema;
+}
+
+/// A Rust struct that maps to the module's `host_state {}` block.
+/// Derived via `#[derive(OghamState)]`. Extends `OghamRecord` with
+/// snapshot/diff helpers that integrate with the runtime's host-
+/// state injection (matching `inject_host_state_if_changed`
+/// semantics so unchanged fields don't trigger rerenders).
+pub trait OghamState: OghamRecord + PartialEq {
+    /// Push every field of `self` into the host-state map.
+    /// Used at `watch_typed` startup to seed the initial state.
+    fn ogham_snapshot_into(&self, sink: &mut dyn HostStateSinkErased);
+    /// Push only fields that differ from `prev`. Used per frame
+    /// by `TypedOgham::set_state`.
+    fn ogham_diff_apply(&self, prev: &Self, sink: &mut dyn HostStateSinkErased);
+}
+
+/// Object-safe shim over [`crate::runtime::HostStateSink`] so
+/// `OghamState` can take `&mut dyn` (required because the
+/// `IntoHostValue` generic prevents the original from being
+/// object-safe).
+pub trait HostStateSinkErased {
+    fn set_value(&mut self, name: &str, value: Value);
+}
+
+impl<T: crate::runtime::HostStateSink + ?Sized> HostStateSinkErased for T {
+    fn set_value(&mut self, name: &str, value: Value) {
+        crate::runtime::HostStateSink::set_value(self, name, value);
+    }
+}
+
+// --- OghamField impls for primitives ---------------------------------
+
+impl OghamField for i32 {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::Int)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Integer(*self)
+    }
+}
+
+impl OghamField for i64 {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::Int)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Integer(*self as i32)
+    }
+}
+
+impl OghamField for u32 {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::Int)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Integer(*self as i32)
+    }
+}
+
+impl OghamField for usize {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::Int)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Integer(*self as i32)
+    }
+}
+
+impl OghamField for f32 {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::Float)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Float(*self as f64)
+    }
+}
+
+impl OghamField for f64 {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::Float)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Float(*self)
+    }
+}
+
+impl OghamField for bool {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::Bool)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Boolean(*self)
+    }
+}
+
+impl OghamField for String {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Primitive(PrimType::String)
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::String(self.clone())
+    }
+}
+
+// --- OghamField impls for containers ---------------------------------
+
+impl<T: OghamField> OghamField for Vec<T> {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Array(Box::new(T::ogham_type_ref()))
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Array(self.iter().map(|v| v.into_ogham_value()).collect())
+    }
+}
+
+impl<T: OghamField> OghamField for Option<T> {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Optional(Box::new(T::ogham_type_ref()))
+    }
+    fn into_ogham_value(&self) -> Value {
+        match self {
+            Some(v) => v.into_ogham_value(),
+            None => Value::Void,
+        }
+    }
+}
+
+impl<V: OghamField> OghamField for HashMap<String, V> {
+    fn ogham_type_ref() -> TypeRef {
+        TypeRef::Map(KeyType::String, Box::new(V::ogham_type_ref()))
+    }
+    fn into_ogham_value(&self) -> Value {
+        Value::Map(
+            self.iter()
+                .map(|(k, v)| (k.clone(), v.into_ogham_value()))
+                .collect(),
+        )
+    }
+}
+
+// ---------------------------------------------------------------------
+// FromOghamValue — runtime parsing for `OghamMsg` event args.
+// Lives here (not in `ogham-derive`) so the proc-macro crate has
+// zero dependencies on the runtime; the derive emits absolute-path
+// calls to this trait. Implementations are extension points for
+// users who add new payload types.
+// ---------------------------------------------------------------------
+
+/// Parse a [`Value`] into a typed payload. The `OghamMsg` derive
+/// emits `<T as FromOghamValue>::from_ogham_value(v)` calls for
+/// each event arg position.
+pub trait FromOghamValue: Sized {
+    fn from_ogham_value(v: &Value) -> Option<Self>;
+}
+
+impl FromOghamValue for i32 {
+    fn from_ogham_value(v: &Value) -> Option<Self> {
+        if let Value::Integer(n) = v { Some(*n) } else { None }
+    }
+}
+
+impl FromOghamValue for f32 {
+    fn from_ogham_value(v: &Value) -> Option<Self> {
+        match v {
+            Value::Float(f) => Some(*f as f32),
+            Value::Integer(n) => Some(*n as f32),
+            _ => None,
+        }
+    }
+}
+
+impl FromOghamValue for f64 {
+    fn from_ogham_value(v: &Value) -> Option<Self> {
+        match v {
+            Value::Float(f) => Some(*f),
+            Value::Integer(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+}
+
+impl FromOghamValue for bool {
+    fn from_ogham_value(v: &Value) -> Option<Self> {
+        if let Value::Boolean(b) = v { Some(*b) } else { None }
+    }
+}
+
+impl FromOghamValue for String {
+    fn from_ogham_value(v: &Value) -> Option<Self> {
+        if let Value::String(s) = v { Some(s.clone()) } else { None }
     }
 }
 

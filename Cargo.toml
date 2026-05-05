@@ -1,7 +1,12 @@
+[workspace]
+members = [".", "crates/ogham-derive"]
+resolver = "2"
+
 [package]
 name = "ogham"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 description = "A UI language and framework inspired by DOM, CSS/Flexbox, and React"
 license = "MIT"
 repository = "https://github.com/user/ogham"
@@ -34,3 +39,6 @@ rfd = "0.14"
 notify = "6.1"
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+ogham-derive = { path = "crates/ogham-derive" }
