@@ -567,7 +567,19 @@ fn create_flex_widget(
         &mut flex_widget.event_listeners,
         &descriptor.properties,
         runtime,
+        "mouse_up",
+    )?;
+    register_event_listener(
+        &mut flex_widget.event_listeners,
+        &descriptor.properties,
+        runtime,
         "mouse_enter",
+    )?;
+    register_event_listener(
+        &mut flex_widget.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "mouse_leave",
     )?;
 
     if let Some(value) = descriptor.properties.get("children") {
@@ -948,7 +960,19 @@ fn create_grid_widget(
         &mut grid.event_listeners,
         &descriptor.properties,
         runtime,
+        "mouse_up",
+    )?;
+    register_event_listener(
+        &mut grid.event_listeners,
+        &descriptor.properties,
+        runtime,
         "mouse_enter",
+    )?;
+    register_event_listener(
+        &mut grid.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "mouse_leave",
     )?;
 
     Ok(Arc::new(Mutex::new(grid)))

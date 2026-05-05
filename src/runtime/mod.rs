@@ -28,6 +28,7 @@ pub mod error;
 pub mod host_state;
 pub mod opcode;
 pub mod ops;
+pub mod schema;
 pub mod value;
 pub mod vm;
 pub mod descriptor;

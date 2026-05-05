@@ -241,14 +241,68 @@ fn collect_diagnostics(doc: &crate::document::Document) -> Vec<Diagnostic> {
     if let Err(err) = parser.parse() {
         let line = err.line.saturating_sub(1) as u32;
         let col = err.column.saturating_sub(1) as u32;
+        // length 0 falls back to a one-character highlight, matching the
+        // pre-typed-bindings behavior. Strict-mode errors set length
+        // explicitly via `SyntaxError::with_length`.
+        let length = if err.length > 0 { err.length as u32 } else { 1 };
         diagnostics.push(Diagnostic {
-            range: Range::new(Position::new(line, col), Position::new(line, col + 1)),
+            range: Range::new(Position::new(line, col), Position::new(line, col + length)),
             severity: Some(DiagnosticSeverity::ERROR),
             source: Some("ogham".to_string()),
-            message: err.message,
+            message: format_diagnostic_message(&err.message, err.note.as_deref(), err.help.as_deref()),
             ..Default::default()
         });
     }
 
     diagnostics
+}
+
+/// Render a parser/scanner diagnostic into the multi-line shape clients
+/// see in their problems pane: the primary message on the first line,
+/// then optional `note:` and `help:` continuation lines (Rust's compiler
+/// convention). Stuffing them into the message field is the v1 strategy
+/// — `tower_lsp::Diagnostic::related_information` is fancier but
+/// requires a `Location` that strict-mode errors don't always have a
+/// natural value for.
+fn format_diagnostic_message(message: &str, note: Option<&str>, help: Option<&str>) -> String {
+    match (note, help) {
+        (None, None) => message.to_string(),
+        (Some(n), None) => format!("{message}\n\nnote: {n}"),
+        (None, Some(h)) => format!("{message}\n\nhelp: {h}"),
+        (Some(n), Some(h)) => format!("{message}\n\nnote: {n}\nhelp: {h}"),
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::format_diagnostic_message;
+
+    #[test]
+    fn formats_plain_message_unchanged() {
+        assert_eq!(format_diagnostic_message("oops", None, None), "oops");
+    }
+
+    #[test]
+    fn formats_message_with_note() {
+        assert_eq!(
+            format_diagnostic_message("oops", Some("rule explanation"), None),
+            "oops\n\nnote: rule explanation"
+        );
+    }
+
+    #[test]
+    fn formats_message_with_help() {
+        assert_eq!(
+            format_diagnostic_message("oops", None, Some("did you mean `foo`?")),
+            "oops\n\nhelp: did you mean `foo`?"
+        );
+    }
+
+    #[test]
+    fn formats_message_with_note_and_help() {
+        assert_eq!(
+            format_diagnostic_message("oops", Some("rule"), Some("fix")),
+            "oops\n\nnote: rule\nhelp: fix"
+        );
+    }
 }

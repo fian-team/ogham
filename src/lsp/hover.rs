@@ -249,6 +249,12 @@ fn hover_in_statement(
                 path: import.path.clone(),
             })
         }
+        // Typed-bindings declarations: M3 will add schema-aware hover
+        // (declared types, event signatures, record fields). For now,
+        // hover inside these blocks returns nothing.
+        Statement::RecordDeclaration(_)
+        | Statement::HostStateDeclaration(_)
+        | Statement::EventsDeclaration(_) => None,
     }
 }
 

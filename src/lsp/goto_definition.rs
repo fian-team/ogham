@@ -156,6 +156,12 @@ fn def_in_statement(
             def_in_block(&for_loop.body, line, col, defs)
         }
         Statement::Import(_) => None,
+        // Typed-bindings declarations (Phase 1). M3 will add proper
+        // schema-aware go-to-definition (record name → declaration);
+        // for now, no go-to navigation lands inside these blocks.
+        Statement::RecordDeclaration(_)
+        | Statement::HostStateDeclaration(_)
+        | Statement::EventsDeclaration(_) => None,
     }
 }
 

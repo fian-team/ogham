@@ -1,3 +1,4 @@
+use super::typed_bindings::{EventsDecl, HostStateDecl, RecordDecl};
 use super::{block::*, expression::*, identifier::*, span::Span};
 
 #[derive(PartialEq, Clone, Debug)]
@@ -11,6 +12,12 @@ pub enum Statement {
     Log(LogStatement),
     ForLoop(ForLoopStatement),
     Import(ImportStatement),
+    /// `record Foo { ... };` — top-level only.
+    RecordDeclaration(RecordDecl),
+    /// `host_state { ... };` — top-level only, at most one per module.
+    HostStateDeclaration(HostStateDecl),
+    /// `events { ... };` — top-level only, at most one per module.
+    EventsDeclaration(EventsDecl),
 }
 
 impl Statement {
@@ -97,6 +104,9 @@ impl Statement {
             Statement::Log(s) => s.span,
             Statement::ForLoop(s) => s.span,
             Statement::Import(s) => s.span,
+            Statement::RecordDeclaration(s) => s.span,
+            Statement::HostStateDeclaration(s) => s.span,
+            Statement::EventsDeclaration(s) => s.span,
         }
     }
 }

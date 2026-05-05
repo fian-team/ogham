@@ -129,6 +129,7 @@ impl Scanner {
             ':' => self.create_token(TokenType::Colon),
             ';' => self.create_token(TokenType::Semicolon),
             ',' => self.create_token(TokenType::Comma),
+            '?' => self.create_token(TokenType::Question),
             '=' => {
                 if self.match_next('>') {
                     self.consume(); // consume the '>'
@@ -407,6 +408,15 @@ impl Scanner {
             "from" => self.create_token(TokenType::From),
             "true" => self.create_token(TokenType::Boolean(true)),
             "false" => self.create_token(TokenType::Boolean(false)),
+            // Typed-bindings keywords. `array` and `map` are intentionally
+            // *not* keywords — they remain `Identifier` and the parser
+            // recognizes them contextually only in type positions
+            // (`array<T>`, `map<K, V>`). This avoids breaking any user
+            // code that uses `array` or `map` as variable names.
+            "record" => self.create_token(TokenType::Record),
+            "host_state" => self.create_token(TokenType::HostState),
+            "events" => self.create_token(TokenType::Events),
+            "Self" => self.create_token(TokenType::SelfTy),
             _ => self.create_token(TokenType::Identifier(value)),
         }
     }
@@ -541,5 +551,58 @@ mod tests {
     fn scan_lone_ampersand_is_error() {
         let tokens = scan("&");
         assert!(matches!(tokens[0].token_type, TokenType::Error(_)));
+    }
+
+    // --- Typed-bindings keywords (Phase 1, M1a) ---
+
+    #[test]
+    fn scan_record_keyword() {
+        let tokens = scan("record");
+        assert_eq!(tokens[0].token_type, TokenType::Record);
+    }
+
+    #[test]
+    fn scan_host_state_keyword_as_single_token() {
+        let tokens = scan("host_state");
+        assert_eq!(tokens[0].token_type, TokenType::HostState);
+        // Must be a single token, not "host" + "_" + "state".
+        assert_eq!(tokens[1].token_type, TokenType::EOF);
+    }
+
+    #[test]
+    fn scan_events_keyword() {
+        let tokens = scan("events");
+        assert_eq!(tokens[0].token_type, TokenType::Events);
+    }
+
+    #[test]
+    fn scan_self_ty_keyword() {
+        let tokens = scan("Self");
+        assert_eq!(tokens[0].token_type, TokenType::SelfTy);
+    }
+
+    #[test]
+    fn array_and_map_remain_identifiers() {
+        // Critical: keeping `array` and `map` as identifiers preserves
+        // backward compatibility with any existing variable names.
+        let tokens = scan("array map");
+        assert_eq!(tokens[0].token_type, TokenType::Identifier("array".to_string()));
+        assert_eq!(tokens[1].token_type, TokenType::Identifier("map".to_string()));
+    }
+
+    #[test]
+    fn self_lowercase_remains_identifier() {
+        // Only `Self` (capital S) is the keyword; `self` stays an identifier.
+        let tokens = scan("self");
+        assert_eq!(tokens[0].token_type, TokenType::Identifier("self".to_string()));
+    }
+
+    #[test]
+    fn scan_typed_bindings_keywords_in_sequence() {
+        let tokens = scan("record host_state events Self");
+        assert_eq!(tokens[0].token_type, TokenType::Record);
+        assert_eq!(tokens[1].token_type, TokenType::HostState);
+        assert_eq!(tokens[2].token_type, TokenType::Events);
+        assert_eq!(tokens[3].token_type, TokenType::SelfTy);
     }
 }

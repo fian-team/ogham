@@ -225,6 +225,9 @@ impl UI {
         if !was_hovered && hit {
             let event = Event::new("mouse_enter".to_string());
             widget.fire_listeners("mouse_enter", &event);
+        } else if was_hovered && !hit {
+            let event = Event::new("mouse_leave".to_string());
+            widget.fire_listeners("mouse_leave", &event);
         }
 
         // Transform the point into this widget's own content coordinate

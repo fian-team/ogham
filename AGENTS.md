@@ -186,6 +186,18 @@ Flex {
 }
 ```
 
+`Flex` and `Grid` accept four pointer listeners: `mouse_down`,
+`mouse_up`, `mouse_enter`, `mouse_leave`. `mouse_enter` and
+`mouse_leave` fire on the hover-in / hover-out transition during
+`mouse_move` dispatch — every widget in the path from root to the
+deepest hit fires `mouse_enter` when first entered and `mouse_leave`
+when no longer hovered. `mouse_up` fires on the same hit-test path
+as `mouse_down`, which makes drag-drop expressible: `mouse_down` on
+the source starts the drag, `mouse_enter` / `mouse_leave` on
+candidates highlight valid drop targets, `mouse_up` on the target
+completes the drop. `TextInput` exposes `mouse_down` and `mouse_up`;
+`Image` exposes `mouse_down`.
+
 ### Animations and lifecycle
 
 Style transitions, entry animations, and exit animations are first-class on `Flex`. Three pieces work together: a `transition:` declaration in the style enabling spring interpolation, optional `initial:` / `exit:` widget-level styles for entry/exit animations, and a `key:` for stable identity across reconciles.

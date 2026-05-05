@@ -31,6 +31,10 @@ pub enum TokenType {
     LessThanOrEqualTo,    // <=
     Not,                  // !
     NotEqual,             // !=
+    /// `?` — postfix Optional marker in type positions
+    /// (`string?`, `Item?`). Outside type positions the parser
+    /// rejects it; the scanner just emits the token.
+    Question,
     // Logical operators
     And, // &&
     Or,  // ||
@@ -47,6 +51,20 @@ pub enum TokenType {
     Match,
     Import,
     From,
+    // Typed-bindings keywords (Phase 1).
+    /// `record` — declares a named structural type for use in
+    /// `host_state` / `events` / record-field positions.
+    Record,
+    /// `host_state` — declares the schema of host-injected state
+    /// for the module. Scanned as a single multi-character keyword
+    /// (parallel to how `==` and `=>` scan as single tokens).
+    HostState,
+    /// `events` — declares the event signatures the module
+    /// emits via `event(...)`.
+    Events,
+    /// `Self` — refers to the enclosing record type from inside
+    /// its own field declarations. Legal only there.
+    SelfTy,
     // Match arms
     FatArrow, // =>
     // String delimiters

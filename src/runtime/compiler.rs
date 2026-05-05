@@ -520,6 +520,18 @@ impl Compiler {
                 self.emit(OpCode::MarkBranched);
                 self.compile_for_loop_statement(for_loop)?;
             }
+            // Typed-bindings declarations (Phase 1) are pure schema
+            // metadata: they're consumed by the resolver and the LSP,
+            // not the VM. The compiler emits no bytecode for them and
+            // they leave nothing on the stack. If `is_last` is true,
+            // an empty block-result of `Void` is implicitly produced
+            // by the surrounding block-compile path; declarations don't
+            // change that.
+            Statement::RecordDeclaration(_)
+            | Statement::HostStateDeclaration(_)
+            | Statement::EventsDeclaration(_) => {
+                // Intentionally empty.
+            }
         }
         Ok(())
     }

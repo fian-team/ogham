@@ -173,6 +173,13 @@ fn collect_from_statement(stmt: &Statement, out: &mut Vec<RawToken>, ctx: &mut A
             collect_from_block(&for_loop.body, out, ctx);
         }
         Statement::Import(_) => {}
+        // Typed-bindings declarations: M3 will add proper semantic
+        // highlighting for record/host_state/events keywords, type
+        // refs, and field names. For now they receive no special
+        // tokens (they'll appear unhighlighted).
+        Statement::RecordDeclaration(_)
+        | Statement::HostStateDeclaration(_)
+        | Statement::EventsDeclaration(_) => {}
     }
 }
 

@@ -17,6 +17,7 @@ mod operator;
 pub mod span;
 mod statement;
 mod syntax_error;
+pub mod typed_bindings;
 mod widget;
 
 pub use {
@@ -119,20 +120,57 @@ impl Parser {
             scanner::TokenType::NotEqual => Ok(Operator::NotEquals),
             scanner::TokenType::Or => Ok(Operator::Or),
             scanner::TokenType::And => Ok(Operator::And),
-            _ => Err(SyntaxError {
-                message: "Invalid operator".to_owned(),
-                line,
-                column,
-            }),
+            _ => Err(SyntaxError::new(line, column, "Invalid operator")),
         }
     }
 
     pub fn parse(&mut self) -> Result<Function, SyntaxError> {
         let start = self.span_start();
         let block = self.parse_block(true)?;
+        // Phase 1 (M1c): at most one `host_state {}` and one `events {}`
+        // per module. Walk the parsed top-level block and reject the
+        // second occurrence with a span pointing at the duplicate.
+        Self::check_unique_top_level_decls(&block)?;
         self.module.body = block;
         self.module.span = self.span_from(start);
         Ok(self.module.clone())
+    }
+
+    /// Enforce one-per-module uniqueness for `host_state {}` and
+    /// `events {}`. Multiple `record` declarations are allowed.
+    fn check_unique_top_level_decls(block: &Block) -> Result<(), SyntaxError> {
+        let mut host_state_seen = false;
+        let mut events_seen = false;
+        for stmt in &block.statement_list {
+            match stmt {
+                Statement::HostStateDeclaration(decl) => {
+                    if host_state_seen {
+                        return Err(SyntaxError::new(
+                            decl.span.start_line,
+                            decl.span.start_column,
+                            "duplicate `host_state` declaration",
+                        )
+                        .with_length(10)
+                        .with_note("a module may declare `host_state {}` at most once"));
+                    }
+                    host_state_seen = true;
+                }
+                Statement::EventsDeclaration(decl) => {
+                    if events_seen {
+                        return Err(SyntaxError::new(
+                            decl.span.start_line,
+                            decl.span.start_column,
+                            "duplicate `events` declaration",
+                        )
+                        .with_length(6)
+                        .with_note("a module may declare `events {}` at most once"));
+                    }
+                    events_seen = true;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     pub fn parse_block(&mut self, allow_import: bool) -> Result<Block, SyntaxError> {
@@ -158,13 +196,51 @@ impl Parser {
             scanner::TokenType::Import => {
                 if !allow_import {
                     let t = current_token.clone();
-                    return Err(SyntaxError {
-                        message: "import is only allowed at module top level".to_owned(),
-                        line: t.line,
-                        column: t.column,
-                    });
+                    return Err(SyntaxError::new(
+                        t.line,
+                        t.column,
+                        "import is only allowed at module top level",
+                    ));
                 }
                 self.parse_import()
+            }
+            // Typed-bindings declarations are top-level only. `allow_import`
+            // doubles as the "are we at module top level?" indicator.
+            scanner::TokenType::Record => {
+                if !allow_import {
+                    let t = current_token.clone();
+                    return Err(SyntaxError::new(
+                        t.line,
+                        t.column,
+                        "`record` declarations are only allowed at module top level",
+                    )
+                    .with_length(6));
+                }
+                self.parse_record_decl()
+            }
+            scanner::TokenType::HostState => {
+                if !allow_import {
+                    let t = current_token.clone();
+                    return Err(SyntaxError::new(
+                        t.line,
+                        t.column,
+                        "`host_state` is only allowed at module top level",
+                    )
+                    .with_length(10));
+                }
+                self.parse_host_state_decl()
+            }
+            scanner::TokenType::Events => {
+                if !allow_import {
+                    let t = current_token.clone();
+                    return Err(SyntaxError::new(
+                        t.line,
+                        t.column,
+                        "`events` is only allowed at module top level",
+                    )
+                    .with_length(6));
+                }
+                self.parse_events_decl()
             }
             scanner::TokenType::If => self.parse_conditional(),
             scanner::TokenType::Return => self.parse_return(),
@@ -197,30 +273,26 @@ impl Parser {
                 self.consume_if(scanner::TokenType::Comma)?;
             }
             self.consume_if(scanner::TokenType::From)?;
-            let path_token = self.current().ok_or_else(|| SyntaxError {
-                message: "Expected string path after 'from'".to_owned(),
-                line: 0,
-                column: 0,
-            })?;
+            let path_token = self
+                .current()
+                .ok_or_else(|| SyntaxError::new(0, 0, "Expected string path after 'from'"))?;
             let path = match &path_token.token_type {
                 scanner::TokenType::String(s) => {
                     self.consume();
                     s.clone()
                 }
                 _ => {
-                    return Err(SyntaxError {
-                        message: "Expected string path after 'from'".to_owned(),
-                        line: path_token.line,
-                        column: path_token.column,
-                    });
+                    return Err(SyntaxError::new(
+                        path_token.line,
+                        path_token.column,
+                        "Expected string path after 'from'",
+                    ));
                 }
             };
             (Some(ids), path)
         } else {
-            let path_token = self.current().ok_or_else(|| SyntaxError {
-                message: "Expected string path or '{' after 'import'".to_owned(),
-                line: 0,
-                column: 0,
+            let path_token = self.current().ok_or_else(|| {
+                SyntaxError::new(0, 0, "Expected string path or '{' after 'import'")
             })?;
             let path = match &path_token.token_type {
                 scanner::TokenType::String(s) => {
@@ -228,11 +300,11 @@ impl Parser {
                     s.clone()
                 }
                 _ => {
-                    return Err(SyntaxError {
-                        message: "Expected string path or '{' after 'import'".to_owned(),
-                        line: path_token.line,
-                        column: path_token.column,
-                    });
+                    return Err(SyntaxError::new(
+                        path_token.line,
+                        path_token.column,
+                        "Expected string path or '{' after 'import'",
+                    ));
                 }
             };
             (None, path)
@@ -247,16 +319,15 @@ impl Parser {
             self.consume();
         } else {
             let current_token = self.current().unwrap();
-            return Err(SyntaxError {
-                message: format!(
+            return Err(SyntaxError::new(
+                current_token.line,
+                current_token.column,
+                format!(
                     "Expected token {:#?}, received {:#?}",
                     token.clone(),
                     current_token.token_type
-                )
-                .to_owned(),
-                column: current_token.column,
-                line: current_token.line,
-            });
+                ),
+            ));
         }
         Ok(())
     }
@@ -268,11 +339,11 @@ impl Parser {
             self.consume();
             Ok(Identifier::new(&identifier, span))
         } else {
-            Err(SyntaxError {
-                message: "Expected identifier".to_owned(),
-                line: current_token.line,
-                column: current_token.column,
-            })
+            Err(SyntaxError::new(
+                current_token.line,
+                current_token.column,
+                "Expected identifier",
+            ))
         }
     }
 
@@ -454,6 +525,289 @@ impl Parser {
         ))
     }
 
+    // -----------------------------------------------------------------
+    // Typed bindings (Phase 1, M1c) — `record`, `host_state`, `events`
+    // -----------------------------------------------------------------
+
+    /// Parse `record Foo { field: TypeRef = literal?, ... };`. Inside
+    /// a record's field list, `Self` is a legal type reference to the
+    /// enclosing record.
+    fn parse_record_decl(&mut self) -> Result<Statement, SyntaxError> {
+        use typed_bindings::RecordDecl;
+        let start = self.span_start();
+        self.consume_if(scanner::TokenType::Record)?;
+        let name = self.consume_if_identifier()?.get();
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let fields = self.parse_field_list(true)?;
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        self.consume_if(scanner::TokenType::Semicolon)?;
+        let span = self.span_from(start);
+        Ok(Statement::RecordDeclaration(RecordDecl { name, fields, span }))
+    }
+
+    /// Parse `host_state { field: TypeRef = literal?, ... };`. At most
+    /// one `host_state` declaration per module (the module-uniqueness
+    /// check happens after the whole `parse()` call returns). `Self`
+    /// is rejected here — there's no enclosing record to refer to.
+    fn parse_host_state_decl(&mut self) -> Result<Statement, SyntaxError> {
+        use typed_bindings::HostStateDecl;
+        let start = self.span_start();
+        self.consume_if(scanner::TokenType::HostState)?;
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let fields = self.parse_field_list(false)?;
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        self.consume_if(scanner::TokenType::Semicolon)?;
+        let span = self.span_from(start);
+        Ok(Statement::HostStateDeclaration(HostStateDecl { fields, span }))
+    }
+
+    /// Parse `events { name(TypeRef, ...), ... };`.
+    fn parse_events_decl(&mut self) -> Result<Statement, SyntaxError> {
+        use typed_bindings::{EventSigDecl, EventsDecl};
+        let start = self.span_start();
+        self.consume_if(scanner::TokenType::Events)?;
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let mut events: Vec<EventSigDecl> = Vec::new();
+        while !self.next_is(vec![scanner::TokenType::RightBracket]) {
+            let event_start = self.span_start();
+            let name = self.consume_if_identifier()?.get();
+            self.consume_if(scanner::TokenType::LeftParenthesis)?;
+            let mut args: Vec<typed_bindings::TypeRef> = Vec::new();
+            while !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
+                args.push(self.parse_type_ref(false)?);
+                if self.next_is(vec![scanner::TokenType::Comma]) {
+                    self.consume();
+                    // Allow trailing comma before `)`.
+                    if self.next_is(vec![scanner::TokenType::RightParenthesis]) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            self.consume_if(scanner::TokenType::RightParenthesis)?;
+            let span = self.span_from(event_start);
+            events.push(EventSigDecl { name, args, span });
+            if self.next_is(vec![scanner::TokenType::Comma]) {
+                self.consume();
+                // Allow trailing comma before `}`.
+                if self.next_is(vec![scanner::TokenType::RightBracket]) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        self.consume_if(scanner::TokenType::Semicolon)?;
+        let span = self.span_from(start);
+        Ok(Statement::EventsDeclaration(EventsDecl { events, span }))
+    }
+
+    /// Parse a field list shared by `record` and `host_state` blocks:
+    /// `field: TypeRef [= literal]` separated by commas, trailing comma OK.
+    /// `allow_self` is propagated to `parse_type_ref` so `Self` is legal
+    /// inside record fields and rejected inside host_state fields.
+    fn parse_field_list(
+        &mut self,
+        allow_self: bool,
+    ) -> Result<Vec<typed_bindings::FieldDecl>, SyntaxError> {
+        use typed_bindings::FieldDecl;
+        let mut fields: Vec<FieldDecl> = Vec::new();
+        while !self.next_is(vec![scanner::TokenType::RightBracket]) {
+            let field_start = self.span_start();
+            let name = self.consume_if_identifier()?.get();
+            self.consume_if(scanner::TokenType::Colon)?;
+            let ty = self.parse_type_ref(allow_self)?;
+            let default = if self.next_is(vec![scanner::TokenType::Equal]) {
+                self.consume();
+                Some(self.parse_schema_literal()?)
+            } else {
+                None
+            };
+            let span = self.span_from(field_start);
+            fields.push(FieldDecl { name, ty, default, span });
+            if self.next_is(vec![scanner::TokenType::Comma]) {
+                self.consume();
+                // Allow trailing comma before `}`.
+                if self.next_is(vec![scanner::TokenType::RightBracket]) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(fields)
+    }
+
+    /// Parse a `TypeRef`. `allow_self` is true only inside a record's
+    /// field types (so `Self` is rejected elsewhere with a useful error).
+    /// Postfix `?` wraps the parsed type in Optional; `??` is allowed
+    /// as `Optional<Optional<T>>` (a valid if eyebrow-raising shape).
+    fn parse_type_ref(&mut self, allow_self: bool) -> Result<typed_bindings::TypeRef, SyntaxError> {
+        use typed_bindings::{PrimType, TypeRef};
+        let token = self.current().ok_or_else(|| {
+            SyntaxError::new(0, 0, "Unexpected end of input while parsing type")
+        })?;
+        let line = token.line;
+        let column = token.column;
+        let mut ty = match token.token_type.clone() {
+            scanner::TokenType::Identifier(name) => {
+                self.consume();
+                match name.as_str() {
+                    "int" => TypeRef::Primitive(PrimType::Int),
+                    "float" => TypeRef::Primitive(PrimType::Float),
+                    "bool" => TypeRef::Primitive(PrimType::Bool),
+                    "string" => TypeRef::Primitive(PrimType::String),
+                    "array" => {
+                        self.consume_if(scanner::TokenType::LessThan)?;
+                        let inner = self.parse_type_ref(allow_self)?;
+                        self.consume_if(scanner::TokenType::GreaterThan)?;
+                        TypeRef::Array(Box::new(inner))
+                    }
+                    "map" => {
+                        self.consume_if(scanner::TokenType::LessThan)?;
+                        let key = self.parse_key_type()?;
+                        self.consume_if(scanner::TokenType::Comma)?;
+                        let value = self.parse_type_ref(allow_self)?;
+                        self.consume_if(scanner::TokenType::GreaterThan)?;
+                        TypeRef::Map(key, Box::new(value))
+                    }
+                    // Any other identifier is a record reference. We
+                    // can't validate it here (the resolver does that
+                    // post-parse, so forward references work).
+                    _ => TypeRef::Record(name),
+                }
+            }
+            scanner::TokenType::SelfTy => {
+                self.consume();
+                if !allow_self {
+                    return Err(SyntaxError::new(
+                        line,
+                        column,
+                        "`Self` is only allowed inside `record` field types",
+                    )
+                    .with_length(4)
+                    .with_note(
+                        "`Self` refers to the enclosing record; outside a record \
+                         declaration there is no self to refer to",
+                    ));
+                }
+                TypeRef::SelfRef
+            }
+            other => {
+                return Err(SyntaxError::new(
+                    line,
+                    column,
+                    format!("Expected a type, got {:?}", other),
+                ));
+            }
+        };
+        // Postfix `?` chain for Optional.
+        while self.next_is(vec![scanner::TokenType::Question]) {
+            self.consume();
+            ty = TypeRef::Optional(Box::new(ty));
+        }
+        Ok(ty)
+    }
+
+    /// Parse a map key type: `string` or `int` only (Phase 1).
+    fn parse_key_type(&mut self) -> Result<typed_bindings::KeyType, SyntaxError> {
+        use typed_bindings::KeyType;
+        let token = self
+            .current()
+            .ok_or_else(|| SyntaxError::new(0, 0, "Expected map key type"))?;
+        let line = token.line;
+        let column = token.column;
+        match token.token_type.clone() {
+            scanner::TokenType::Identifier(name) => match name.as_str() {
+                "string" => {
+                    self.consume();
+                    Ok(KeyType::String)
+                }
+                "int" => {
+                    self.consume();
+                    Ok(KeyType::Int)
+                }
+                "float" | "bool" => Err(SyntaxError::new(
+                    line,
+                    column,
+                    format!("`{}` is not a valid map key type", name),
+                )
+                .with_length(name.len())
+                .with_note("map keys must be `string` or `int` (Phase 1)")
+                .with_help("use `string` or `int` as the key type")),
+                _ => Err(SyntaxError::new(
+                    line,
+                    column,
+                    format!("`{}` is not a valid map key type", name),
+                )
+                .with_length(name.len())
+                .with_note("map keys must be `string` or `int` (Phase 1)")),
+            },
+            _ => Err(SyntaxError::new(line, column, "Expected map key type")),
+        }
+    }
+
+    /// Parse a schema literal (for field defaults). Phase 1: literals
+    /// only. Expressions wait for a compelling use case.
+    fn parse_schema_literal(&mut self) -> Result<typed_bindings::SchemaLiteral, SyntaxError> {
+        use typed_bindings::SchemaLiteral;
+        // Allow a leading `-` for negative numeric literals.
+        let negate = if self.next_is(vec![scanner::TokenType::Minus]) {
+            self.consume();
+            true
+        } else {
+            false
+        };
+        let token = self
+            .current()
+            .ok_or_else(|| SyntaxError::new(0, 0, "Expected literal default value"))?;
+        let line = token.line;
+        let column = token.column;
+        match token.token_type.clone() {
+            scanner::TokenType::Integer(v) => {
+                self.consume();
+                Ok(SchemaLiteral::Int(if negate { -v } else { v }))
+            }
+            scanner::TokenType::Float(v) => {
+                self.consume();
+                Ok(SchemaLiteral::Float(if negate { -v } else { v }))
+            }
+            scanner::TokenType::Boolean(v) => {
+                self.consume();
+                if negate {
+                    return Err(SyntaxError::new(
+                        line,
+                        column,
+                        "cannot negate a boolean default",
+                    ));
+                }
+                Ok(SchemaLiteral::Bool(v))
+            }
+            scanner::TokenType::String(s) => {
+                self.consume();
+                if negate {
+                    return Err(SyntaxError::new(
+                        line,
+                        column,
+                        "cannot negate a string default",
+                    ));
+                }
+                Ok(SchemaLiteral::String(s))
+            }
+            other => Err(SyntaxError::new(
+                line,
+                column,
+                format!(
+                    "expected a literal default value (int, float, bool, or string), got {:?}",
+                    other
+                ),
+            )
+            .with_note("Phase 1 defaults are literals only; expressions are not supported yet")),
+        }
+    }
+
     fn parse_remainder_of_declaration(
         &mut self,
     ) -> Result<(Identifier, Identifier, Expression), SyntaxError> {
@@ -547,10 +901,8 @@ impl Parser {
 
     /// Parse a match pattern (primary-only: literal or identifier including _).
     fn parse_match_pattern(&mut self) -> Result<Expression, SyntaxError> {
-        let current_token = self.current().ok_or_else(|| SyntaxError {
-            message: "Unexpected end of input while parsing match pattern".to_owned(),
-            line: 0,
-            column: 0,
+        let current_token = self.current().ok_or_else(|| {
+            SyntaxError::new(0, 0, "Unexpected end of input while parsing match pattern")
         })?;
         let span = self.current_token_span();
         let expr = match &current_token.token_type {
@@ -575,14 +927,14 @@ impl Parser {
                 Expression::Literal(Literal::Identifier(Identifier::new(value, span)))
             }
             _ => {
-                return Err(SyntaxError {
-                    message: format!(
+                return Err(SyntaxError::new(
+                    current_token.line,
+                    current_token.column,
+                    format!(
                         "Expected match pattern (literal or identifier), got {:?}",
                         current_token.token_type
                     ),
-                    line: current_token.line,
-                    column: current_token.column,
-                });
+                ));
             }
         };
         Ok(expr)
@@ -590,21 +942,15 @@ impl Parser {
 
     fn parse_match_expression(&mut self) -> Result<Expression, SyntaxError> {
         let start = self.span_start();
-        let current = self.current().ok_or_else(|| SyntaxError {
-            message: "Expected 'match'".to_owned(),
-            line: 0,
-            column: 0,
-        })?;
+        let current = self
+            .current()
+            .ok_or_else(|| SyntaxError::new(0, 0, "Expected 'match'"))?;
         match &current.token_type {
             scanner::TokenType::Match => {
                 self.consume();
             }
             _ => {
-                return Err(SyntaxError {
-                    message: "Expected 'match'".to_owned(),
-                    line: current.line,
-                    column: current.column,
-                });
+                return Err(SyntaxError::new(current.line, current.column, "Expected 'match'"));
             }
         }
         self.parsing_match_scrutinee = true;
@@ -773,10 +1119,8 @@ impl Parser {
             let line = token.line;
             let column = token.column;
             self.consume();
-            let ident = self.consume_if_identifier().map_err(|_| SyntaxError {
-                message: "Prefix ++ can only be applied to a variable".to_owned(),
-                line,
-                column,
+            let ident = self.consume_if_identifier().map_err(|_| {
+                SyntaxError::new(line, column, "Prefix ++ can only be applied to a variable")
             })?;
             let span = self.span_from(start);
             return Ok(Expression::PrefixIncrement(IncrementExpression {
@@ -859,11 +1203,11 @@ impl Parser {
                     })
                 } else {
                     let current_token = self.current().unwrap();
-                    return Err(SyntaxError {
-                        message: "Grouping is missing closing parenthesis".to_owned(),
-                        line: current_token.line,
-                        column: current_token.column,
-                    });
+                    return Err(SyntaxError::new(
+                        current_token.line,
+                        current_token.column,
+                        "Grouping is missing closing parenthesis",
+                    ));
                 }
             }
             scanner::TokenType::String(value) => {
@@ -873,11 +1217,11 @@ impl Parser {
             }
             _ => {
                 let current_token = &self.input[self.current];
-                return Err(SyntaxError {
-                    message: "Invalid token while parsing unit expression".to_owned(),
-                    line: current_token.line,
-                    column: current_token.column,
-                });
+                return Err(SyntaxError::new(
+                    current_token.line,
+                    current_token.column,
+                    "Invalid token while parsing unit expression",
+                ));
             }
         };
 
@@ -967,11 +1311,11 @@ impl Parser {
         } else {
             self.input.last().unwrap().clone()
         };
-        Err(SyntaxError {
-            message: "Failed to parse function".to_owned(),
-            line: current_token.line,
-            column: current_token.column,
-        })
+        Err(SyntaxError::new(
+            current_token.line,
+            current_token.column,
+            "Failed to parse function",
+        ))
     }
 
     /// Parse call arguments after the opening `(`; callee is already known.
@@ -1014,11 +1358,7 @@ impl Parser {
         }
         if self.current >= self.input.len() {
             let last = self.input.last().unwrap();
-            return Err(SyntaxError {
-                message: "Unterminated map literal".to_owned(),
-                line: last.line,
-                column: last.column,
-            });
+            return Err(SyntaxError::new(last.line, last.column, "Unterminated map literal"));
         }
         self.consume_if(scanner::TokenType::RightBracket)?;
         map.span = self.span_from(start);
@@ -1081,11 +1421,11 @@ impl Parser {
         }
         if self.current >= self.input.len() {
             let last = self.input.last().unwrap();
-            return Err(SyntaxError {
-                message: "Unterminated widget literal".to_owned(),
-                line: last.line,
-                column: last.column,
-            });
+            return Err(SyntaxError::new(
+                last.line,
+                last.column,
+                "Unterminated widget literal",
+            ));
         }
         self.consume_if(scanner::TokenType::RightBracket)?;
         widget.span = self.span_from(start);
