@@ -619,6 +619,27 @@ impl UI {
         self.focused.as_ref()
     }
 
+    /// Phase 2.5 M2: returns `true` if the focused widget
+    /// claims `Key::Character(_)` events. Hosts call this
+    /// before pumping character events to game-side input
+    /// queries; if true, character keys are consumed by the
+    /// runtime and don't reach the game pump.
+    ///
+    /// Per UL's UI_RUNTIME.md §2: ONLY `Key::Character(_)`
+    /// is suppressed. `Escape`, `F1..F12`, arrow keys, `Tab`,
+    /// and modifier keys (Ctrl/Alt/Meta/Shift) are NOT
+    /// suppressed by focus alone — those pass through to the
+    /// game pump unconditionally.
+    pub fn consumes_character_key(&self) -> bool {
+        match self.focused.as_ref() {
+            Some(focused) => {
+                let g = focused.lock().expect("widget lock poisoned");
+                g.claims_character_keys()
+            }
+            None => false,
+        }
+    }
+
     /// Phase 2.5 M1: returns `true` if any active portal or
     /// the focused widget declares `CursorPreference::Free`.
     /// Hosts compose this with their own cursor-lock demand
@@ -1111,6 +1132,16 @@ pub trait Widget: Downcast {
         &self,
     ) -> Option<portal_layer::CursorPreference> {
         None
+    }
+
+    /// Phase 2.5 M2: returns true when this widget consumes
+    /// `Key::Character(_)` events. The host's input pump
+    /// consults `Runtime::consumes_character_key` (which
+    /// checks the focused widget) before populating
+    /// `pressed()` / `held()` queries with character events.
+    /// TextInputWidget overrides → true.
+    fn claims_character_keys(&self) -> bool {
+        false
     }
 
     /// Phase 2 lifecycle: the call-stack path at which this widget

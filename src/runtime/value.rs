@@ -26,6 +26,12 @@ pub enum Value {
     /// Transient: produced by `<mutation>.trigger`, consumed by `Call`. Not
     /// something user code should ever store.
     BoundTrigger(Rc<RefCell<MutationState>>),
+    /// Phase 2.5 M2: an opaque widget identity, produced by
+    /// the `focused_widget()` built-in and consumed by
+    /// `focus(ref)`. The inner u64 is a per-UI counter
+    /// allocated by `WidgetTree`. Identifies a widget
+    /// instance within a single UI tree.
+    WidgetRef(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +92,7 @@ impl PartialEq for Value {
             // event name.
             (Value::Mutation(a), Value::Mutation(b)) => Rc::ptr_eq(a, b),
             (Value::BoundTrigger(a), Value::BoundTrigger(b)) => Rc::ptr_eq(a, b),
+            (Value::WidgetRef(a), Value::WidgetRef(b)) => a == b,
             _ => false,
         }
     }
@@ -103,6 +110,7 @@ impl fmt::Display for Value {
             Value::Array(_) => write!(f, "<array>"),
             Value::Widget(_) => write!(f, "<widget>"),
             Value::Void => write!(f, ""),
+            Value::WidgetRef(id) => write!(f, "<widget#{}>", id),
             Value::Mutation(m) => {
                 let s = m.borrow();
                 write!(f, "<mutation {} status={}>", s.event_name, s.status.as_str())

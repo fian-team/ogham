@@ -239,6 +239,17 @@ impl Ogham {
         self.ui.wants_cursor_free()
     }
 
+    /// Phase 2.5 M2: returns `true` if the focused widget
+    /// (e.g. a TextInput) claims `Key::Character(_)` events.
+    /// Hosts (lorekeeper-side input pump) consult this before
+    /// populating `pressed()` / `held()` queries with
+    /// character events; when true, those keys are consumed
+    /// by the runtime and don't reach game handlers. Per UL
+    /// `UI_RUNTIME.md` §2.
+    pub fn consumes_character_key(&self) -> bool {
+        self.ui.consumes_character_key()
+    }
+
     /// Get a reference to the runtime
     pub fn get_runtime(&self) -> &Arc<Mutex<runtime::Runtime>> {
         &self.runtime

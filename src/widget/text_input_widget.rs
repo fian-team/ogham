@@ -166,6 +166,14 @@ impl Widget for TextInputWidget {
         Some(crate::widget::portal_layer::CursorPreference::Free)
     }
 
+    fn claims_character_keys(&self) -> bool {
+        // Phase 2.5 M2: focused TextInput consumes character
+        // keys so the user can type into the field without
+        // game hotkeys firing. The runtime gates this via
+        // UI::consumes_character_key (focused-widget check).
+        true
+    }
+
     fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_text_input_widget) = new_widget.downcast_mut::<TextInputWidget>() {
