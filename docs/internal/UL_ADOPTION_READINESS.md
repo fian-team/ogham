@@ -41,9 +41,11 @@ need to grow significantly. Concrete examples:
 - Phase 2 has no drag, no contextmenu event, no
   cursor-coordination signal. UL needs all three.
 
-Adoption sequencing should be: **close the API gap first,
-then migrate UIs.** Migrating against today's surface and then
-re-migrating once layers/focus/drag land would be wasted work.
+Adoption sequencing (resolved): **Phase 2.5 (engine API gap
+closure) → Phase 3 (drag events) → docs + Ogham-skill
+revision pass → UL Pass 2 (adoption).** Migrating against
+today's surface and then re-migrating once layers/focus/drag
+land would be wasted work.
 
 ---
 
@@ -347,15 +349,21 @@ the `overlay-modal` layer with `block` backdrop policy from
 
 **Blocker**: lighter than 4.1/4.2. The `inventory_hud.ogh` is
 a non-gating world panel (per `UI_SHELL.md` §B3b) — it's NOT
-in the overlay stack and stays mounted across overlays. So
-adding a tooltip to inventory cells is feasible *today* with
-Phase 2's single portal_layer. The catch: it would need to
-re-migrate once §2.1 lands (move from unnamed layer to
-explicit `tooltip` layer).
+in the overlay stack and stays mounted across overlays.
 
-- [ ] **Could adopt today** as a smoke test, accepting that
-      it'll re-migrate when layers land.
-- [ ] **OR wait** for §2.1 and migrate once. Cleaner.
+- [ ] **Wait for Phase 2.5 §2.1** — per the resolved
+      sequencing (no UL adoption before docs revision pass),
+      the early-adopt-and-re-migrate option is no longer on
+      the table. Tooltip migrates against the real `tooltip`
+      layer once Phase 2.5 ships and docs are revised.
+
+### 4.5 Inventory drag-drop (Phase 3 consumer)
+
+Per `ITEMS_UX.md` and the resolved sequencing in §7, inventory
+drag-drop migrates against the real Phase 3 drag primitives.
+Not part of the M5 audit's verdict list; surfaced here because
+the Phase 3 → UL Pass 2 sequencing makes it a first-class
+adoption target.
 
 ### 4.4 Other per-UI migrations (post-M5 backlog)
 
@@ -420,34 +428,60 @@ breakage in this session.
 
 ## 7. Recommended sequencing
 
-A pragmatic order, balancing engine work vs. UL adoption:
+Resolved sequencing as of planning. Engine work runs as two
+phases (2.5 and 3) followed by a docs revision pass; UL
+adoption is the final pass.
 
-### Pass 1 — close the API gap (engine-side)
+### Phase 2.5 — close the in-scope API gap (engine-side)
 
-1. **§2.1 portal layer system** (~600 LOC, mid-size). Largest
-   item; everything else builds on it.
-2. **§2.4 cursor coordination signal** (~150 LOC, small).
-   Cleanest place to land while §2.1's structure is fresh in
-   mind.
-3. **§2.2 focus management script API** (~400 LOC). Crosses
-   ogham/lorekeeper boundary; budget time for cross-repo
-   coordination.
-4. **§3.1 path-disappear → drain-time unmount semantics**
-   design + implementation. Surface the design tradeoff:
-   pure drain-time vs. instance-close-fires-unmount.
-5. **§3.3 viewport-absolute coords** (small; folds into §2.1).
-6. **§3.4 wire `clear_lifecycle_state` into hot-reload** (10
-   LOC, do alongside §3.1).
-7. **§2.5 timer primitive audit + ship if missing** (small).
-8. **§2.3 drag events** (~700 LOC, largest). Independent of
-   Pass 1 functionally — could move earlier or later. Do last
-   because it's its own self-contained chunk.
+Per `PHASE_2_5_IMPLEMENTATION.md`. Five merges + docs:
 
-Phase 2's docs need updating throughout to match new layer/
-focus/cursor specs. The triplet (design / audit / impl plan)
-remains the right shape.
+1. **P25-M0** — Portal layer system + viewport-absolute
+   coords (~700 LOC, foundation).
+2. **P25-M1** — Cursor coordination signal (~150 LOC).
+3. **P25-M2** — Focus management script API + key
+   suppression contract (~400 LOC, crosses lorekeeper).
+4. **P25-M3** — Drain-time unmount refinement + hot-reload
+   reset (~250 LOC).
+5. **P25-M4** — Timer primitive (audit + ship if missing).
+6. **P25-M5** — Docs graduation.
 
-### Pass 2 — UL adoption (UL-side)
+Estimated: ~10 person-days, ~1,500 LOC, ~46 new tests.
+
+### Phase 3 — Drag events (engine-side, follows 2.5 immediately)
+
+Largest self-contained chunk in `UI_RUNTIME.md` §3. Split
+out from Phase 2.5 to keep that phase tight; lands before
+UL adoption per the resolved sequencing in
+`PHASE_2_5_IMPLEMENTATION.md` decision #2.
+
+Will need its own implementation plan doc when Phase 2.5
+M5 graduates. Estimated ~700 LOC + ~15 tests, ~3 person-days.
+
+### Docs + Ogham-skill revision pass (between Phase 3 and UL adoption)
+
+Once both engine phases ship, the reference documentation
+needs a substantive revision pass:
+
+- `ogham/AGENTS.md` (530 lines, canonical language reference)
+  — needs Portal-layers, lifecycle hooks, focus API, cursor
+  coord, timer, drag.
+- `untold_lore/.claude/skills/ogham/SKILL.md` (62 lines, the
+  pointer skill in UL's repo) — gotchas list (lines 43–57)
+  needs a refresh; today it doesn't mention any Phase 2
+  primitive (lifecycle, Portal) let alone the 2.5/3
+  additions.
+- `ogham/README.md` — short marketing teaser; review for
+  staleness.
+- `ogham/docs/internal/` triplet docs — possibly tidy up the
+  audit doc which was scoped to Phase 2's primitives only.
+- `INTENT.md`, `LANGUAGE.md`, `LSP.md` — review for
+  staleness.
+
+Estimated: ~2 person-days. Not part of any phase's M5 — it's
+its own focused pass once the surface is stable.
+
+### Pass 2 — UL adoption (UL-side, after engine + docs land)
 
 1. **§5 OverlayStack migration**. Largest UL change. Gates §4.1
    and §4.2.
@@ -457,45 +491,41 @@ remains the right shape.
    + nested portals + `has_input_blocking_portal`.
 4. **§4.3 Inventory tooltip**. Validates the `tooltip` layer
    and non-modal Portal pattern.
-5. **§4.4 backlog**. Each UI on its own pace.
+5. **Inventory drag-drop** (per `ITEMS_UX.md`). Validates the
+   Phase 3 drag primitives.
+6. **§4.4 backlog**. Each UI on its own pace.
 
 ### Sanity gates throughout
 
-- [ ] After every Pass 1 step: `cd ../untold_lore && cargo build`
-      green.
-- [ ] After Pass 1: a fresh holistic audit of Phase 2 + the
-      added primitives. Triplet-doc graduation.
+- [ ] After every Phase 2.5 / Phase 3 merge:
+      `cd ../untold_lore && cargo build` green.
+- [ ] After Phase 2.5: triplet-doc graduation (Phase 2.5 M5).
+- [ ] After Phase 3: triplet-doc graduation (Phase 3 M5).
+- [ ] After docs revision pass: UL agents reading
+      `SKILL.md` cold can navigate to the new primitives
+      without consulting old session memory.
 - [ ] After each Pass 2 migration: UL launches; the migrated
       UI behaves correctly in playtest.
 
 ---
 
-## 8. Open decisions before starting
+## 8. Resolved planning decisions
 
-Items that need a call before Pass 1 begins:
-
-1. **Phase 2.5 vs Phase 3?** The §2 work is substantial —
-   feels too large for "audit follow-up" but smaller than a
-   fresh Phase. Suggest: Phase 2.5 (single triplet doc covering
-   layers + cursor + focus script API + drain-time refinement),
-   estimated ~10 person-days.
-2. **Drag events in Phase 2.5 or Phase 3?** Drag is the largest
-   self-contained chunk. Including in Phase 2.5 doubles its
-   scope; deferring to Phase 3 leaves UL's inventory drag-drop
-   blocked. Either choice is defensible.
-3. **OverlayStack migration order vs Pass 1.** UL could start
-   the OverlayStack work in parallel with Pass 1's §2.1 (since
-   they're in different repos). Just need clear contracts on
-   what the layer system's API surface will be before UL starts
-   building against it.
-4. **Schema-diagnostics workstream coordination cadence.** Need
-   a recurring sync OR a CI gate that catches cross-workstream
-   breaks.
-5. **Documentation discipline.** UL's `UI_RUNTIME.md` says "once
-   Ogham implements a primitive, the canonical reference moves
-   to `ogham/docs/`." Plan that as part of Pass 1 — each
-   shipped primitive lands a section in the appropriate
-   ogham doc and `UI_RUNTIME.md` shrinks accordingly.
+1. **Phase 2.5 vs informal iterations.** ✓ Phase-with-discipline,
+   spec'd in `PHASE_2_5_IMPLEMENTATION.md`.
+2. **Drag events sequencing.** ✓ Phase 3, runs after Phase 2.5,
+   *before* UL adoption. UL's inventory drag-drop should be
+   built against the real primitive, not worked around.
+3. **OverlayStack migration order.** ⚠ UL-side; can start once
+   Phase 2.5 M0 ships (the layer system contract becomes
+   stable then). Coordinate with UL team.
+4. **Schema-diagnostics workstream coordination.** Open. Needs
+   either a recurring sync or a CI gate. Flag for the team.
+5. **Documentation discipline.** ✓ Resolved via the explicit
+   "docs + Ogham-skill revision pass" between Phase 3 and UL
+   adoption (per `PHASE_2_5_IMPLEMENTATION.md` §"What follows
+   Phase 2.5"). Each phase's M5 also updates relevant
+   subsystem docs inline.
 
 ---
 

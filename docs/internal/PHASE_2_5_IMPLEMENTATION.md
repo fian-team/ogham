@@ -658,10 +658,13 @@ UL is unblocked for its Pass 2 migration work.
   trailer extended with P25-M0 through P25-M4.
 - `UL_ADOPTION_READINESS.md` status updated: §2 gaps closed
   (or remaining); §4 per-UI verdicts reconfirmed; §7
-  recommended sequencing reduces to "Pass 2 = UL-side work."
-- New entry in `ROADMAP.md`-equivalent (if it exists) or in
-  the project memory.
-- `CHANGELOG`-equivalent entry if the project has one.
+  recommended sequencing reduces to "Phase 3 next, then docs
+  revision, then UL Pass 2."
+- **"What's next" pointer** in M5's docs naming Phase 3
+  (drag events) and the docs/skill revision pass as the two
+  remaining gates before UL adoption can begin (per resolved
+  decision #7).
+- Memory update.
 
 ### Implementation steps
 
@@ -806,41 +809,93 @@ PRs for internal Phase 2.5 work.
 
 ---
 
-## Decision points before starting
+## Decision points (resolved)
 
-1. **Phase 2.5 vs Phase 2-and-a-half-iterations.** The "2.5"
-   framing suggests a coherent batch. Ship this as a real
-   phase with its own status discipline (live design contract
-   → live contract on completion), or as a series of "audit
-   follow-ups"? **Recommend phase-with-discipline** —
-   matches Phase 2's pattern; the docs gain status banners.
-2. **Drag events in Phase 3 — when?** The user stated drag is
-   out of 2.5 to keep boundaries clear. Phase 3 sequencing
-   isn't on the agenda yet, but: drag is the largest
-   self-contained chunk and gates UL's inventory drag-drop.
-   Before P25 ships, decide whether Phase 3 starts immediately
-   after, runs in parallel with UL Pass 2, or waits.
-3. **Portal `layer` as `String` vs typed enum.** UL's spec
-   uses string layer names (`"modal"`, `"tooltip"`).
-   Type-safety pull says enum. Author-friendliness pull says
-   string. **Recommend enum internally + string property in
-   `.ogh` source** — parser maps string to enum, rejects
-   unknown layers with the diagnostic message.
-4. **WidgetId allocation strategy** — see P25-M2 open question
-   2. Recommend per-`UI` counter; document.
-5. **`Value::WidgetRef` — new variant?** See P25-M2 open
-   question 1. Recommend yes for type safety.
-6. **Test file naming.** Phase 2 used `tests/<feature>.rs`.
-   Phase 2.5 follows: `tests/cursor_coord.rs`,
-   `tests/focus_script_api.rs`, `tests/key_suppression.rs`,
-   `tests/drain_time_unmount.rs`, `tests/hot_reload_lifecycle.rs`,
-   `tests/portal_coords.rs`. Approve.
-7. **Drag deferred to Phase 3** — does Phase 2.5's M5 doc
-   graduation note this as the "what's left" pointer?
-   **Recommend yes** — closes the loop on the Phase 2.5 ↔
-   UL_ADOPTION_READINESS scope clarity.
+All seven decisions resolved at planning time. Recorded for
+the audit trail.
 
-If any of these need re-litigation, do it before P25-M0.
+1. **Phase 2.5 framing.** ✓ Phase-with-discipline. Status
+   banners, design contract → live contract on completion.
+2. **Phase 3 sequencing.** ✓ **Phase 3 (drag events) ships
+   immediately after Phase 2.5**, *before* UL adoption begins.
+   Plus a separate docs + Ogham-skill revision pass between
+   Phase 3 and UL adoption (see §"What follows Phase 2.5"
+   below). Order: Phase 2.5 → Phase 3 (drag) → docs/skill
+   revision → UL Pass 2.
+3. **Portal `layer` representation.** ✓ Enum internally
+   (`PortalLayer { Main, OverlayModal, ... }`), string in
+   `.ogh` source. Parser maps string → enum; unknown names
+   rejected with the canonical diagnostic.
+4. **WidgetId allocation.** ✓ Per-`UI` counter (allocated by
+   `WidgetTree` on construction); IDs are only meaningful
+   within a single UI tree.
+5. **`Value::WidgetRef` new variant.** ✓ Yes — type safety
+   over reusing `Value::Integer`.
+6. **Test file naming.** ✓ As proposed:
+   `tests/cursor_coord.rs`, `tests/focus_script_api.rs`,
+   `tests/key_suppression.rs`, `tests/drain_time_unmount.rs`,
+   `tests/hot_reload_lifecycle.rs`, `tests/portal_coords.rs`.
+7. **Phase 3 pointer in M5 doc graduation.** ✓ Yes — Phase 2.5
+   M5's docs include a "what's next" pointer naming Phase 3
+   (drag events) and the docs/skill revision pass.
+
+## What follows Phase 2.5
+
+Per the resolved sequencing in decision #2:
+
+### Phase 3 — Drag events (separate phase, follows P25 immediately)
+
+Per `UI_RUNTIME.md` §3. The largest self-contained chunk
+deferred from Phase 2.5; gates UL's inventory drag-drop.
+~700 LOC. Will need its own implementation plan doc when
+P25-M5 graduates.
+
+### Docs + Ogham-skill revision pass (between Phase 3 and UL adoption)
+
+Once Phase 3 ships, the entire surface UL needs is in place
+— but the reference documentation is now spread across:
+
+- `ogham/AGENTS.md` (530 lines, the canonical language
+  reference) — needs Portal-layers, lifecycle hooks, focus
+  API, cursor coord, timer, drag.
+- `untold_lore/.claude/skills/ogham/SKILL.md` (62 lines, the
+  pointer skill in UL's repo) — currently delegates entirely
+  to `AGENTS.md`; the gotchas list (lines 43–57) needs a
+  refresh against the new primitives (no mention of Portal,
+  lifecycle, focus, cursor, drag, or timer today).
+- `ogham/README.md` — short marketing teaser; review for
+  staleness.
+- The triplet docs (`LIFECYCLE_AND_PORTAL.md`,
+  `LIFECYCLE_AND_PORTAL_UL_AUDIT.md`,
+  `LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md`) — Phase 2.5 +
+  Phase 3 each ship their own doc graduations (M5
+  equivalents); the resulting set may want a tidy-up pass
+  after both phases ship, especially the audit doc which
+  was scoped to Phase 2's primitives.
+- `INTENT.md`, `LANGUAGE.md`, `LSP.md` — review for
+  staleness against Phase 2.5/3 additions.
+
+This is a **substantive revision pass**, not a cleanup —
+the AGENTS.md gotchas list and SKILL.md pointer file both
+predate Phase 2 and don't mention any of its primitives. UL
+agents reading the skill today would have no signal that
+lifecycle hooks or Portal exist, let alone Phase 2.5/3
+additions.
+
+Estimated effort: ~2 person-days. Should not be merged into
+Phase 2.5 or Phase 3 — it's its own artifact and benefits
+from being done in one focused pass once the surface is
+stable.
+
+### UL Pass 2 — adoption
+
+Per `UL_ADOPTION_READINESS.md` §7's "Pass 2." OverlayStack
+migration → Settings save-on-close → escape menu Portal →
+inventory drag-drop → tooltip → backlog. UL-side work, not
+ogham-side.
+
+If any of decisions 1–7 need re-litigation, do it before
+P25-M0.
 
 ---
 
