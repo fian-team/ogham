@@ -173,6 +173,13 @@ impl Ogham {
 
     /// Reload a specific file (internal helper)
     fn reload_file(&mut self, path: &str) -> Result<(), runtime::error::RuntimeError> {
+        // Phase 2.5 M3: clear the OLD UI's lifecycle state
+        // (focus stack + portal_layers + focused) before
+        // dropping it. Prevents stale focus restoration
+        // pointing at widgets that no longer exist in the
+        // reloaded tree.
+        self.ui.clear_lifecycle_state();
+
         let new_runtime = Arc::new(Mutex::new(runtime::Runtime::from_file(
             path,
             Some(self.config.clone()),
@@ -194,6 +201,9 @@ impl Ogham {
         &mut self,
         source: &str,
     ) -> Result<(), runtime::error::RuntimeError> {
+        // Phase 2.5 M3: same hot-reload reset as reload_file.
+        self.ui.clear_lifecycle_state();
+
         let new_runtime = Arc::new(Mutex::new(runtime::Runtime::from_source(
             source,
             Some(self.config.clone()),
