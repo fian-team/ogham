@@ -16,36 +16,23 @@
 
 ## TL;DR
 
-Phase 2 shipped a **minimal portal + lifecycle**; UL's
-`UI_RUNTIME.md` describes a **richer engine surface** UL needs
-(named portal layers with priority + backdrop policies,
-script-exposed focus management, drag events with hit-testing,
-cursor-coordination signal). The Phase 2 ↔ UL-target gap is
-substantial.
+**Phase 2.5 shipped 2026-05-05** — closed most of the §2 API
+gap. Layer system, cursor coordination signal, key
+suppression contract, hot-reload reset all in. Still
+remaining for UL adoption:
 
-The adoption blocker isn't UL hesitation — it's that Phase 2's
-shipped surface doesn't yet meet UL's documented minimum API.
-Adopting today would force UL to build on primitives that
-need to grow significantly. Concrete examples:
+- **Phase 3 (drag events)** — `drag_start`/`drag_move`/
+  `drag_end`, `accepts_drop`, `drag_preview`, `contextmenu`.
+  Per resolved sequencing, ships before UL adoption begins.
+- **Docs + Ogham-skill revision pass** — `AGENTS.md` and
+  `untold_lore/.claude/skills/ogham/SKILL.md` predate
+  Phase 2 and don't mention any of its primitives. Substantive
+  refresh needed.
+- **UL Pass 2 — adoption** — 12 person-days of per-UI work
+  per the audit's verdicts.
 
-- Phase 2 ships a single `portal_layer` with mount-order
-  stacking. UL wants 5 named layers with priority ordering and
-  per-layer backdrop policies (`overlay-modal` defaults to
-  `block`, `tooltip`/`popover` default to `none`).
-- Phase 2's `try_set_focus` is internal. UL wants script-
-  exposed `focus()` action and `runtime.focused_widget()`.
-- Phase 2 has no key-suppression contract for focused
-  TextInputs. UL wants the runtime to consume
-  `Key::Character(_)` for focused text widgets *before* the
-  game-side input pump sees them.
-- Phase 2 has no drag, no contextmenu event, no
-  cursor-coordination signal. UL needs all three.
-
-Adoption sequencing (resolved): **Phase 2.5 (engine API gap
-closure) → Phase 3 (drag events) → docs + Ogham-skill
-revision pass → UL Pass 2 (adoption).** Migrating against
-today's surface and then re-migrating once layers/focus/drag
-land would be wasted work.
+Resolved sequencing: **Phase 2.5 (✓ shipped) → Phase 3 (drag
+events) → docs + Ogham-skill revision pass → UL Pass 2.**
 
 ---
 
@@ -55,10 +42,11 @@ land would be wasted work.
 |---|---|
 | UL build against current ogham `main` | ✓ Clean (verified 2026-05-05) |
 | Phase 2 ogham primitives | ✓ Shipped (M0–M5 + audit) |
-| UL `UI_RUNTIME.md` minimum API surface | ✗ Significant gaps |
-| UL `OverlayStack` migration ready | ✗ Gates on portal layers + focus management |
-| UL Settings save-on-close ready | ✗ Gates on instance-swap restructuring (see §4) |
-| UL inventory tooltip ready | ⚠ Possible today via single-layer portal; would re-migrate when layers land |
+| Phase 2.5 ogham primitives | ✓ Shipped 2026-05-05 (M0–M5; drain-time + timer deferred per scope) |
+| UL `UI_RUNTIME.md` minimum API surface | ⚠ Drag events still missing (Phase 3) |
+| UL `OverlayStack` migration ready | ✓ Gated on Phase 3 + docs revision now (was: portal layers + focus management) |
+| UL Settings save-on-close ready | ⚠ Still gated on UL-side instance-swap restructuring (see §4) |
+| UL inventory tooltip ready | ✓ Real `tooltip` layer exists; awaits docs revision |
 
 ---
 

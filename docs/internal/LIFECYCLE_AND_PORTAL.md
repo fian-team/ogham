@@ -1,6 +1,11 @@
 # Ogham — Lifecycle Hooks + Portal Widget (Phase 2)
 
-> **Status: Live contract — Phase 2 shipped 2026-05-05.**
+> **Status: Live contract — Phase 2 shipped 2026-05-05;
+> Phase 2.5 layer system + cursor coord + key suppression
+> shipped same day. Body of this doc still describes the
+> Phase 2 single-layer Portal; layer system spec lives in
+> `PHASE_2_5_M0_PLAN.md` until the docs revision pass folds
+> it back in (see `PHASE_2_5_IMPLEMENTATION.md` "What's next").**
 >
 > This document specifies Phase 2 of the post-audit roadmap: a
 > path-based callback lifecycle (`on_mount`, `on_unmount`,

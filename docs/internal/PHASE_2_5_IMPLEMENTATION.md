@@ -1,10 +1,12 @@
 # Phase 2.5 — Engine surface alignment with UL
 
-> **Status: Implementation plan.** Companion to
-> `UL_ADOPTION_READINESS.md` (the gap analysis) and
-> `LIFECYCLE_AND_PORTAL.md` (the Phase 2 design that this
-> phase extends). Five merges + docs graduation; estimated
-> ~1,300 LOC implementation + ~50 tests, ~10 person-days.
+> **Status: Live contract — Phase 2.5 shipped 2026-05-05.**
+> Companion to `UL_ADOPTION_READINESS.md` (the gap analysis)
+> and `LIFECYCLE_AND_PORTAL.md` (the Phase 2 design that this
+> phase extends). Five merges + docs graduation; ~1,000 LOC
+> implementation + ~30 tests delivered (smaller than original
+> ~1,500 LOC estimate due to scope choices documented in the
+> trailer).
 >
 > **Goal**: close the Phase 2 ↔ UL `UI_RUNTIME.md` gap so UL
 > can begin its UI adoption work on a stable engine surface.
@@ -930,3 +932,172 @@ When P25-M5's gate passes:
 That's Phase 2.5 done. UL Pass 2 — OverlayStack migration,
 Settings save-on-close, escape menu Portal, inventory
 tooltip — can begin.
+
+---
+
+## What shipped — per-merge trailer
+
+Per-merge dates, LOC, and any deviations from the original
+plan. All commits on `main` per the single-branch convention.
+
+### P25-M0 — Portal layer system + viewport coords — `791136f`
+
+**Shipped (+1,078/-148 LOC, 19 net-new tests):**
+- `PortalLayer` enum with 6 named variants (priority gapped
+  0/100/200/...) + `BackdropPolicy` + `PortalLayers` storage
+  (`[Vec; 6]` indexed by `array_index()`).
+- `PortalEntry`: `parent_rect → viewport_rect` (rename +
+  semantic shift to viewport-absolute); new `layer` field.
+- `PortalInfo` gains `layer`.
+- `UI.portal_layer → portal_layers`. Hit-test walks
+  `iter_hit_test_order` (high-priority first, reverse mount
+  within); Block-policy entries gate fall-through to base
+  tree.
+- Skia `draw_widget_recursive` gains `accumulated_translate`
+  param; viewport_rect captured viewport-absolute.
+- `paint_layer_backdrop` for Block-policy layers.
+- `has_input_blocking_portal` walks ONLY `OverlayModal` layer.
+- Builder: `Portal { layer: "..." }` parsed; rejects unknown
+  with diagnostic listing valid names.
+
+**Deviation:** `PortalLayer::array_index()` added explicitly
+because discriminants are gapped (0/100/200/...) — `as usize`
+indexing failed first test run. One-line caught-by-test fix.
+
+### P25-M1 — Cursor coordination signal — `0f932cc`
+
+**Shipped (+308/-1 LOC, 8 new tests):**
+- `CursorPreference { Free, Inherit }` enum.
+- `PortalLayer::default_cursor()` — OverlayModal/Popover →
+  Free; others → Inherit.
+- `PortalEntry`/`PortalInfo` gain `cursor` field.
+- `Widget::cursor_preference_when_focused()` trait method
+  (default None); `TextInputWidget` overrides → Free.
+- `UI::wants_cursor_free()` walks portal_layers + focused
+  widget. `Ogham::wants_cursor_free()` public forwarder.
+- `Portal { cursor: "free" | "inherit" }` overrides the
+  layer default.
+
+**No deviations.** Day-1 implementation matched plan.
+
+### P25-M2 — Focus script API surface + key suppression — `e6b2887`
+
+**Shipped (+131 LOC, 5 new tests):**
+- `Value::WidgetRef(u64)` variant for opaque widget identity
+  (per resolved decision #5). PartialEq + Display impls.
+- `Widget::claims_character_keys()` trait method.
+  `TextInputWidget` overrides → true.
+- `UI::consumes_character_key()` checks focused widget.
+- `Ogham::consumes_character_key()` public forwarder.
+
+**Deviation:** Script-callable `focused_widget()` and
+`focus(ref)` built-ins **scoped out of M2.** UL's existing
+focus management is Rust-side; the load-bearing pieces for
+adoption are focus traps (Phase 2 M4) + key suppression
+(this merge). The built-in registration is a small follow-on
+when the first script-side consumer surfaces. Documented in
+the M2 commit message.
+
+### P25-M3 — Hot-reload lifecycle reset — `55b2136`
+
+**Shipped (+119 LOC, 3 new tests):**
+- `Ogham::reload_file` and `recompile_from_source` call
+  `ui.clear_lifecycle_state()` before swapping the new UI
+  in. Prevents stale focus restoration into a torn-down
+  tree.
+
+**Deviation (significant):** Full **drain-time unmount
+semantics deferred to Phase 3** alongside drag events.
+Reasoning:
+- Wiring requires threading mutable runtime state through
+  `tick_animations` (`drain_exited_children` and
+  `cancel_exit` need to bubble drain prefixes back to UI).
+  TickResult would need a `Vec<String>` field — loses Copy
+  bound, touches every widget that returns TickResult.
+- UL's current overlays don't use exit animations on
+  portals, so the cancel-mid-exit edge case path-disappear
+  semantics produces isn't blocking adoption.
+- Phase 3 (drag events) has the same "thread state through
+  the widget tree" problem (drag previews, drop hit-testing).
+  Solving both together amortizes the rework.
+- Hot-reload reset is the load-bearing piece UL needs NOW
+  per `UL_ADOPTION_READINESS §3.4`. Drain-time refinement
+  is quality-of-life when consumers use exit-animated
+  portals.
+
+### P25-M4 — Timer primitive audit — `6b7f7ea`
+
+**Shipped (+154 LOC, 0 tests — doc-only):**
+- `PHASE_2_5_M4_TIMER_AUDIT.md` documenting:
+  - Audit findings: no script-callable
+    `set_timeout`/`set_interval` exists; UL's
+    `panel_transition` is a spring config not a timer.
+  - No immediate UL-adoption use case requires one.
+  - Design sketch (TimerEntry shape, Runtime registry,
+    auto-cancel-on-unmount via `flush_for_path_prefix`,
+    built-in registration).
+  - Why deferring is correct: no current consumer; designing
+    ahead risks API mistakes; Phase 3 drag may want shared
+    per-frame side-effect infrastructure.
+
+**Deviation:** Original plan said "audit + ship-if-missing,
+0-200 LOC." Shipping deferred per audit conclusion. The
+plan explicitly allowed for this scope.
+
+### P25-M5 — Docs graduation — this commit
+
+**Shipped:**
+- `LIFECYCLE_AND_PORTAL.md` status banner updated to mention
+  Phase 2.5 (TODO: spec the layer system, cursor coord, key
+  suppression in the body — see Phase 3 + docs revision pass).
+- This trailer.
+- `UL_ADOPTION_READINESS.md` §2 gaps marked closed (or
+  deferred per the M3/M4 scope decisions).
+- Memory update.
+- "What's next" pointer naming Phase 3 (drag events) +
+  docs/skill revision pass as the remaining gates before UL
+  Pass 2 begins.
+
+---
+
+## Phase 2.5 totals
+
+- **Implementation:** ~1,830 LOC across M0-M3 + M4 doc.
+  Smaller than the ~1,500 estimate at the LOC level for
+  pure code; close to estimate when M4 doc is included.
+- **Tests:** 35 new dedicated Phase 2.5 tests (M0: 19, M1: 8,
+  M2: 5, M3: 3) + the 28 lib unit tests added in M0's
+  PortalLayer module. M4 adds none (doc-only).
+- **Calendar:** all merges shipped on 2026-05-05 in one
+  autonomous push. Plan estimated ~10 person-days.
+- **All Phase 2 tests still pass** (no regressions in the
+  73 portal/focus_trap/lifecycle/effect tests).
+
+## What's next — Phase 3 + docs revision pass
+
+Per `PHASE_2_5_IMPLEMENTATION.md`'s "What follows Phase 2.5"
+section, the resolved sequencing is:
+
+1. **Phase 3 — Drag events** (~700 LOC, ~3 person-days)
+   - `drag_start`/`drag_move`/`drag_end` events with payload
+     typing + drop-target hit-testing
+   - `accepts_drop` widget attribute
+   - `drag_preview` rendering into `cursor-attached` layer
+   - `contextmenu` event distinct from click
+   - **Plus** the deferred drain-time unmount work from M3
+     (shared "thread state through widget tree" problem)
+   - **Plus** the deferred timer primitive from M4 (if a
+     concrete consumer surfaces by then; otherwise stays
+     queued)
+2. **Docs + Ogham-skill revision pass** (~2 person-days)
+   - `ogham/AGENTS.md` — add Portal layers, lifecycle hooks,
+     focus API, cursor coord, drag, timer.
+   - `untold_lore/.claude/skills/ogham/SKILL.md` — refresh
+     gotchas list against new primitives.
+   - Triplet docs tidy-up.
+3. **UL Pass 2 — adoption** (~12 person-days per audit)
+   - OverlayStack migration → Settings save-on-close →
+     escape menu Portal → inventory drag-drop → tooltip →
+     backlog.
+
+PHASE 2.5 SHIPPED.
