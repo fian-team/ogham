@@ -722,10 +722,13 @@ fn create_presence_widget(
     Ok(Arc::new(Mutex::new(presence)))
 }
 
-/// Phase 2 Portal builder. Three properties:
+/// Phase 2 Portal builder, extended in Phase 2.5 M0 with the
+/// `layer` property:
+/// - `layer: string` — one of `main`, `overlay-modal`,
+///   `popover`, `tooltip`, `toast`, `cursor-attached`.
+///   Defaults to `overlay-modal` (Phase 2 backward-compat).
 /// - `open: bool` (default false)
-/// - `focus_trap: bool` (default false; M4 wires it into the
-///   focus stack)
+/// - `focus_trap: bool` (default false)
 /// - `children: array<widget>` (default empty)
 ///
 /// `children` MUST be an array (or a single widget that we
@@ -738,6 +741,38 @@ fn create_portal_widget(
 ) -> Result<WidgetRef, BridgeError> {
     let mut portal = crate::widget::portal_widget::PortalWidget::new();
     portal.owned_path_prefix = descriptor.owned_path.clone();
+
+    // Phase 2.5 M0: layer property.
+    if let Some(value) = descriptor.properties.get("layer") {
+        match value {
+            Value::String(name) => {
+                match crate::widget::portal_layer::PortalLayer::from_source_name(
+                    name,
+                ) {
+                    Some(layer) => portal.layer = layer,
+                    None => {
+                        return Err(BridgeError::InvalidPropertyType(
+                            "layer".to_string(),
+                            format!(
+                                "Portal expects 'layer' to be one of: {}. Got: {:?}",
+                                crate::widget::portal_layer::PortalLayer::all_names_for_diagnostic(),
+                                name
+                            ),
+                        ));
+                    }
+                }
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "layer".to_string(),
+                    format!(
+                        "Portal expects 'layer' as a string; got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
 
     if let Some(value) = descriptor.properties.get("open") {
         match value {

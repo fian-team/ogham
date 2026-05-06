@@ -32,7 +32,8 @@ fn entry(portal: &WidgetRef) -> PortalEntry {
         .expect("must be portal");
     PortalEntry {
         widget: portal.clone(),
-        parent_rect: ogham::widget::rect::Rect::zero(),
+        viewport_rect: ogham::widget::rect::Rect::zero(),
+        layer: info.layer,
         focus_trap: info.focus_trap,
     }
 }
@@ -49,7 +50,7 @@ fn has_input_blocking_portal_false_for_non_focus_trap_portal() {
     let root = make_flex();
     let mut ui = UI::new(root);
     let tooltip = make_portal(false, vec![]);
-    ui.portal_layer.push(entry(&tooltip));
+    ui.portal_layers.push(entry(&tooltip));
     assert!(
         !ui.has_input_blocking_portal(),
         "tooltip-style portal should not block input"
@@ -61,7 +62,7 @@ fn has_input_blocking_portal_true_for_focus_trap_portal() {
     let root = make_flex();
     let mut ui = UI::new(root);
     let modal = make_portal(true, vec![]);
-    ui.portal_layer.push(entry(&modal));
+    ui.portal_layers.push(entry(&modal));
     assert!(ui.has_input_blocking_portal());
 }
 
@@ -73,7 +74,7 @@ fn sync_focus_stack_pushes_on_first_appearance() {
     ui.try_set_focus(initial.clone());
 
     let modal = make_portal(true, vec![make_flex()]);
-    ui.portal_layer.push(entry(&modal));
+    ui.portal_layers.push(entry(&modal));
     ui.sync_focus_stack();
 
     assert_eq!(ui.focus_stack.len(), 1);
@@ -91,13 +92,13 @@ fn sync_focus_stack_pops_and_restores_on_close() {
     ui.try_set_focus(initial.clone());
 
     let modal = make_portal(true, vec![make_flex()]);
-    ui.portal_layer.push(entry(&modal));
+    ui.portal_layers.push(entry(&modal));
     ui.sync_focus_stack();
     assert_eq!(ui.focus_stack.len(), 1);
 
     // Modal closes: portal_layer cleared (or just doesn't
     // include it next frame).
-    ui.portal_layer.clear();
+    ui.portal_layers.clear();
     ui.sync_focus_stack();
     assert!(ui.focus_stack.is_empty(), "stack should drain on close");
     let restored = ui.get_focused().expect("focus restored");
@@ -113,7 +114,7 @@ fn try_set_focus_rejects_target_outside_trapped_subtree() {
     let mut ui = UI::new(root.clone());
     let modal_child = make_flex();
     let modal = make_portal(true, vec![modal_child.clone()]);
-    ui.portal_layer.push(entry(&modal));
+    ui.portal_layers.push(entry(&modal));
     ui.sync_focus_stack();
 
     // Target inside the modal: accepted.
@@ -137,7 +138,7 @@ fn nested_focus_trap_portals_stack_correctly() {
     // Outer modal's child can hold focus.
     let outer_child = make_flex();
     let outer = make_portal(true, vec![outer_child.clone()]);
-    ui.portal_layer.push(entry(&outer));
+    ui.portal_layers.push(entry(&outer));
     ui.sync_focus_stack();
 
     ui.try_set_focus(outer_child.clone());
@@ -145,7 +146,7 @@ fn nested_focus_trap_portals_stack_correctly() {
     // Inner modal opens — push to portal_layer in order.
     let inner_child = make_flex();
     let inner = make_portal(true, vec![inner_child.clone()]);
-    ui.portal_layer.push(entry(&inner));
+    ui.portal_layers.push(entry(&inner));
     ui.sync_focus_stack();
 
     assert_eq!(ui.focus_stack.len(), 2);
@@ -159,7 +160,7 @@ fn nested_focus_trap_portals_stack_correctly() {
 
     // Inner closes. Focus restores to outer_child (the
     // previous_focus saved when inner mounted).
-    ui.portal_layer.retain(|e| !Arc::ptr_eq(&e.widget, &inner));
+    ui.portal_layers.retain(|e| !Arc::ptr_eq(&e.widget, &inner));
     ui.sync_focus_stack();
     assert_eq!(ui.focus_stack.len(), 1);
     let focused = ui.get_focused().unwrap();
@@ -176,12 +177,12 @@ fn clear_lifecycle_state_resets_all_portal_state() {
     let root = make_flex();
     let mut ui = UI::new(root);
     let modal = make_portal(true, vec![make_flex()]);
-    ui.portal_layer.push(entry(&modal));
+    ui.portal_layers.push(entry(&modal));
     ui.sync_focus_stack();
     ui.try_set_focus(modal.clone());
 
     ui.clear_lifecycle_state();
-    assert!(ui.portal_layer.is_empty());
+    assert!(ui.portal_layers.is_empty());
     assert!(ui.focus_stack.is_empty());
     assert!(ui.get_focused().is_none());
 }
@@ -205,16 +206,16 @@ fn sync_focus_stack_top_pop_restores_then_deeper_stale_removed_silently() {
     let c_child = make_flex();
     let c = make_portal(true, vec![c_child.clone()]);
 
-    ui.portal_layer.push(entry(&a));
-    ui.portal_layer.push(entry(&b));
-    ui.portal_layer.push(entry(&c));
+    ui.portal_layers.push(entry(&a));
+    ui.portal_layers.push(entry(&b));
+    ui.portal_layers.push(entry(&c));
     ui.sync_focus_stack();
     assert_eq!(ui.focus_stack.len(), 3);
 
     ui.try_set_focus(c_child.clone());
 
     // A and B close; C remains.
-    ui.portal_layer.retain(|e| Arc::ptr_eq(&e.widget, &c));
+    ui.portal_layers.retain(|e| Arc::ptr_eq(&e.widget, &c));
     ui.sync_focus_stack();
 
     assert_eq!(
@@ -243,39 +244,100 @@ fn sync_focus_stack_lifo_chain_pop_restores_in_order() {
     let c = make_portal(true, vec![c_child.clone()]);
 
     // Mount A, focus a_child.
-    ui.portal_layer.push(entry(&a));
+    ui.portal_layers.push(entry(&a));
     ui.sync_focus_stack();
     ui.try_set_focus(a_child.clone());
 
     // Mount B, focus b_child.
-    ui.portal_layer.push(entry(&b));
+    ui.portal_layers.push(entry(&b));
     ui.sync_focus_stack();
     ui.try_set_focus(b_child.clone());
 
     // Mount C, focus c_child.
-    ui.portal_layer.push(entry(&c));
+    ui.portal_layers.push(entry(&c));
     ui.sync_focus_stack();
     ui.try_set_focus(c_child.clone());
 
     // C closes → focus restores to b_child.
-    ui.portal_layer.retain(|e| !Arc::ptr_eq(&e.widget, &c));
+    ui.portal_layers.retain(|e| !Arc::ptr_eq(&e.widget, &c));
     ui.sync_focus_stack();
     assert!(Arc::ptr_eq(ui.get_focused().unwrap(), &b_child));
 
     // B closes → focus restores to a_child.
-    ui.portal_layer.retain(|e| !Arc::ptr_eq(&e.widget, &b));
+    ui.portal_layers.retain(|e| !Arc::ptr_eq(&e.widget, &b));
     ui.sync_focus_stack();
     assert!(Arc::ptr_eq(ui.get_focused().unwrap(), &a_child));
 
     // A closes → focus restores to None (no previous focus
     // when A first opened).
-    ui.portal_layer.clear();
+    ui.portal_layers.clear();
     ui.sync_focus_stack();
     assert!(ui.get_focused().is_none() || true);
     // The "or true" reflects: when A originally pushed,
     // previous_focus was Some(initial-root-or-None). For this
     // test we never set focus before mounting A, so
     // previous_focus is None.
+}
+
+// -----------------------------------------------------------------
+// Phase 2.5 M0 — has_input_blocking_portal walks only OverlayModal
+// -----------------------------------------------------------------
+
+fn make_portal_in_layer(
+    focus_trap: bool,
+    layer: ogham::widget::portal_layer::PortalLayer,
+) -> WidgetRef {
+    let mut p = PortalWidget::new();
+    p.open = true;
+    p.focus_trap = focus_trap;
+    p.layer = layer;
+    Arc::new(Mutex::new(p))
+}
+
+fn entry_at(
+    portal: &WidgetRef,
+    layer: ogham::widget::portal_layer::PortalLayer,
+) -> PortalEntry {
+    let info = portal
+        .lock()
+        .unwrap()
+        .as_portal()
+        .expect("must be portal");
+    PortalEntry {
+        widget: portal.clone(),
+        viewport_rect: ogham::widget::rect::Rect::zero(),
+        layer,
+        focus_trap: info.focus_trap,
+    }
+}
+
+#[test]
+fn has_input_blocking_portal_only_walks_overlay_modal_layer() {
+    use ogham::widget::portal_layer::PortalLayer;
+    let root = make_flex();
+    let mut ui = UI::new(root);
+    // A focus_trap portal in the Tooltip layer should NOT
+    // trip has_input_blocking_portal — that's only for
+    // modals (OverlayModal layer).
+    let tooltip_with_trap = make_portal_in_layer(true, PortalLayer::Tooltip);
+    ui.portal_layers
+        .push(entry_at(&tooltip_with_trap, PortalLayer::Tooltip));
+    assert!(
+        !ui.has_input_blocking_portal(),
+        "focus_trap in Tooltip layer must not gate world input"
+    );
+}
+
+#[test]
+fn focus_trap_in_overlay_modal_does_trip_the_gate() {
+    use ogham::widget::portal_layer::PortalLayer;
+    let root = make_flex();
+    let mut ui = UI::new(root);
+    let modal = make_portal_in_layer(true, PortalLayer::OverlayModal);
+    ui.portal_layers
+        .push(entry_at(&modal, PortalLayer::OverlayModal));
+    assert!(ui.has_input_blocking_portal(),
+        "focus_trap in OverlayModal layer DOES gate world input");
 }
 
 #[test]

@@ -550,10 +550,11 @@ impl Surface for SkiaEnv {
             None
         };
 
-        // Phase 2 Portal: clear the per-frame portal layer; the
-        // main render walk repopulates it. Pass B paints each
-        // entry's children with the viewport as the clip rect.
-        ui.portal_layer.clear();
+        // Phase 2.5 M0: clear per-frame portal_layers; the
+        // main render walk repopulates them. Pass B walks
+        // layers in priority order (low → high) so higher-
+        // priority layers paint on top.
+        ui.portal_layers.clear();
 
         let focused = ui.get_focused().cloned();
         Self::draw_widget_recursive(
@@ -561,21 +562,51 @@ impl Surface for SkiaEnv {
             &ui.root,
             focused.as_ref(),
             &mut ui.image_cache,
-            &mut ui.portal_layer,
+            &mut ui.portal_layers,
+            (0.0, 0.0), // accumulated_translate — viewport origin at root
         );
 
-        // Pass B: portal_layer in mount order (LIFO would put
-        // the most-recently-opened on top — we're already in
-        // push order, which is the same as mount order, so a
-        // forward iteration paints last-opened on top).
-        let entries: Vec<crate::widget::PortalEntry> =
-            ui.portal_layer.clone();
-        for entry in entries {
-            Self::paint_portal_entry(self, &entry, focused.as_ref(), &mut ui.image_cache);
+        // Pass B: walk layers in priority order. For each
+        // layer with `Block` backdrop policy and any open
+        // entry, paint a viewport-sized translucent backdrop
+        // first (the runtime backdrop). Then paint the
+        // entries in mount order.
+        //
+        // We need the viewport size for the backdrop rect —
+        // pull from the root's layout rect.
+        let viewport_size = {
+            let root = ui.root.lock().expect("widget lock poisoned");
+            root.get_layout_rect()
+                .map(|r| (r.width, r.height))
+                .unwrap_or((0.0, 0.0))
+        };
+        for layer in crate::widget::portal_layer::PortalLayer::ALL {
+            let entries: Vec<crate::widget::PortalEntry> =
+                ui.portal_layers.entries_in(layer).to_vec();
+            if entries.is_empty() {
+                continue;
+            }
+            // Layer-policy backdrop. Block policy gets a
+            // translucent backdrop drawn before any entry.
+            // Dim is currently treated as None (TODO; no
+            // layer defaults to Dim).
+            if layer.default_backdrop()
+                == crate::widget::portal_layer::BackdropPolicy::Block
+            {
+                Self::paint_layer_backdrop(self, viewport_size);
+            }
+            for entry in &entries {
+                Self::paint_portal_entry(
+                    self,
+                    entry,
+                    focused.as_ref(),
+                    &mut ui.image_cache,
+                );
+            }
         }
 
         // Phase 2 M4: reconcile the focus stack now that
-        // portal_layer reflects this frame's open portals.
+        // portal_layers reflects this frame's open portals.
         // Pushes new focus_trap entries; pops + restores
         // closed ones.
         ui.sync_focus_stack();
@@ -593,7 +624,8 @@ impl SkiaEnv {
         widget_ref: &WidgetRef,
         focused: Option<&WidgetRef>,
         image_cache: &mut ImageCache,
-        portal_layer: &mut Vec<crate::widget::PortalEntry>,
+        portal_layers: &mut crate::widget::PortalLayers,
+        accumulated_translate: (f32, f32),
     ) {
         use crate::widget::RenderContext;
 
@@ -601,16 +633,21 @@ impl SkiaEnv {
             .map(|f| std::ptr::eq(Arc::as_ptr(f), Arc::as_ptr(widget_ref)))
             .unwrap_or(false);
 
-        // Phase 2 Portal: detect a Portal node and defer to the
-        // portal layer instead of recursing. The portal node
-        // itself paints nothing; its children will render with
-        // viewport bounds in Pass B.
+        // Phase 2 Portal (extended in P25-M0): detect a Portal
+        // node and defer to the portal layer instead of
+        // recursing. The portal node itself paints nothing;
+        // its children render in Pass B with viewport bounds.
         //
-        // We push to portal_layer when the portal is open OR
-        // when it has ghost children mid-exit-animation (so the
-        // close transition still paints). focus_trap is only
-        // honored when actually open — ghosting portals don't
-        // continue to trap focus.
+        // Push to portal_layers when the portal is open OR
+        // when it has ghost children mid-exit-animation (so
+        // the close transition still paints). focus_trap is
+        // only honored when actually open — ghosting portals
+        // don't continue to trap focus.
+        //
+        // The captured viewport_rect uses accumulated_translate
+        // (parent-chain translates accumulated through the
+        // recursion) so Pass B can translate from viewport
+        // origin without re-walking the parent chain.
         {
             let widget = widget_ref.lock().expect("widget lock poisoned");
             if let Some(info) = widget.as_portal() {
@@ -620,14 +657,21 @@ impl SkiaEnv {
                     g.is_exiting()
                 });
                 if info.open || has_ghosts {
-                    let parent_rect = widget
+                    let local_rect = widget
                         .get_layout_rect()
                         .cloned()
                         .unwrap_or_else(crate::widget::rect::Rect::zero);
                     drop(widget);
-                    portal_layer.push(crate::widget::PortalEntry {
+                    let viewport_rect = crate::widget::rect::Rect::new(
+                        local_rect.x + accumulated_translate.0,
+                        local_rect.y + accumulated_translate.1,
+                        local_rect.width,
+                        local_rect.height,
+                    );
+                    portal_layers.push(crate::widget::PortalEntry {
                         widget: widget_ref.clone(),
-                        parent_rect,
+                        viewport_rect,
+                        layer: info.layer,
                         // Only trap focus when actually open;
                         // a closed portal with ghosts shouldn't
                         // continue to trap.
@@ -677,8 +721,24 @@ impl SkiaEnv {
             env.translate(tx * dpi, ty * dpi);
         }
 
+        // Phase 2.5 M0: thread the accumulated translate
+        // through the recursion. Each level's child translate
+        // (origin minus scroll) adds to the cumulative
+        // translate, so when a portal is encountered deep in
+        // the tree its viewport_rect is captured correctly.
+        let child_accumulated = (
+            accumulated_translate.0 + tx,
+            accumulated_translate.1 + ty,
+        );
         for child in &children {
-            Self::draw_widget_recursive(env, child, focused, image_cache, portal_layer);
+            Self::draw_widget_recursive(
+                env,
+                child,
+                focused,
+                image_cache,
+                portal_layers,
+                child_accumulated,
+            );
         }
 
         if needs_transform {
@@ -695,53 +755,78 @@ impl SkiaEnv {
         }
     }
 
-    /// Phase 2 Portal Pass B: paint a single portal entry's
-    /// children. The entry's `parent_rect` is the layout origin
-    /// the portal would have occupied in the base tree; we
-    /// translate by it so anchored children appear at the
-    /// "expected" position.
+    /// Phase 2.5 M0: paint a single portal entry's children
+    /// in Pass B. The entry's `viewport_rect` is now
+    /// viewport-absolute (captured during Pass A by
+    /// accumulating parent translates), so we translate from
+    /// the viewport origin without re-walking the parent chain.
     ///
-    /// KNOWN LIMITATION (Phase 2): the captured `parent_rect`
-    /// is in the *immediate parent's* coordinate space, not
-    /// viewport-absolute. For portals nested deep in the tree
-    /// (parent isn't at viewport origin), Pass B paints them at
-    /// `parent_rect` but the parent's own translates aren't
-    /// reapplied — so the portal's children appear at the wrong
-    /// viewport position. The shipped use cases (root-level
-    /// portals like the escape menu) work because the parent IS
-    /// the root. Fixing this requires tracking cumulative
-    /// translates during Pass A and capturing
-    /// viewport-absolute coords in `PortalEntry.parent_rect`.
-    /// Tracked in the post-Phase-2 backlog.
+    /// Nested portals encountered in the children's recursion
+    /// land in the same `portal_layers` storage and get
+    /// painted by the outer Pass B loop. We pass an empty
+    /// throwaway PortalLayers here to satisfy the recursion
+    /// signature; in M3 use cases (root-level portals) this
+    /// path doesn't recursively encounter portals.
     fn paint_portal_entry(
         env: &mut SkiaEnv,
         entry: &crate::widget::PortalEntry,
         focused: Option<&WidgetRef>,
         image_cache: &mut ImageCache,
     ) {
-        // Translate to the portal's slot so child layouts are
-        // relative to where the portal would have appeared.
+        // Translate from the viewport origin to the portal's
+        // viewport-absolute slot.
         let dpi = env.dpi_scale;
         env.save();
-        env.translate(entry.parent_rect.x * dpi, entry.parent_rect.y * dpi);
+        env.translate(entry.viewport_rect.x * dpi, entry.viewport_rect.y * dpi);
 
         let children = {
             let widget = entry.widget.lock().expect("widget lock poisoned");
             widget.get_children()
         };
-        // M3: nested portals inside a portal go through a
-        // throwaway second-level layer (unused in shipped UL but
-        // keeps the recursion complete).
-        let mut nested: Vec<crate::widget::PortalEntry> = Vec::new();
+        // Nested portals encountered inside this portal's
+        // children push to `nested` and get painted after the
+        // main child render. Their viewport_rect is captured
+        // with accumulated_translate = entry.viewport_rect.{x,y}
+        // because we've already translated into the portal's
+        // slot — children's local coords add to that.
+        let mut nested = crate::widget::PortalLayers::new();
         for child in &children {
-            Self::draw_widget_recursive(env, child, focused, image_cache, &mut nested);
+            Self::draw_widget_recursive(
+                env,
+                child,
+                focused,
+                image_cache,
+                &mut nested,
+                (entry.viewport_rect.x, entry.viewport_rect.y),
+            );
         }
-        // Paint nested portals if any.
-        for nested_entry in &nested {
+        // Paint nested portals if any. Pass-through to the
+        // outer iteration order isn't preserved here — nested
+        // portals are rare and stacking among them follows
+        // the order they appeared in this entry's subtree.
+        for nested_entry in nested.iter_paint_order() {
             Self::paint_portal_entry(env, nested_entry, focused, image_cache);
         }
 
         env.surface.canvas().restore();
+    }
+
+    /// Phase 2.5 M0: paint the runtime-side backdrop for a
+    /// layer with `Block` policy. A viewport-sized translucent
+    /// black rect drawn before the layer's first entry; lower
+    /// layers stay visible underneath but pointer events to
+    /// them are gated by the hit-test path.
+    ///
+    /// Consumers can also render their own backdrop into the
+    /// layer (the canonical Modal() example fn does this for
+    /// styling control). Both render; the consumer backdrop
+    /// appears on top of the runtime backdrop. Slightly
+    /// wasteful but visually correct.
+    fn paint_layer_backdrop(env: &mut SkiaEnv, viewport_size: (f32, f32)) {
+        use crate::widget::style::Color;
+        use crate::widget::RenderContext;
+        let backdrop = Color::new(0, 0, 0, 96);
+        env.fill_rect(0.0, 0.0, viewport_size.0, viewport_size.1, &backdrop);
     }
 }
 

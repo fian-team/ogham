@@ -24,9 +24,14 @@ pub mod flex_widget;
 /// at a time and waits for exits before mounting the next.
 pub mod presence_widget;
 /// Phase 2 Portal widget — defers paint + hit-test to the
-/// per-frame `UI.portal_layer`, rendering in front of all
+/// per-frame `UI.portal_layers`, rendering in front of all
 /// base-tree siblings.
 pub mod portal_widget;
+/// Phase 2.5 M0: named portal layers + per-layer backdrop
+/// policies. Portal widgets declare a layer; the renderer
+/// dispatches to per-layer storage and paints in priority
+/// order.
+pub mod portal_layer;
 /// Grid layout widget.
 pub mod grid_widget;
 pub mod image;
@@ -67,30 +72,127 @@ pub struct LayoutContext<'a> {
     pub default_font: Option<&'a str>,
 }
 
-/// Phase 2 Portal: per-frame entry on `UI.portal_layer`. The
-/// renderer pushes one of these whenever it walks past a Portal
-/// node with `open: true` in the main render pass; Pass B
-/// iterates the layer and paints each portal's children with the
-/// viewport as the clip rect.
+/// Phase 2 Portal (extended in P25-M0): per-frame entry on
+/// `UI.portal_layers`. The renderer pushes one of these
+/// whenever it walks past a Portal node that should appear in
+/// the portal layer (open, or open=false but with ghost
+/// children mid-exit-animation). Pass B iterates the layers
+/// in priority order and paints each entry's children with
+/// the viewport as the clip rect.
 #[derive(Clone)]
 pub struct PortalEntry {
     pub widget: WidgetRef,
-    /// The rect the portal node would have occupied if it weren't
-    /// a portal. Used as the layout origin for the children when
-    /// painted in Pass B (so transforms work as anchor offsets).
-    pub parent_rect: rect::Rect,
+    /// VIEWPORT-ABSOLUTE rect of the portal's slot — captured
+    /// during Pass A by accumulating parent translates. Pass
+    /// B translates by `viewport_rect.{x, y}` from the
+    /// viewport origin without further accumulation.
+    ///
+    /// Phase 2.5 M0 fix: previously this was parent-relative
+    /// (`parent_rect`) and portals nested below the root
+    /// rendered at the wrong viewport position. Renamed to
+    /// reflect the new semantics.
+    pub viewport_rect: rect::Rect,
+    /// Which layer this entry belongs to. Determines paint
+    /// priority and backdrop policy.
+    pub layer: portal_layer::PortalLayer,
     pub focus_trap: bool,
 }
 
-/// Phase 2 Portal: returned by `Widget::as_portal()` to mark a
-/// widget as a Portal. Used by the renderer to detect the defer-
-/// to-portal-layer branch and by the runtime API
-/// `has_input_blocking_portal()` to derive UL's overlay-active
-/// boolean.
+/// Phase 2 Portal (extended in P25-M0): returned by
+/// `Widget::as_portal()` to mark a widget as a Portal. Used
+/// by the renderer to detect the defer-to-portal-layer branch
+/// and by the runtime API `has_input_blocking_portal()` to
+/// derive UL's overlay-active boolean.
 #[derive(Clone, Copy, Debug)]
 pub struct PortalInfo {
     pub open: bool,
     pub focus_trap: bool,
+    /// Which layer the Portal declares. Defaults to
+    /// `OverlayModal` for Portals that don't specify a layer
+    /// (matches Phase 2's single-layer behavior).
+    pub layer: portal_layer::PortalLayer,
+}
+
+/// Phase 2.5 M0: per-frame storage for portal entries, keyed
+/// by [`portal_layer::PortalLayer`]. Backed by a fixed-size
+/// `[Vec; 6]` indexed by the layer enum's discriminant —
+/// cache-friendly, no HashMap allocation, empty layers cost
+/// nothing.
+///
+/// Cleared at the start of each render pass; populated during
+/// Pass A walk; consumed by Pass B paint and hit-test.
+#[derive(Clone, Default)]
+pub struct PortalLayers {
+    layers: [Vec<PortalEntry>; 6],
+}
+
+impl PortalLayers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clear every layer's entries. Called at frame start.
+    pub fn clear(&mut self) {
+        for v in &mut self.layers {
+            v.clear();
+        }
+    }
+
+    /// Push an entry into its declared layer. Mount order is
+    /// preserved within a layer.
+    pub fn push(&mut self, entry: PortalEntry) {
+        let idx = entry.layer.array_index();
+        self.layers[idx].push(entry);
+    }
+
+    /// Iterate layers in PRIORITY order (low → high); within a
+    /// layer, mount order. Used by Pass B paint — higher-
+    /// priority layers paint on top.
+    pub fn iter_paint_order(&self) -> impl Iterator<Item = &PortalEntry> {
+        portal_layer::PortalLayer::ALL
+            .iter()
+            .flat_map(move |layer| self.layers[layer.array_index()].iter())
+    }
+
+    /// Iterate layers in REVERSE priority order (high → low);
+    /// within a layer, reverse mount order (top-most-mount
+    /// first). Used by hit-test — closest-to-cursor wins.
+    pub fn iter_hit_test_order(&self) -> impl Iterator<Item = &PortalEntry> {
+        portal_layer::PortalLayer::ALL
+            .iter()
+            .rev()
+            .flat_map(move |layer| self.layers[layer.array_index()].iter().rev())
+    }
+
+    /// Entries in a specific layer (mount order). Used by
+    /// `has_input_blocking_portal` (walks only `OverlayModal`).
+    pub fn entries_in(&self, layer: portal_layer::PortalLayer) -> &[PortalEntry] {
+        &self.layers[layer.array_index()]
+    }
+
+    /// True if any entry in any layer satisfies the predicate.
+    pub fn any<P: Fn(&PortalEntry) -> bool>(&self, p: P) -> bool {
+        self.layers.iter().any(|v| v.iter().any(&p))
+    }
+
+    /// Total entry count across all layers. Used by tests and
+    /// debug assertions.
+    pub fn len(&self) -> usize {
+        self.layers.iter().map(|v| v.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layers.iter().all(|v| v.is_empty())
+    }
+
+    /// Apply a predicate across every layer's entries. Used by
+    /// tests that simulate "this portal closed" without going
+    /// through the renderer.
+    pub fn retain<F: FnMut(&PortalEntry) -> bool>(&mut self, mut pred: F) {
+        for v in &mut self.layers {
+            v.retain(&mut pred);
+        }
+    }
 }
 
 /// Phase 2 M4: a stack entry tracking what to restore when a
@@ -114,11 +216,13 @@ pub struct UI {
     pub root: WidgetRef,
     /// Cached images to prevent reloading on render.
     pub image_cache: ImageCache,
-    /// Phase 2 Portal: per-frame portal layer. Cleared at start
+    /// Phase 2 Portal (extended in P25-M0): per-frame portal
+    /// layer storage, keyed by named layer. Cleared at start
     /// of each render pass; populated by the main render walk
-    /// when it encounters open portals; consumed by Pass B
-    /// (Skia's `draw` and the hit-test path).
-    pub portal_layer: Vec<PortalEntry>,
+    /// when it encounters open portals (or portals with mid-
+    /// exit-animation ghosts); consumed by Pass B (Skia's
+    /// `draw` and the hit-test path).
+    pub portal_layers: PortalLayers,
     /// Phase 2 M4: focus restoration stack. Persists across
     /// frames; reconciled from `portal_layer` via
     /// `sync_focus_stack` after each render. Top of stack
@@ -168,7 +272,7 @@ impl UI {
         Self {
             root,
             image_cache: ImageCache::new(),
-            portal_layer: Vec::new(),
+            portal_layers: PortalLayers::new(),
             focus_stack: Vec::new(),
             needs_layout: true,
             needs_repaint: true,
@@ -257,22 +361,26 @@ impl UI {
     }
 
     fn handle_click_event(&mut self, event: &Event, point: &Point, ctx: &mut EventContext) -> bool {
-        // Phase 2 Portal: search the portal layer first
-        // (top-most-portal first via reverse iteration). The
-        // portal_layer was populated by the most recent draw()
-        // call. A portal child whose layout covers the
-        // viewport (the backdrop pattern) swallows clicks
-        // naturally. Falls through to the base tree only if no
-        // portal claims the click.
-        let entries = self.portal_layer.clone();
-        for entry in entries.iter().rev() {
+        // Phase 2.5 M0: walk portal_layers high-priority-to-low,
+        // within a layer reverse-mount-order (top-most-mount
+        // first). Track block_lower from layer policies; if
+        // any layer with a Block policy has any open entry,
+        // fall-through to the base tree is suppressed (per
+        // UI_RUNTIME.md §1's "lower layers receive nothing if
+        // the topmost layer's policy is `block`").
+        let mut block_lower = false;
+        // Use the convenience entries() collection rather than
+        // borrowing self in a closure — handle_event needs &mut.
+        let entries: Vec<PortalEntry> =
+            self.portal_layers.iter_hit_test_order().cloned().collect();
+        for entry in &entries {
             // Translate the click into the portal's child
-            // coordinate space (subtract the portal's
-            // parent_rect origin, just like a normal
-            // widget's child-coords translation).
+            // coordinate space — viewport_rect is now
+            // viewport-absolute (P25-M0), so this subtraction
+            // gives the child-relative point directly.
             let child_point = Point::new(
-                point.x() - entry.parent_rect.x,
-                point.y() - entry.parent_rect.y,
+                point.x() - entry.viewport_rect.x,
+                point.y() - entry.viewport_rect.y,
             );
             let widget_ref = entry.widget.clone();
             let mut widget = widget_ref.lock().expect("widget lock poisoned");
@@ -289,16 +397,19 @@ impl UI {
                     }
                 }
             }
-            // Backdrop pattern: even if no specific child
-            // claims, an open focus_trap portal should swallow
-            // the click rather than let it fall through to the
-            // base tree. M3 leaves this as fall-through;
-            // backdrops are explicit Flex children that
-            // contain the entire viewport, so a backdrop with
-            // an on_click handler will catch via the loop
-            // above. Modal portals without a backdrop will
-            // leak clicks — documented limitation; M4 wires
-            // focus_trap to gate this.
+            // Layer-policy gate: a Block-policy layer with any
+            // open entry suppresses fall-through to the base
+            // tree. Even if no specific child claimed the
+            // click, the modal "swallows" it.
+            if entry.layer.default_backdrop()
+                == portal_layer::BackdropPolicy::Block
+            {
+                block_lower = true;
+            }
+        }
+
+        if block_lower {
+            return false;
         }
 
         // Fall through to the base tree.
@@ -500,13 +611,22 @@ impl UI {
         self.focused.as_ref()
     }
 
-    /// Phase 2 M4: returns `true` if any portal currently in
-    /// `portal_layer` has `focus_trap: true`. Hosts use this to
-    /// derive their own input-gating booleans (UL audit:
-    /// replaces the manual `overlay_active: bool` plumbing).
-    /// Reflects the most recent draw's portal_layer state.
+    /// Phase 2 M4 (refined in P25-M0): returns `true` if any
+    /// portal in the OverlayModal layer has `focus_trap: true`.
+    /// Hosts use this to derive their own input-gating
+    /// booleans (UL audit: replaces the manual
+    /// `overlay_active: bool` plumbing). Reflects the most
+    /// recent draw's portal_layers state.
+    ///
+    /// Walks ONLY the `OverlayModal` layer — a focus_trap in
+    /// a tooltip / popover is unusual and shouldn't gate
+    /// world input. Phase 2 walked all entries; this is more
+    /// correct for the multi-layer surface.
     pub fn has_input_blocking_portal(&self) -> bool {
-        self.portal_layer.iter().any(|e| e.focus_trap)
+        self.portal_layers
+            .entries_in(portal_layer::PortalLayer::OverlayModal)
+            .iter()
+            .any(|e| e.focus_trap)
     }
 
     /// Phase 2 M4: attempt to move focus to `target`. Rejects
@@ -542,19 +662,27 @@ impl UI {
     /// to a target outside the surviving top's trapped subtree,
     /// which `try_set_focus` would reject anyway.
     pub fn sync_focus_stack(&mut self) {
+        // Collect candidate focus_trap entries from across all
+        // layers. The closure-vs-mutable-self limitation means
+        // we walk via the iter helpers and clone refs as
+        // needed.
+        let trap_entries: Vec<(WidgetRef, ())> = self
+            .portal_layers
+            .iter_paint_order()
+            .filter(|e| e.focus_trap)
+            .map(|e| (e.widget.clone(), ()))
+            .collect();
+
         // Push: new focus_trap entries get a restoration point.
-        for entry in &self.portal_layer {
-            if !entry.focus_trap {
-                continue;
-            }
+        for (portal, _) in &trap_entries {
             let already = self
                 .focus_stack
                 .iter()
-                .any(|r| Arc::ptr_eq(&r.portal, &entry.widget));
+                .any(|r| Arc::ptr_eq(&r.portal, portal));
             if !already {
                 let prev = self.focused.clone();
                 self.focus_stack.push(FocusRestoration {
-                    portal: entry.widget.clone(),
+                    portal: portal.clone(),
                     previous_focus: prev,
                 });
             }
@@ -562,9 +690,9 @@ impl UI {
         // Pop from top while stale; restore each popped's
         // previous_focus. Stops at the first surviving entry.
         while let Some(top) = self.focus_stack.last() {
-            let still_present = self.portal_layer.iter().any(|e| {
-                e.focus_trap && Arc::ptr_eq(&e.widget, &top.portal)
-            });
+            let still_present = trap_entries
+                .iter()
+                .any(|(p, _)| Arc::ptr_eq(p, &top.portal));
             if still_present {
                 break;
             }
@@ -577,20 +705,18 @@ impl UI {
         // restoring their previous_focus would do more harm than
         // good (try_set_focus would reject moves outside the
         // surviving top's subtree anyway).
-        let layer = &self.portal_layer;
         self.focus_stack.retain(|r| {
-            layer
-                .iter()
-                .any(|e| e.focus_trap && Arc::ptr_eq(&e.widget, &r.portal))
+            trap_entries.iter().any(|(p, _)| Arc::ptr_eq(p, &r.portal))
         });
     }
 
-    /// Phase 2 M4: clear all M4 state (focus stack +
-    /// portal_layer + focused). Called on hot-reload to
-    /// prevent stale focus restoration into a torn-down tree.
+    /// Phase 2 M4 (extended in P25-M0): clear all M4 state
+    /// (focus stack + portal_layers + focused). Called on
+    /// hot-reload to prevent stale focus restoration into a
+    /// torn-down tree.
     pub fn clear_lifecycle_state(&mut self) {
         self.focus_stack.clear();
-        self.portal_layer.clear();
+        self.portal_layers.clear();
         self.focused = None;
     }
 

@@ -17,6 +17,7 @@
 //! composition with regular widgets.
 
 use super::flex_widget::FlexWidget;
+use super::portal_layer::PortalLayer;
 use super::style::{Direction, FlexStyle, Size};
 use super::{
     PortalInfo, RenderEffects, TickResult, UpdateResult, Widget, WidgetRef,
@@ -34,6 +35,12 @@ pub struct PortalWidget {
     pub inner: FlexWidget,
     pub open: bool,
     pub focus_trap: bool,
+    /// Phase 2.5 M0: which named layer this portal renders
+    /// into. Determines paint priority and backdrop policy.
+    /// Defaults to [`PortalLayer::OverlayModal`] for
+    /// backward compatibility with Phase 2 (which had a
+    /// single unnamed layer that behaved like a modal layer).
+    pub layer: PortalLayer,
     /// Phase 2 lifecycle: the call-stack path captured at
     /// descriptor-build time. Children's hooks (state cells,
     /// effects, on_unmount) live under this path; flushing the
@@ -59,6 +66,7 @@ impl PortalWidget {
             inner,
             open: false,
             focus_trap: false,
+            layer: PortalLayer::OverlayModal,
             owned_path_prefix: String::new(),
         }
     }
@@ -85,6 +93,7 @@ impl Widget for PortalWidget {
         Some(PortalInfo {
             open: self.open,
             focus_trap: self.focus_trap,
+            layer: self.layer,
         })
     }
 
@@ -101,8 +110,10 @@ impl Widget for PortalWidget {
         let was_open = self.open;
         let open_changed = self.open != new_portal.open;
         let trap_changed = self.focus_trap != new_portal.focus_trap;
+        let layer_changed = self.layer != new_portal.layer;
         self.open = new_portal.open;
         self.focus_trap = new_portal.focus_trap;
+        self.layer = new_portal.layer;
         // owned_path_prefix is captured at descriptor-build time
         // and shouldn't change for the same path; copy anyway.
         self.owned_path_prefix = new_portal.owned_path_prefix.clone();
@@ -136,9 +147,13 @@ impl Widget for PortalWidget {
         };
         UpdateResult {
             absorbed: true,
-            needs_layout: open_changed || trap_changed || inner_result.needs_layout,
+            needs_layout: open_changed
+                || trap_changed
+                || layer_changed
+                || inner_result.needs_layout,
             needs_repaint: open_changed
                 || trap_changed
+                || layer_changed
                 || inner_result.needs_repaint,
         }
     }

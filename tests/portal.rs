@@ -291,3 +291,181 @@ let main = fn () {
         assert!(!info.open, "open should now be false");
     }
 }
+
+// -----------------------------------------------------------------
+// Phase 2.5 M0 — layer system tests
+// -----------------------------------------------------------------
+
+use ogham::widget::portal_layer::PortalLayer;
+
+#[test]
+fn portal_with_no_layer_property_defaults_to_overlay_modal() {
+    let src = r#"
+let main = fn () {
+  Portal { open: true, children: [Flex { children: [] }] }
+};
+"#;
+    let root = build_root(src);
+    let widget = root.lock().unwrap();
+    let info = widget.as_portal().expect("is portal");
+    assert_eq!(info.layer, PortalLayer::OverlayModal);
+}
+
+#[test]
+fn portal_layer_property_parses_each_named_layer() {
+    for layer in PortalLayer::ALL {
+        let src = format!(
+            r#"let main = fn () {{ Portal {{ layer: "{}", open: true, children: [] }} }};"#,
+            layer.source_name()
+        );
+        let root = build_root(&src);
+        let widget = root.lock().unwrap();
+        let info = widget.as_portal().expect("is portal");
+        assert_eq!(
+            info.layer, layer,
+            "round-trip failed for layer {:?}",
+            layer
+        );
+    }
+}
+
+#[test]
+fn portal_layer_property_rejects_unknown_layer_name() {
+    let src = r#"let main = fn () { Portal { layer: "modal", children: [] } };"#;
+    let runtime = Arc::new(Mutex::new(
+        Runtime::from_source(src, None).expect("parse"),
+    ));
+    let module = {
+        let rt = runtime.lock().unwrap();
+        rt.get_module().expect("module").clone()
+    };
+    let widget_value = {
+        let mut rt = runtime.lock().unwrap();
+        rt.execute_module(&module).expect("execute")
+    };
+    let registry = ogham::widget::builder::WidgetRegistry::with_defaults();
+    let result = builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value);
+    let err = match result {
+        Ok(_) => panic!("unknown layer 'modal' should be rejected"),
+        Err(e) => format!("{:?}", DebugBridgeError(&e)),
+    };
+    assert!(
+        err.contains("layer") && err.contains("overlay-modal"),
+        "diagnostic should list valid names; got {}",
+        err
+    );
+}
+
+#[test]
+fn portal_layer_property_rejects_non_string_value() {
+    let src = r#"let main = fn () { Portal { layer: 42, children: [] } };"#;
+    let runtime = Arc::new(Mutex::new(
+        Runtime::from_source(src, None).expect("parse"),
+    ));
+    let module = {
+        let rt = runtime.lock().unwrap();
+        rt.get_module().expect("module").clone()
+    };
+    let widget_value = {
+        let mut rt = runtime.lock().unwrap();
+        rt.execute_module(&module).expect("execute")
+    };
+    let registry = ogham::widget::builder::WidgetRegistry::with_defaults();
+    let result = builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value);
+    if result.is_ok() {
+        panic!("non-string layer should be rejected");
+    }
+}
+
+#[test]
+fn multiple_portals_in_same_layer_stack_lifo() {
+    use ogham::widget::{PortalEntry, PortalLayers};
+    let mut layers = PortalLayers::new();
+    let p1 = make_portal_widget(PortalLayer::Tooltip);
+    let p2 = make_portal_widget(PortalLayer::Tooltip);
+    layers.push(entry_for(p1.clone(), PortalLayer::Tooltip));
+    layers.push(entry_for(p2.clone(), PortalLayer::Tooltip));
+
+    // iter_paint_order: mount order within layer.
+    let paint: Vec<_> = layers.iter_paint_order().collect();
+    assert_eq!(paint.len(), 2);
+    assert!(Arc::ptr_eq(&paint[0].widget, &p1));
+    assert!(Arc::ptr_eq(&paint[1].widget, &p2));
+
+    // iter_hit_test_order: reverse mount order within layer.
+    let hit: Vec<_> = layers.iter_hit_test_order().collect();
+    assert!(Arc::ptr_eq(&hit[0].widget, &p2));
+    assert!(Arc::ptr_eq(&hit[1].widget, &p1));
+}
+
+#[test]
+fn multiple_portals_across_layers_paint_low_to_high() {
+    use ogham::widget::PortalLayers;
+    let mut layers = PortalLayers::new();
+    let modal = make_portal_widget(PortalLayer::OverlayModal);
+    let tooltip = make_portal_widget(PortalLayer::Tooltip);
+    layers.push(entry_for(modal.clone(), PortalLayer::OverlayModal));
+    layers.push(entry_for(tooltip.clone(), PortalLayer::Tooltip));
+
+    // Paint order: low priority first.
+    let paint: Vec<_> = layers.iter_paint_order().collect();
+    assert!(Arc::ptr_eq(&paint[0].widget, &modal),
+        "OverlayModal (priority 100) paints before Tooltip (300)");
+    assert!(Arc::ptr_eq(&paint[1].widget, &tooltip),
+        "Tooltip (300) paints on top of OverlayModal (100)");
+}
+
+#[test]
+fn iter_hit_test_order_walks_high_priority_first_then_lifo() {
+    use ogham::widget::PortalLayers;
+    let mut layers = PortalLayers::new();
+    let modal = make_portal_widget(PortalLayer::OverlayModal);
+    let tooltip = make_portal_widget(PortalLayer::Tooltip);
+    layers.push(entry_for(modal.clone(), PortalLayer::OverlayModal));
+    layers.push(entry_for(tooltip.clone(), PortalLayer::Tooltip));
+
+    let hit: Vec<_> = layers.iter_hit_test_order().collect();
+    assert!(Arc::ptr_eq(&hit[0].widget, &tooltip),
+        "high-priority Tooltip is hit-tested first");
+    assert!(Arc::ptr_eq(&hit[1].widget, &modal));
+}
+
+#[test]
+fn closed_portal_with_ghosts_still_routes_through_layer() {
+    // P2 audit fix regression: a Portal with open=false but
+    // ghost children mid-exit-animation still gets pushed
+    // (with focus_trap=false). The layer assignment must
+    // propagate correctly.
+    let mut p = PortalWidget::new();
+    p.open = false;
+    p.layer = PortalLayer::Popover;
+    p.inner.children.push(Arc::new(Mutex::new(
+        ogham::widget::flex_widget::FlexWidget::new(),
+    )));
+    let info = p.as_portal().expect("is portal");
+    assert_eq!(info.layer, PortalLayer::Popover);
+    // get_children still exposes the inner children for the
+    // ghost-paint pathway (verified in Phase 2 audit fix; this
+    // test re-asserts it under the layer system).
+    assert_eq!(p.get_children().len(), 1);
+}
+
+// Helpers for the unit-style layer tests above.
+fn make_portal_widget(layer: PortalLayer) -> ogham::widget::WidgetRef {
+    let mut p = PortalWidget::new();
+    p.open = true;
+    p.layer = layer;
+    Arc::new(Mutex::new(p))
+}
+
+fn entry_for(
+    widget: ogham::widget::WidgetRef,
+    layer: PortalLayer,
+) -> ogham::widget::PortalEntry {
+    ogham::widget::PortalEntry {
+        widget,
+        viewport_rect: ogham::widget::rect::Rect::zero(),
+        layer,
+        focus_trap: false,
+    }
+}
