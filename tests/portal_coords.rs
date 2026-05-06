@@ -37,6 +37,7 @@ fn viewport_rect_replaces_parent_rect_field_name() {
         viewport_rect: Rect::new(10.0, 20.0, 100.0, 50.0),
         layer: PortalLayer::OverlayModal,
         focus_trap: false,
+        cursor: ogham::widget::portal_layer::CursorPreference::Inherit,
     };
     assert_eq!(entry.viewport_rect.x, 10.0);
     assert_eq!(entry.viewport_rect.y, 20.0);
@@ -59,6 +60,7 @@ fn portal_at_root_unchanged_from_phase_2_behavior() {
         viewport_rect: local.clone(),
         layer: PortalLayer::OverlayModal,
         focus_trap: false,
+        cursor: ogham::widget::portal_layer::CursorPreference::Inherit,
     };
     assert_eq!(entry.viewport_rect.x, local.x);
     assert_eq!(entry.viewport_rect.y, local.y);
@@ -93,6 +95,7 @@ fn nested_portal_inside_translated_parent_renders_at_correct_viewport_position()
         viewport_rect: expected_viewport.clone(),
         layer: PortalLayer::Popover,
         focus_trap: false,
+        cursor: ogham::widget::portal_layer::CursorPreference::Inherit,
     };
     assert_eq!(entry.viewport_rect.x, 60.0);
     assert_eq!(entry.viewport_rect.y, 120.0);
@@ -110,6 +113,7 @@ fn portal_layers_storage_preserves_viewport_rect() {
         viewport_rect: original.clone(),
         layer: PortalLayer::Tooltip,
         focus_trap: false,
+        cursor: ogham::widget::portal_layer::CursorPreference::Inherit,
     });
     let entry = layers.iter_paint_order().next().expect("one entry");
     assert_eq!(entry.viewport_rect.x, original.x);

@@ -17,7 +17,7 @@
 //! composition with regular widgets.
 
 use super::flex_widget::FlexWidget;
-use super::portal_layer::PortalLayer;
+use super::portal_layer::{CursorPreference, PortalLayer};
 use super::style::{Direction, FlexStyle, Size};
 use super::{
     PortalInfo, RenderEffects, TickResult, UpdateResult, Widget, WidgetRef,
@@ -41,6 +41,10 @@ pub struct PortalWidget {
     /// backward compatibility with Phase 2 (which had a
     /// single unnamed layer that behaved like a modal layer).
     pub layer: PortalLayer,
+    /// Phase 2.5 M1: cursor preference. None means "use the
+    /// layer's default" (OverlayModal/Popover → Free, others
+    /// → Inherit). Some(_) overrides.
+    pub cursor: Option<CursorPreference>,
     /// Phase 2 lifecycle: the call-stack path captured at
     /// descriptor-build time. Children's hooks (state cells,
     /// effects, on_unmount) live under this path; flushing the
@@ -67,8 +71,15 @@ impl PortalWidget {
             open: false,
             focus_trap: false,
             layer: PortalLayer::OverlayModal,
+            cursor: None,
             owned_path_prefix: String::new(),
         }
+    }
+
+    /// Resolve the effective cursor preference: explicit
+    /// override if set, otherwise the layer's default.
+    pub fn effective_cursor(&self) -> CursorPreference {
+        self.cursor.unwrap_or_else(|| self.layer.default_cursor())
     }
 
     /// True if this portal is currently open and should defer
@@ -94,6 +105,7 @@ impl Widget for PortalWidget {
             open: self.open,
             focus_trap: self.focus_trap,
             layer: self.layer,
+            cursor: self.effective_cursor(),
         })
     }
 
@@ -111,9 +123,12 @@ impl Widget for PortalWidget {
         let open_changed = self.open != new_portal.open;
         let trap_changed = self.focus_trap != new_portal.focus_trap;
         let layer_changed = self.layer != new_portal.layer;
+        let cursor_changed = self.cursor != new_portal.cursor;
+        let _ = cursor_changed; // doesn't itself force a relayout
         self.open = new_portal.open;
         self.focus_trap = new_portal.focus_trap;
         self.layer = new_portal.layer;
+        self.cursor = new_portal.cursor;
         // owned_path_prefix is captured at descriptor-build time
         // and shouldn't change for the same path; copy anyway.
         self.owned_path_prefix = new_portal.owned_path_prefix.clone();

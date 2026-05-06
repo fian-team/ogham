@@ -676,6 +676,16 @@ impl SkiaEnv {
                         // a closed portal with ghosts shouldn't
                         // continue to trap.
                         focus_trap: info.open && info.focus_trap,
+                        // Cursor preference is the portal's
+                        // resolved effective_cursor (explicit
+                        // override or layer default). Closed
+                        // ghosting portals don't influence
+                        // cursor either — treat as Inherit.
+                        cursor: if info.open {
+                            info.cursor
+                        } else {
+                            crate::widget::portal_layer::CursorPreference::Inherit
+                        },
                     });
                 }
                 return;

@@ -230,6 +230,15 @@ impl Ogham {
         self.ui.has_input_blocking_portal()
     }
 
+    /// Phase 2.5 M1: returns `true` if any active Portal or
+    /// the focused widget declares `CursorPreference::Free`.
+    /// Hosts compose this with their own cursor-lock demand.
+    /// Replaces UL's manual "is anything focused / overlay
+    /// open?" plumbing in `update.rs:1561+`.
+    pub fn wants_cursor_free(&self) -> bool {
+        self.ui.wants_cursor_free()
+    }
+
     /// Get a reference to the runtime
     pub fn get_runtime(&self) -> &Arc<Mutex<runtime::Runtime>> {
         &self.runtime

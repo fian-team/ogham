@@ -155,6 +155,17 @@ impl TextInputWidget {
 }
 
 impl Widget for TextInputWidget {
+    fn cursor_preference_when_focused(
+        &self,
+    ) -> Option<crate::widget::portal_layer::CursorPreference> {
+        // Phase 2.5 M1: a focused TextInput needs a visible
+        // cursor so the user can see what they're typing.
+        // Called by `UI::wants_cursor_free` only on the
+        // focused widget, so this is unconditionally Free —
+        // the focus check is the gate.
+        Some(crate::widget::portal_layer::CursorPreference::Free)
+    }
+
     fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_text_input_widget) = new_widget.downcast_mut::<TextInputWidget>() {

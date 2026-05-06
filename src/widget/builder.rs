@@ -786,6 +786,40 @@ fn create_portal_widget(
         }
     }
 
+    // Phase 2.5 M1: cursor property. "free" / "inherit"
+    // override the layer's default cursor preference. Omitted
+    // → use layer default (OverlayModal/Popover → Free,
+    // others → Inherit).
+    if let Some(value) = descriptor.properties.get("cursor") {
+        match value {
+            Value::String(s) => {
+                use crate::widget::portal_layer::CursorPreference;
+                match s.as_str() {
+                    "free" => portal.cursor = Some(CursorPreference::Free),
+                    "inherit" => portal.cursor = Some(CursorPreference::Inherit),
+                    other => {
+                        return Err(BridgeError::InvalidPropertyType(
+                            "cursor".to_string(),
+                            format!(
+                                "Portal expects 'cursor' to be \"free\" or \"inherit\"; got {:?}",
+                                other
+                            ),
+                        ));
+                    }
+                }
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "cursor".to_string(),
+                    format!(
+                        "Portal expects 'cursor' as a string; got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+
     if let Some(value) = descriptor.properties.get("focus_trap") {
         match value {
             Value::Boolean(b) => portal.focus_trap = *b,

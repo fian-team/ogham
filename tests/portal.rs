@@ -467,5 +467,6 @@ fn entry_for(
         viewport_rect: ogham::widget::rect::Rect::zero(),
         layer,
         focus_trap: false,
+        cursor: ogham::widget::portal_layer::CursorPreference::Inherit,
     }
 }

@@ -35,6 +35,7 @@ fn entry(portal: &WidgetRef) -> PortalEntry {
         viewport_rect: ogham::widget::rect::Rect::zero(),
         layer: info.layer,
         focus_trap: info.focus_trap,
+        cursor: info.cursor,
     }
 }
 
@@ -308,6 +309,7 @@ fn entry_at(
         viewport_rect: ogham::widget::rect::Rect::zero(),
         layer,
         focus_trap: info.focus_trap,
+        cursor: info.cursor,
     }
 }
 

@@ -123,6 +123,37 @@ impl PortalLayer {
     }
 }
 
+/// Phase 2.5 M1: per-portal/per-widget cursor coordination
+/// signal. Per [`UI_RUNTIME.md`](../../../untold_lore/docs/UI_RUNTIME.md)
+/// §4: a runtime-side declaration that the cursor should be
+/// visible / free. Game-side composes this with its own
+/// cursor-lock demand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorPreference {
+    /// Cursor should be visible / unlocked. Used by modal
+    /// portals (so the user can interact with the dialog) and
+    /// focused TextInputs (so the user can see what they're
+    /// typing).
+    Free,
+    /// Don't influence cursor state — defer to other signals.
+    /// Default for tooltip / toast / cursor-attached layers.
+    Inherit,
+}
+
+impl PortalLayer {
+    /// Phase 2.5 M1: per-layer default cursor preference.
+    /// `OverlayModal` and `Popover` default to `Free` (the
+    /// user is interacting with the modal/menu); other layers
+    /// default to `Inherit` (tooltip / toast don't influence
+    /// cursor state).
+    pub fn default_cursor(self) -> CursorPreference {
+        match self {
+            Self::OverlayModal | Self::Popover => CursorPreference::Free,
+            _ => CursorPreference::Inherit,
+        }
+    }
+}
+
 /// Backdrop / pointer-event policy for a portal layer. Applied
 /// at layer boundaries during Pass B paint and hit-test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

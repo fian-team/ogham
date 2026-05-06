@@ -96,6 +96,10 @@ pub struct PortalEntry {
     /// priority and backdrop policy.
     pub layer: portal_layer::PortalLayer,
     pub focus_trap: bool,
+    /// Phase 2.5 M1: cursor preference declared by the
+    /// portal. Free → contributes to `wants_cursor_free`.
+    /// Inherit → no influence.
+    pub cursor: portal_layer::CursorPreference,
 }
 
 /// Phase 2 Portal (extended in P25-M0): returned by
@@ -111,6 +115,10 @@ pub struct PortalInfo {
     /// `OverlayModal` for Portals that don't specify a layer
     /// (matches Phase 2's single-layer behavior).
     pub layer: portal_layer::PortalLayer,
+    /// Phase 2.5 M1: cursor preference. Defaults to the
+    /// layer's `default_cursor()` if the Portal doesn't
+    /// specify; can be overridden via the `cursor` property.
+    pub cursor: portal_layer::CursorPreference,
 }
 
 /// Phase 2.5 M0: per-frame storage for portal entries, keyed
@@ -611,6 +619,32 @@ impl UI {
         self.focused.as_ref()
     }
 
+    /// Phase 2.5 M1: returns `true` if any active portal or
+    /// the focused widget declares `CursorPreference::Free`.
+    /// Hosts compose this with their own cursor-lock demand
+    /// (camera mode, world interaction, etc.). UL audit
+    /// example: `cursor_lock = !runtime.wants_cursor_free()
+    /// && game_wants_lock`.
+    pub fn wants_cursor_free(&self) -> bool {
+        // Any portal entry declaring Free contributes.
+        let portal_says_free = self.portal_layers.any(|e| {
+            e.cursor == portal_layer::CursorPreference::Free
+        });
+        if portal_says_free {
+            return true;
+        }
+        // Focused widget can also declare Free (TextInput).
+        if let Some(focused) = self.focused.as_ref() {
+            let g = focused.lock().expect("widget lock poisoned");
+            if let Some(pref) = g.cursor_preference_when_focused() {
+                if pref == portal_layer::CursorPreference::Free {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Phase 2 M4 (refined in P25-M0): returns `true` if any
     /// portal in the OverlayModal layer has `focus_trap: true`.
     /// Hosts use this to derive their own input-gating
@@ -1064,6 +1098,20 @@ pub trait Widget: Downcast {
     /// branch — Portal widgets paint nothing in the main pass and
     /// their children render in Pass B against the viewport.
     fn as_portal(&self) -> Option<PortalInfo> { None }
+
+    /// Phase 2.5 M1: cursor preference for this widget when
+    /// focused. Default `None` (no influence). TextInputWidget
+    /// returns `Some(Free)` when the user has focused it so
+    /// the runtime can declare cursor-free.
+    ///
+    /// Called by `wants_cursor_free()` on the focused widget
+    /// only — non-focused widgets' cursor preferences are
+    /// ignored.
+    fn cursor_preference_when_focused(
+        &self,
+    ) -> Option<portal_layer::CursorPreference> {
+        None
+    }
 
     /// Phase 2 lifecycle: the call-stack path at which this widget
     /// was constructed. Used to identify which paths a draining
