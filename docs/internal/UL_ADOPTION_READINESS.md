@@ -16,23 +16,26 @@
 
 ## TL;DR
 
-**Phase 2.5 shipped 2026-05-05** — closed most of the §2 API
-gap. Layer system, cursor coordination signal, key
-suppression contract, hot-reload reset all in. Still
-remaining for UL adoption:
+**Phase 2.5 + Phase 3 + docs-pass all shipped 2026-05-05** —
+closed the entire §2 API gap. Layer system, cursor coordination
+signal, key suppression contract, hot-reload reset, drag
+events (start/move/end + accepts_drop + drag_preview),
+contextmenu, drain-time unmount semantics — all in. `AGENTS.md`
+revised to fold in Phase 1 (typed bindings), Phase 2 (lifecycle
+hooks + Portal), Phase 2.5 (layers + cursor + key signals), and
+Phase 3 (drag + drain-time). `SKILL.md` gotchas refreshed.
+LIFECYCLE_AND_PORTAL.md still describes the Phase 2 single-layer
+Portal but its banner redirects to the per-phase implementation
+docs for current truth. Still remaining for UL adoption:
 
-- **Phase 3 (drag events)** — `drag_start`/`drag_move`/
-  `drag_end`, `accepts_drop`, `drag_preview`, `contextmenu`.
-  Per resolved sequencing, ships before UL adoption begins.
-- **Docs + Ogham-skill revision pass** — `AGENTS.md` and
-  `untold_lore/.claude/skills/ogham/SKILL.md` predate
-  Phase 2 and don't mention any of its primitives. Substantive
-  refresh needed.
 - **UL Pass 2 — adoption** — 12 person-days of per-UI work
-  per the audit's verdicts.
+  per the audit's verdicts. Includes the lorekeeper-side
+  input-pump rewire to call `Ogham::dispatch_drag_*` /
+  `dispatch_contextmenu` and the cursor / key-signal
+  coordination calls.
 
-Resolved sequencing: **Phase 2.5 (✓ shipped) → Phase 3 (drag
-events) → docs + Ogham-skill revision pass → UL Pass 2.**
+Resolved sequencing: **Phase 2.5 + Phase 3 + docs-pass
+(✓ shipped) → UL Pass 2.**
 
 ---
 
@@ -42,11 +45,13 @@ events) → docs + Ogham-skill revision pass → UL Pass 2.**
 |---|---|
 | UL build against current ogham `main` | ✓ Clean (verified 2026-05-05) |
 | Phase 2 ogham primitives | ✓ Shipped (M0–M5 + audit) |
-| Phase 2.5 ogham primitives | ✓ Shipped 2026-05-05 (M0–M5; drain-time + timer deferred per scope) |
-| UL `UI_RUNTIME.md` minimum API surface | ⚠ Drag events still missing (Phase 3) |
-| UL `OverlayStack` migration ready | ✓ Gated on Phase 3 + docs revision now (was: portal layers + focus management) |
+| Phase 2.5 ogham primitives | ✓ Shipped 2026-05-05 (M0–M5; timer deferred per scope) |
+| Phase 3 ogham primitives | ✓ Shipped 2026-05-05 (M0–M4; drag events + drain-time unmount) |
+| UL `UI_RUNTIME.md` minimum API surface | ✓ Complete |
+| UL `OverlayStack` migration ready | ✓ Gated only on docs revision now |
 | UL Settings save-on-close ready | ⚠ Still gated on UL-side instance-swap restructuring (see §4) |
 | UL inventory tooltip ready | ✓ Real `tooltip` layer exists; awaits docs revision |
+| UL inventory drag-drop ready | ✓ Phase 3 drag events shipped; awaits docs revision + UL-side wiring |
 
 ---
 
@@ -163,7 +168,7 @@ Conceptually a follow-up to M3.
 **Estimated effort**: ~400 LOC + ~10 tests. Crosses the
 ogham/lorekeeper boundary (input-pump side is in lorekeeper).
 
-### 2.3 Drag events (gap: total)
+### 2.3 Drag events ✓ CLOSED (Phase 3 shipped 2026-05-05)
 
 **UL wants** (`UI_RUNTIME.md` §3):
 - `drag_start(payload)` on originator after dead-zone (4px
@@ -176,25 +181,32 @@ ogham/lorekeeper boundary (input-pump side is in lorekeeper).
   `cursor-attached` layer).
 - `contextmenu(position)` event distinct from `click`.
 
-**Phase 2 ships**: nothing.
+**Phase 3 ships** (see `PHASE_3_IMPLEMENTATION.md`
+"What shipped"):
+- `drag_start` / `drag_move` / `drag_end` event listeners on
+  any widget; payload threaded through `Event.payload`.
+- `accepts_drop: fn (payload: bool): bool` widget property
+  → drop-target hit-test walks portal layers (high→low) then
+  base tree, picks the deepest accepting widget.
+- `drag_preview: <widget>` property → UI tracks
+  `active_drag_preview`; Skia renderer pushes a synthetic
+  `CursorAttached` PortalEntry at the cursor each frame.
+- `contextmenu` listener fires via
+  `UI::dispatch_contextmenu(point)` on the deepest widget.
+- Per-widget `drag_payload` and `drag_dead_zone` properties
+  for source declaration and threshold override.
+- Public API on both `UI` and `Ogham`:
+  `dispatch_drag_start/move/end`, `dispatch_contextmenu`,
+  `hit_test_drop_target`. Hosts (lorekeeper input pump) call
+  these from their dead-zone state machine.
 
-**Today's substrate (per `UI_RUNTIME.md`)**: dead-zone state
-machine already lives in `ogham/src/client/input.rs:25–198`.
-What's missing is the event-emission layer.
-
-**Work needed**:
-- [ ] `drag_start` / `drag_move` / `drag_end` event types in
-      the widget event system.
-- [ ] Drop-target hit-testing (which widget under cursor at
-      release accepts the payload).
-- [ ] `accepts_drop` widget attribute / predicate.
-- [ ] `drag_preview` widget attribute → renders into
-      `cursor-attached` layer (gates on §2.1 layer system).
-- [ ] `contextmenu` event distinct from `click`.
-
-**Estimated effort**: ~700 LOC + ~15 tests. Largest
-single-feature item. Gates the inventory drag-drop migration
-(`ITEMS_UX.md`).
+**What still needs UL-side work** (Pass 2):
+- Lorekeeper input pump translates the existing dead-zone
+  state machine in `ogham/src/client/input.rs` into the new
+  `dispatch_drag_*` calls. ETA ~half a day; mechanical.
+- UL inventory's drag-drop migration to `accepts_drop` +
+  `drag_payload` + `drag_preview`. ETA ~1-2 days
+  (per-widget refactor, not architectural).
 
 ### 2.4 Cursor coordination signal (gap: small but sequenced)
 

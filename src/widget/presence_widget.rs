@@ -65,32 +65,49 @@ impl PresenceWidget {
     /// Attempt to exit every current child. Children that can't exit
     /// (no exit_style, no exit-capable descendants) are dropped
     /// immediately; the rest stay in `inner.children` as ghosts.
-    fn begin_exit_on_current(&mut self) {
+    /// Returns the `owned_path_prefix` of every dropped child so the
+    /// caller can push them into the `UpdateResult.drained_path_prefixes`
+    /// for drain-time hook flushing.
+    fn begin_exit_on_current(&mut self) -> Vec<String> {
         let children = std::mem::take(&mut self.inner.children);
         let mut kept = Vec::with_capacity(children.len());
+        let mut drained = Vec::new();
         for child in children {
-            let can_ghost = {
+            let (can_ghost, prefix) = {
                 let mut g = child.lock().expect("widget lock poisoned");
-                g.begin_exit()
+                let p = g.owned_path_prefix().to_string();
+                (g.begin_exit(), p)
             };
             if can_ghost {
                 kept.push(child);
+            } else if !prefix.is_empty() {
+                drained.push(prefix);
             }
         }
         self.inner.children = kept;
+        drained
     }
 
     /// Called when the key reverts to the current generation mid-exit.
     /// Cancels the pending mount and unwinds all in-flight exits on
     /// current children so they transition back to their normal state.
-    fn cancel_pending(&mut self) {
+    /// Returns the `owned_path_prefix` of every cancelled exit so the
+    /// caller can push them into the
+    /// `UpdateResult.cancelled_unmount_prefixes`.
+    fn cancel_pending(&mut self) -> Vec<String> {
         self.pending_children = None;
         self.pending_key = None;
         let children = self.inner.children.clone();
+        let mut cancelled = Vec::new();
         for child in &children {
             let mut g = child.lock().expect("widget lock poisoned");
+            let prefix = g.owned_path_prefix().to_string();
             g.cancel_exit();
+            if !prefix.is_empty() {
+                cancelled.push(prefix);
+            }
         }
+        cancelled
     }
 
     /// Swap in the pending children. Called from `tick_animations`
@@ -114,7 +131,7 @@ impl Widget for PresenceWidget {
         let mut new_widget_guard = new_widget.lock().expect("widget lock poisoned");
         let new_presence = match new_widget_guard.downcast_mut::<PresenceWidget>() {
             Some(p) => p,
-            None => return UpdateResult::REPLACE,
+            None => return UpdateResult::replace(),
         };
 
         let new_key = new_presence.generation_key.clone();
@@ -123,21 +140,29 @@ impl Widget for PresenceWidget {
             // Same generation — just reconcile children normally. If a
             // transition was in flight (author reverted the key mid-
             // exit), cancel it and unwind the exits.
-            if self.pending_children.is_some() {
-                self.cancel_pending();
-            }
+            let mut cancelled = if self.pending_children.is_some() {
+                self.cancel_pending()
+            } else {
+                Vec::new()
+            };
             let mut new_children = std::mem::take(&mut new_presence.inner.children);
-            self.inner.reconcile_children(&mut new_children);
-            return UpdateResult::LAYOUT_CHANGED;
+            let inner_result = self.inner.reconcile_children(&mut new_children);
+            let mut result = UpdateResult::layout_changed();
+            cancelled.extend(inner_result.cancelled_unmount_prefixes);
+            result.cancelled_unmount_prefixes = cancelled;
+            result.drained_path_prefixes = inner_result.drained_path_prefixes;
+            return result;
         }
 
         // Generation changed. If no transition is in flight yet, start
         // one by exiting current children. If a transition is already in
         // flight (rapid key changes), the current exits continue — we
         // just replace the pending content with the latest.
-        if self.pending_children.is_none() {
-            self.begin_exit_on_current();
-        }
+        let drained = if self.pending_children.is_none() {
+            self.begin_exit_on_current()
+        } else {
+            Vec::new()
+        };
         let new_children = std::mem::take(&mut new_presence.inner.children);
         self.pending_children = Some(new_children);
         self.pending_key = new_key;
@@ -148,11 +173,13 @@ impl Widget for PresenceWidget {
             self.commit_pending();
         }
 
-        UpdateResult::LAYOUT_CHANGED
+        let mut result = UpdateResult::layout_changed();
+        result.drained_path_prefixes = drained;
+        result
     }
 
-    fn tick_animations(&mut self, dt: f32) -> TickResult {
-        let mut result = self.inner.tick_animations(dt);
+    fn tick_animations(&mut self, ctx: &mut crate::widget::event::TickContext) -> TickResult {
+        let mut result = self.inner.tick_animations(ctx);
 
         // inner.tick_animations drains exit-complete children. Once the
         // current generation is empty, we can mount pending.
@@ -386,6 +413,72 @@ mod tests {
     }
 
     #[test]
+    fn key_change_pushes_drained_prefix_for_no_exit_child() {
+        // Phase 3 M3 propagation: when a Presence's key changes
+        // and the outgoing child can't ghost (no exit_style), the
+        // child is dropped immediately. Its owned_path_prefix
+        // must be pushed to UpdateResult.drained_path_prefixes
+        // so the runtime can flush its lifecycle hooks.
+        let mut live = PresenceWidget::new();
+        live.generation_key = Some("a".to_string());
+        let owned: WidgetRef = {
+            let mut w = FlexWidget::new();
+            w.owned_path_prefix = "panel".to_string();
+            Arc::new(Mutex::new(w))
+        };
+        live.inner.children = vec![owned];
+
+        let new = presence_ref("b".into(), vec![no_exit_child()]);
+        let result = live.update(new);
+        assert!(
+            result.drained_path_prefixes.iter().any(|p| p == "panel"),
+            "no-exit child's owned_path_prefix should be in drained_path_prefixes; got {:?}",
+            result.drained_path_prefixes
+        );
+    }
+
+    #[test]
+    fn cancel_pending_pushes_cancelled_prefix() {
+        // Phase 3 M3 propagation: when the key reverts mid-exit,
+        // each child whose exit gets cancelled must push its
+        // owned_path_prefix to cancelled_unmount_prefixes so the
+        // runtime clears any candidate_unmount staged earlier.
+        let mut live = PresenceWidget::new();
+        live.generation_key = Some("a".to_string());
+        let exit_child: WidgetRef = {
+            let mut w = FlexWidget::new();
+            let mut style = FlexStyle::default();
+            style.background_color = Some(Color::new(255, 255, 255, 255));
+            style.transitions.background_color = Some(TransitionConfig::DEFAULT);
+            style.transitions.opacity = Some(TransitionConfig::DEFAULT);
+            let mut exit = style.clone();
+            exit.opacity = crate::widget::style::Opacity(0.0);
+            w.declared_style = style.clone();
+            w.style = style;
+            w.exit_style = Some(exit);
+            w.owned_path_prefix = "panel".to_string();
+            Arc::new(Mutex::new(w))
+        };
+        live.inner.children = vec![exit_child];
+
+        // Step 1: key change → exit begins, pending staged.
+        let new_b = presence_ref("b".into(), vec![exit_capable_child()]);
+        live.update(new_b);
+        assert!(live.pending_children.is_some());
+
+        // Step 2: revert to "a" → cancel_pending unwinds the
+        // exit. The cancelled prefix should appear in the
+        // returned UpdateResult.
+        let revert = presence_ref("a".into(), vec![exit_capable_child()]);
+        let result = live.update(revert);
+        assert!(
+            result.cancelled_unmount_prefixes.iter().any(|p| p == "panel"),
+            "cancelled exit's prefix should be reported; got {:?}",
+            result.cancelled_unmount_prefixes
+        );
+    }
+
+    #[test]
     fn key_change_without_exit_capability_swaps_immediately() {
         let mut live = PresenceWidget::new();
         live.generation_key = Some("a".to_string());
@@ -417,7 +510,7 @@ mod tests {
         // Tick until the exit spring settles and the ghost drains.
         let mut committed = false;
         for _ in 0..240 {
-            live.tick_animations(1.0 / 60.0);
+            { let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0); live.tick_animations(&mut ctx); }
             if live.pending_children.is_none() {
                 committed = true;
                 break;
@@ -448,7 +541,7 @@ mod tests {
         assert_eq!(live.inner.children.len(), 1);
 
         for _ in 0..240 {
-            live.tick_animations(1.0 / 60.0);
+            { let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0); live.tick_animations(&mut ctx); }
             if live.pending_children.is_none() {
                 break;
             }
@@ -481,7 +574,7 @@ mod tests {
 
         // Tick a bit so the exit has some progress (interrupt mid-flight).
         for _ in 0..5 {
-            live.tick_animations(1.0 / 60.0);
+            { let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0); live.tick_animations(&mut ctx); }
         }
 
         // b -> a: revert. Pending dropped; exit on current unwound.

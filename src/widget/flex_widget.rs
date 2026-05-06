@@ -75,6 +75,31 @@ pub struct FlexWidget {
     /// Used by the drain machinery to flush matching lifecycle
     /// hooks. See [`Widget::owned_path_prefix`].
     pub owned_path_prefix: String,
+
+    /// Phase 3 M1: optional drag payload declared on this
+    /// widget. When `Some(_)`, this widget can originate a
+    /// drag; the input pump uses the value as the
+    /// [`event::DragState::payload`] when `drag_start` fires.
+    /// `None` means the widget is not a drag source.
+    pub drag_payload: Option<crate::runtime::value::Value>,
+
+    /// Phase 3 M1: per-widget dead-zone override (in logical
+    /// pixels). `None` defers to the host default (4px).
+    pub drag_dead_zone: Option<f32>,
+
+    /// Phase 3 M1: optional `accepts_drop(payload) -> bool`
+    /// predicate. When set, this widget can be a drop target;
+    /// the drop-target hit-test consults the predicate with
+    /// the in-flight drag's payload. `None` means the widget
+    /// is not a drop target (default).
+    pub accepts_drop_predicate:
+        Option<Box<dyn Fn(&crate::runtime::value::Value) -> bool>>,
+
+    /// Phase 3 M2: optional drag preview widget. When this
+    /// FlexWidget is the source of an in-flight drag, the
+    /// preview subtree renders attached to the cursor in the
+    /// `CursorAttached` portal layer.
+    pub drag_preview: Option<WidgetRef>,
 }
 
 impl FlexWidget {
@@ -100,6 +125,10 @@ impl FlexWidget {
             #[cfg(debug_assertions)]
             layout_anim_frames: 0,
             owned_path_prefix: String::new(),
+            drag_payload: None,
+            drag_dead_zone: None,
+            accepts_drop_predicate: None,
+            drag_preview: None,
         }
     }
 
@@ -125,6 +154,10 @@ impl FlexWidget {
             #[cfg(debug_assertions)]
             layout_anim_frames: 0,
             owned_path_prefix: String::new(),
+            drag_payload: None,
+            drag_dead_zone: None,
+            accepts_drop_predicate: None,
+            drag_preview: None,
         }
     }
 
@@ -286,9 +319,13 @@ impl FlexWidget {
             absorbed: true,
             needs_layout: false,
             needs_repaint: false,
+            cancelled_unmount_prefixes: Vec::new(),
+            drained_path_prefixes: Vec::new(),
         };
         // Pre-pass: if a new child's key matches a currently-exiting
         // ghost, cancel the exit so the ghost re-enters normal matching.
+        // Capture each cancelled child's owned_path_prefix so the UI can
+        // remove the prefix from any pending unmount queue.
         let new_key_set: std::collections::HashSet<String> = new_children
             .iter()
             .filter_map(|c| {
@@ -303,7 +340,11 @@ impl FlexWidget {
             };
             if should_cancel {
                 let mut g = child.lock().expect("widget lock poisoned");
+                let prefix = g.owned_path_prefix().to_string();
                 g.cancel_exit();
+                if !prefix.is_empty() {
+                    agg.cancelled_unmount_prefixes.push(prefix);
+                }
             }
         }
 
@@ -364,7 +405,7 @@ impl FlexWidget {
                 if same_ref {
                     next.push(self.children[idx].clone());
                 } else {
-                    let updated_in_place = {
+                    let mut updated_in_place = {
                         let mut child = self.children[idx]
                             .lock()
                             .expect("widget lock poisoned");
@@ -372,6 +413,8 @@ impl FlexWidget {
                     };
                     agg.needs_layout |= updated_in_place.needs_layout;
                     agg.needs_repaint |= updated_in_place.needs_repaint;
+                    agg.cancelled_unmount_prefixes
+                        .append(&mut updated_in_place.cancelled_unmount_prefixes);
                     if updated_in_place.absorbed {
                         next.push(self.children[idx].clone());
                     } else {
@@ -382,14 +425,21 @@ impl FlexWidget {
                         // just got swapped would vanish instantly.
                         agg.needs_layout = true;
                         agg.needs_repaint = true;
-                        let can_ghost = {
+                        let (can_ghost, prefix) = {
                             let mut g = self.children[idx]
                                 .lock()
                                 .expect("widget lock poisoned");
-                            g.begin_exit()
+                            let p = g.owned_path_prefix().to_string();
+                            (g.begin_exit(), p)
                         };
                         if can_ghost {
                             next.push(self.children[idx].clone());
+                        } else if !prefix.is_empty() {
+                            // Dropped immediately (no exit). Push the
+                            // prefix so the runtime can flush its
+                            // unmount hooks at the next render
+                            // boundary — drain-time semantics.
+                            agg.drained_path_prefixes.push(prefix);
                         }
                         next.push(new_child.clone());
                     }
@@ -414,17 +464,24 @@ impl FlexWidget {
             if consumed_old[old_idx] {
                 continue;
             }
-            let (is_exiting, begin_ok) = {
+            let (is_exiting, begin_ok, prefix) = {
                 let mut g = old_child.lock().expect("widget lock poisoned");
                 let already = g.is_exiting();
+                let p = g.owned_path_prefix().to_string();
                 let started = if already { true } else { g.begin_exit() };
-                (already, started)
+                (already, started, p)
             };
             if !begin_ok {
                 // No exit capability and not already exiting — drop.
                 // Dropping a child shifts siblings, so layout needs to re-flow.
                 agg.needs_layout = true;
                 agg.needs_repaint = true;
+                if !prefix.is_empty() {
+                    // Push the prefix so the runtime can flush
+                    // its unmount hooks immediately — there's no
+                    // exit animation to wait for.
+                    agg.drained_path_prefixes.push(prefix);
+                }
                 continue;
             }
             let _ = is_exiting;
@@ -438,11 +495,22 @@ impl FlexWidget {
 
     /// Drop any children whose exit animation has fully settled. Called
     /// after per-frame ticks so ghosts clean up without needing a
-    /// reconcile pass from above.
-    fn drain_exited_children(&mut self) {
+    /// reconcile pass from above. Pushes each drained child's
+    /// `owned_path_prefix` (when non-empty) into the tick context so
+    /// the UI can flush owned hooks/state for that subtree at the
+    /// next render boundary.
+    fn drain_exited_children(&mut self, ctx: &mut crate::widget::event::TickContext) {
         self.children.retain(|child| {
             let g = child.lock().expect("widget lock poisoned");
-            !g.is_exit_complete()
+            if g.is_exit_complete() {
+                let prefix = g.owned_path_prefix().to_string();
+                if !prefix.is_empty() {
+                    ctx.drained_path_prefixes.push(prefix);
+                }
+                false
+            } else {
+                true
+            }
         });
     }
 
@@ -466,6 +534,36 @@ impl FlexWidget {
 impl Widget for FlexWidget {
     fn owned_path_prefix(&self) -> &str {
         &self.owned_path_prefix
+    }
+
+    fn drag_payload(&self) -> Option<&crate::runtime::value::Value> {
+        self.drag_payload.as_ref()
+    }
+
+    fn drag_dead_zone(&self) -> Option<f32> {
+        self.drag_dead_zone
+    }
+
+    fn accepts_drop(&self, payload: &crate::runtime::value::Value) -> bool {
+        self.accepts_drop_predicate
+            .as_ref()
+            .map(|p| p(payload))
+            .unwrap_or(false)
+    }
+
+    fn fire_event_listener(&self, event: &Event) -> bool {
+        if let Some(listeners) = self.event_listeners.get(&event.name) {
+            for listener in listeners {
+                listener(event);
+            }
+            !listeners.is_empty()
+        } else {
+            false
+        }
+    }
+
+    fn drag_preview(&self) -> Option<WidgetRef> {
+        self.drag_preview.clone()
     }
 
     fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
@@ -503,6 +601,22 @@ impl Widget for FlexWidget {
                 &mut self.event_listeners,
                 &mut new_flex_widget.event_listeners,
             );
+            // Phase 3 M1: drag fields. drag_payload + dead_zone
+            // are plain Values; the predicate is a Box<dyn Fn>
+            // that we swap rather than clone.
+            self.drag_payload = new_flex_widget.drag_payload.clone();
+            self.drag_dead_zone = new_flex_widget.drag_dead_zone;
+            std::mem::swap(
+                &mut self.accepts_drop_predicate,
+                &mut new_flex_widget.accepts_drop_predicate,
+            );
+            // Phase 3 M2: drag preview. Swap rather than clone
+            // so the preview's own subtree state (animations,
+            // reconciled children) carries forward.
+            std::mem::swap(
+                &mut self.drag_preview,
+                &mut new_flex_widget.drag_preview,
+            );
 
             let new_target = self.target_style().clone();
 
@@ -526,9 +640,11 @@ impl Widget for FlexWidget {
                 absorbed: true,
                 needs_layout: own_layout_changed || children_result.needs_layout,
                 needs_repaint: own_layout_changed || children_result.needs_repaint,
+                cancelled_unmount_prefixes: children_result.cancelled_unmount_prefixes,
+                drained_path_prefixes: children_result.drained_path_prefixes,
             }
         } else {
-            UpdateResult::REPLACE
+            UpdateResult::replace()
         }
     }
 
@@ -1412,22 +1528,25 @@ impl Widget for FlexWidget {
         })
     }
 
-    fn tick_animations(&mut self, dt: f32) -> TickResult {
+    fn tick_animations(&mut self, ctx: &mut crate::widget::event::TickContext) -> TickResult {
+        let dt = ctx.dt;
         let mut result = self.tick_own_animations(dt);
         result = result.merge(self.tick_smooth_scroll(dt));
         let children = self.children.clone();
         for child in &children {
             let child_result = {
                 let mut guard = child.lock().expect("widget lock poisoned");
-                guard.tick_animations(dt)
+                guard.tick_animations(ctx)
             };
             result = result.merge(child_result);
         }
         // A ghost whose exit animation settled this frame is now safe
         // to drop. Removing it triggers one more layout pass so its
-        // former slot collapses.
+        // former slot collapses. The drain pushes the dropped child's
+        // owned_path_prefix into `ctx.drained_path_prefixes` so the UI
+        // can flush owned hooks at the next render boundary.
         let before = self.children.len();
-        self.drain_exited_children();
+        self.drain_exited_children(ctx);
         if self.children.len() != before {
             result.needs_layout = true;
             result.needs_repaint = true;
@@ -1723,7 +1842,7 @@ mod tests {
         }
 
         fn update(&mut self, _new_widget: WidgetRef) -> UpdateResult {
-            UpdateResult::REPLACE
+            UpdateResult::replace()
         }
 
         fn contains_point(&self, _point: &Point) -> bool {
@@ -2683,13 +2802,90 @@ mod tests {
 
         // Tick with enough total time for the spring to settle.
         for _ in 0..120 {
-            parent.tick_animations(1.0 / 60.0);
+            let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0);
+            parent.tick_animations(&mut ctx);
         }
 
         assert_eq!(
             parent.children.len(),
             0,
             "settled ghost should have been drained"
+        );
+    }
+
+    #[test]
+    fn drain_records_owned_path_prefix_in_tick_context() {
+        // Phase 3 M0 wiring: when a ghost child with an
+        // owned_path_prefix drains during tick_animations, the
+        // prefix is pushed into the TickContext for the runtime
+        // to flush owned hooks at the next render boundary.
+        let a = {
+            let mut w = FlexWidget::new();
+            w.key = Some("a".to_string());
+            w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+            w.style = w.declared_style.clone();
+            w.owned_path_prefix = "fn@7".to_string();
+            Arc::new(Mutex::new(w))
+        };
+        let mut parent = wrap_parent(vec![a]);
+
+        let mut empty: Vec<WidgetRef> = vec![];
+        parent.reconcile_children(&mut empty);
+
+        let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0);
+        for _ in 0..120 {
+            parent.tick_animations(&mut ctx);
+        }
+
+        assert_eq!(parent.children.len(), 0);
+        assert!(
+            ctx.drained_path_prefixes.iter().any(|p| p == "fn@7"),
+            "drained owned_path_prefix should be recorded; got {:?}",
+            ctx.drained_path_prefixes
+        );
+    }
+
+    #[test]
+    fn cancel_exit_records_owned_path_prefix_in_update_result() {
+        // Phase 3 M0 wiring: when reconcile_children cancels an
+        // in-flight exit (re-mount during exit animation), the
+        // child's owned_path_prefix is pushed into the
+        // UpdateResult for the runtime to drop matching pending
+        // unmount entries.
+        let a = {
+            let mut w = FlexWidget::new();
+            w.key = Some("a".to_string());
+            w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+            w.style = w.declared_style.clone();
+            w.owned_path_prefix = "fn@9".to_string();
+            Arc::new(Mutex::new(w))
+        };
+        let mut parent = wrap_parent(vec![a]);
+
+        // Start an exit.
+        let mut empty: Vec<WidgetRef> = vec![];
+        parent.reconcile_children(&mut empty);
+        assert_eq!(parent.children.len(), 1);
+
+        // Re-insert the same key while the exit is in flight.
+        let reinserted: WidgetRef = {
+            let mut w = FlexWidget::new();
+            w.key = Some("a".to_string());
+            w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+            w.style = w.declared_style.clone();
+            w.owned_path_prefix = "fn@9".to_string();
+            Arc::new(Mutex::new(w))
+        };
+        let mut new_children: Vec<WidgetRef> = vec![reinserted];
+        let result = parent.reconcile_children(&mut new_children);
+
+        assert!(
+            result.cancelled_unmount_prefixes.iter().any(|p| p == "fn@9"),
+            "cancelled exit should report the owned_path_prefix; got {:?}",
+            result.cancelled_unmount_prefixes
         );
     }
 

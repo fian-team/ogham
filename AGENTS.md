@@ -53,11 +53,18 @@ Source (.ogh)
 | `src/widget/grid_widget.rs` | Grid container widget |
 | `src/widget/image_widget.rs` | Image widget |
 | `src/widget/presence_widget.rs` | Lifecycle-sequencing container (waits for exits before mounting next generation) |
+| `src/widget/portal_widget.rs` | Portal — paints children into a per-frame layer with hit-test priority |
+| `src/widget/portal_layer.rs` | Named portal layers + per-layer backdrop / cursor policies |
 | `src/widget/animation.rs` | Spring math + per-property animation state used by transitions |
-| `src/widget/event.rs` | Event types (`Event`, `EventContext`) |
+| `src/widget/event.rs` | Event types (`Event`, `EventContext`, `TickContext`, `DragState`) |
 | `src/skia.rs` | Skia rendering backend (implements `Surface`) |
+| `src/typed.rs` | `TypedOgham` handle for `#[derive(OghamState)]` / `#[derive(OghamMsg)]` integration |
+| `src/diagnostics/` | Schema-diagnostic engine used by `ogham check` and the LSP |
+| `src/cli/` | `ogham` CLI binary (`check`, `render`) |
+| `src/lsp/` | `ogham-lsp` language server binary |
 | `src/client/` | Standalone browser binary |
 | `src/file_watcher.rs` | File watching for hot-reload |
+| `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
 
 ## LSP Server
 
@@ -121,9 +128,12 @@ The `Value` enum (`src/runtime/value.rs`) represents all dynamic types:
 | `Array(Vec<Value>)` | `Vec` | Ordered collections |
 | `BytecodeClosure(Rc<VMClosure>)` | | Compiled closure |
 | `Widget(WidgetDescriptor)` | | A widget produced during execution |
+| `WidgetRef(u64)` | `u64` | Opaque widget identity handle (Phase 2.5+) |
+| `Mutation(Rc<RefCell<MutationState>>)` | | Reactive `state` cell handle |
+| `BoundTrigger(Rc<RefCell<MutationState>>)` | | Reactive trigger bound from Rust via `TypedOgham` |
 | `Void` | | Unit / no value |
 
-When injecting state from Rust, build values using these constructors directly, e.g. `Value::String("hello".to_string())`, `Value::Integer(42)`, `Value::Array(vec![...])`, `Value::Map(map)`.
+When injecting state from Rust, build values using these constructors directly, e.g. `Value::String("hello".to_string())`, `Value::Integer(42)`, `Value::Array(vec![...])`, `Value::Map(map)`. For typed host state, prefer `#[derive(OghamState)]` + `TypedOgham` (see *Typed bindings* below) — it generates the conversion plus a compile-time schema the `ogham check` CLI and LSP can validate `.ogh` files against.
 
 ## Ogham Language Quick Reference
 
@@ -150,7 +160,7 @@ let add = fn (a: int, b: int): int {
 
 ### Widgets
 
-Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`) wrap or specialize it.
+Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`, `Portal`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`, `Portal`) wrap or specialize it.
 
 ```ogh
 Flex {
@@ -192,11 +202,72 @@ Flex {
 `mouse_move` dispatch — every widget in the path from root to the
 deepest hit fires `mouse_enter` when first entered and `mouse_leave`
 when no longer hovered. `mouse_up` fires on the same hit-test path
-as `mouse_down`, which makes drag-drop expressible: `mouse_down` on
-the source starts the drag, `mouse_enter` / `mouse_leave` on
-candidates highlight valid drop targets, `mouse_up` on the target
-completes the drop. `TextInput` exposes `mouse_down` and `mouse_up`;
+as `mouse_down`. `TextInput` exposes `mouse_down` and `mouse_up`;
 `Image` exposes `mouse_down`.
+
+#### Drag events (Phase 3)
+
+For real drag-and-drop, prefer the dedicated drag listeners over
+hand-rolling on `mouse_down` / `mouse_enter` / `mouse_leave`. They
+share a payload through `EventContext` and let any widget declare
+itself a drop target via an `accepts_drop` predicate.
+
+```ogh
+Flex {
+  drag_payload: { kind: "item", id: 7 },     // marks this widget a drag source
+  drag_dead_zone: 6,                          // optional; defaults to 4px
+  drag_preview: Flex {                        // optional; renders attached to cursor
+    style: { width: 64, height: 64, background_color: cursor_swatch },
+  },
+  drag_start: fn (payload) { log "started"; },
+  drag_move:  fn (payload) {  /* fires on widget under cursor */ },
+  drag_end:   fn (payload) {  /* fires on drop target or originator */ },
+}
+
+Flex {
+  accepts_drop: fn (payload: bool): bool { payload },
+  drag_end:     fn (payload) { /* drop happened here */ },
+}
+```
+
+The host Rust pump (which owns the dead-zone state machine) drives
+dispatch through the runtime API:
+
+```rust
+let mut state = ogham.dispatch_drag_start(origin_widget_ref, payload, point);
+ogham.dispatch_drag_move(&mut state, point);   // each subsequent mouse_move
+ogham.dispatch_drag_end(&mut state, point);    // on mouse_up; clears the preview
+```
+
+`dispatch_drag_end` walks open portal layers high-priority-to-low
+then the base tree, picking the deepest widget whose
+`accepts_drop(payload)` returns `true`. If none accept, `drag_end`
+fires on the originator (cancel-style behavior). The drag preview
+widget renders into the `CursorAttached` portal layer at the
+cursor; give it explicit `width` / `height` for a sensible result.
+
+#### `contextmenu` event
+
+`contextmenu` is dispatched by the host on right-click via
+`Ogham::dispatch_contextmenu(point)`. It fires on the deepest
+widget at the cursor (no automatic bubble — wrap if needed).
+Use it instead of overloading `mouse_down` so you can route left
+and right clicks differently.
+
+```ogh
+Flex {
+  mouse_down:  fn () { event("select", item_id); },
+  contextmenu: fn () { event("show_menu", item_id); },
+}
+```
+
+#### Scroll and keyboard events
+
+Scrolling on a `Flex` whose `style.overflow == "scroll"` is
+handled by the widget itself (no listener needed). Keyboard
+events flow to the focused widget (`TextInput` is the canonical
+focus target — see *Cursor and key signals* in the integration
+guide).
 
 ### Animations and lifecycle
 
@@ -252,6 +323,151 @@ Use `Presence` for route boundaries; nest one per "slot" that should sequence in
 #### Opacity and transform style properties
 
 `opacity` (number 0..1, default 1) and `transform` (`{ translate_x, translate_y, scale, scale_x, scale_y, rotate }`, default identity) are paint-only — they don't affect layout or hit-testing. `transform` pivots around the widget's center. Both are spring-animatable when listed in `transition:`.
+
+### Lifecycle hooks (Phase 2)
+
+Inside any function body, four block-statement keywords let you
+attach side-effects to a widget's mount / unmount / dependency
+changes. Identity is path-based — every `(call_stack, hook_id)`
+pair is a fresh slot, so hooks survive reorder and re-render
+without re-firing unless their dependencies actually change.
+
+```ogh
+let panel = fn () {
+  state count = 0;
+
+  on_mount   { event("panel_opened", count); };
+  on_unmount { event("panel_closed", count); };
+
+  effect (count) {                   // re-fires when `count` changes
+    event("count_changed", count);
+    cleanup { event("count_cleanup", count); };  // runs before next fire
+  };
+
+  Flex { children: [ /* ... */ ] }
+};
+```
+
+| Hook | Fires | Re-fires |
+|---|---|---|
+| `on_mount { ... }` | After the function's first render in this path. | Never. |
+| `on_unmount { ... }` | When the function's path *drains* — either dropped immediately on reconcile or after the owning widget's exit animation settles. | Never. |
+| `effect (deps) { ... }` | After every render where any `deps` value differs from the prior render. | Each dep change. |
+| `cleanup { ... }` | Inside an `effect` body only. Runs before the effect re-fires AND when its owning path drains. | Each effect re-fire / drain. |
+
+**Drain timing.** Phase 3 ships true drain-time semantics: a
+widget with an `exit:` style won't fire `on_unmount` until its
+exit animation settles AND `drain_exited_children` removes it
+from the tree. Cancellation (key reappears mid-exit) clears the
+pending unmount.
+
+**Mount timing.** Mounts fire after the next render's reconcile
++ layout pass — so mount bodies can safely query layout sizes
+the parent populated.
+
+**Conditional hooks** (e.g. `if (x) { on_mount {...} }`) are
+legal but the LSP warns about them — you almost certainly want
+to gate the *value* a hook computes rather than whether the
+hook itself registers, since registration determines path
+identity. Restructure to put the condition inside the body.
+
+### Typed bindings (Phase 1)
+
+Two `#[derive(...)]` macros generate the bridge code between Rust
+host types and the Ogham runtime, plus a compile-time schema
+manifest the `ogham check` CLI / LSP validate `.ogh` files
+against:
+
+```rust
+use ogham_derive::{OghamState, OghamMsg};
+
+#[derive(OghamState)]
+#[ogham_state(binding_module = "settings")]    // exposes module name to ogham check
+struct SettingsState {
+    volume: f32,                // -> Float
+    label:  String,             // -> String
+    items:  Vec<String>,        // -> Array<String>
+}
+
+#[derive(OghamMsg)]
+enum SettingsMsg {
+    SetVolume(f32),             // .ogh: event("set_volume", v)
+    Reset,                      // .ogh: event("reset")
+}
+```
+
+Mount via the `TypedOgham` handle (re-exported from the crate
+root):
+
+```rust
+use ogham::TypedOgham;
+
+let handle: TypedOgham<SettingsState, SettingsMsg> =
+    TypedOgham::watch("./data/settings.ogh", SettingsState::default(), config)?;
+
+handle.set_state(|s| s.volume = 0.8);          // typed mutation
+while let Some(msg) = handle.next_msg() {       // typed event recv
+    match msg { SettingsMsg::SetVolume(v) => /* ... */, .. }
+}
+```
+
+In the `.ogh` file, top-level identifiers `volume`, `label`,
+`items` resolve to the host state directly; events fire through
+`event("set_volume", value)`. The LSP and `ogham check` cross-
+reference the manifest, so a typo in `event("setvolume", ...)`
+flags as an error.
+
+### Portal widget (Phase 2 + 2.5)
+
+`Portal { open, focus_trap, layer, cursor, children }` lifts its
+children's paint and hit-test out of the parent's clip / order
+into a named per-frame **layer**. Layout-wise the Portal node
+contributes nothing to the parent's flow — children paint into
+the viewport in a second pass.
+
+```ogh
+Portal {
+  open: show_modal,
+  focus_trap: true,                   // input is gated to this subtree while open
+  layer: "overlay-modal",             // see layer table below
+  children: [
+    Flex {
+      style: { width: 480, height: 320, /* ... */ },
+      children: [ /* dialog content */ ],
+    }
+  ],
+}
+```
+
+| Layer | Priority | Default backdrop | Default cursor | Use for |
+|---|---:|---|---|---|
+| `"main"` | 0 | None | Inherit | Reserved (base tree). |
+| `"overlay-modal"` | 100 | Block | Free | Modal dialogs, escape menu. |
+| `"popover"` | 200 | None | Free | Dropdown menus, comboboxes. |
+| `"tooltip"` | 300 | None | Inherit | Hover tooltips. |
+| `"toast"` | 400 | None | Inherit | Transient notifications. |
+| `"cursor-attached"` | 500 | None | Inherit | Drag previews; positioned at cursor. |
+
+**Backdrop policy.** A `Block`-policy layer with any open entry
+both paints a translucent runtime backdrop AND suppresses click
+fall-through to lower layers / the base tree. Authors can layer
+their own styled backdrop on top of (or replacing) the runtime
+backdrop.
+
+**Focus trap.** When `focus_trap: true`, focus moves outside
+the portal's subtree are rejected; `Ogham::has_input_blocking_portal()`
+returns true while any open trapping portal exists.
+
+**Cursor preference.** `cursor: "free"` declares the layer
+wants a visible system cursor; `cursor: "inherit"` lets the
+host decide. `Ogham::wants_cursor_free()` aggregates across
+open portals + the focused widget.
+
+**Composition.** Backdrop styling, dismiss-on-outside-click,
+anchor positioning, and Escape-to-dismiss are *not* Portal
+properties — they're consumer composition with regular
+widgets. See `examples/portals/components.ogh` for `Modal`,
+`Tooltip`, and `Dropdown` reference functions.
 
 ### Imports
 
@@ -414,27 +630,38 @@ The watcher monitors both the main `.ogh` file and all imported files.
 Call `update()` each frame to check whether a rerender is needed and, if so,
 re-execute the module, bridge the widget values, and reconcile the tree.
 It returns `Ok(true)` when a rerender was performed (useful for dirty-tracking).
+`update()` also runs `process_drain_queues` after reconcile so any pending
+drain-time unmount / effect-cleanup hooks fire in the same frame.
 
 ```rust
-// 1. Update (rerender + bridge + reconcile, only if needed)
+// 1. Update (rerender + bridge + reconcile + drain, only if needed)
 let rerendered = ogham.update()?;
 
 // 2. Tick animations forward by the real elapsed time (in seconds).
-//    Required for style transitions, entry/exit animations, and Presence
-//    sequencing to advance. Cap dt to ~33ms so a stalled frame doesn't
-//    skip through a whole animation in one step.
+//    Required for style transitions, entry/exit animations, Presence
+//    sequencing, AND the drain-time unmount machinery (settled exits
+//    surface their owning paths to UI's pending vecs here). Cap dt to
+//    ~33ms so a stalled frame doesn't skip through a whole animation
+//    in one step.
 ogham.get_ui_mut().tick_animations(dt);
 
-// 3. Layout
+// 3. Layout (also runs the drag-preview's layout pass if a drag is
+//    in flight — see Drag dispatch below)
 ogham.get_ui_mut().layout(window_width, window_height);
 
 // 4. Draw using a Surface implementation
 surface.draw(ogham.get_ui_mut());
+
+// 5. Optional: drain again. tick_animations may have queued drain
+//    prefixes (settled exit animations); call process_drain_queues
+//    to flush their unmount hooks before the next frame starts.
+ogham.process_drain_queues();
 ```
 
 **Important**: `tick_animations` must run *every* frame, not just when `update()`
 reports a rerender. Animations are driven by per-frame ticks independent of
-runtime state changes. Skipping ticks freezes any in-flight transitions.
+runtime state changes. Skipping ticks freezes any in-flight transitions and
+defers drain-time unmount hooks indefinitely.
 
 ### 6. Handling UI events
 
@@ -442,14 +669,83 @@ Route input events (clicks, keyboard) to the UI tree:
 
 ```rust
 use ogham::widget::event::Event;
+use ogham::widget::point::Point;
 
-let event = Event::new("click".to_string())
-    .with_point(x, y);
-
+let event = Event::with_point("mouse_down".to_string(), Point::new(x, y));
 ogham.get_ui_mut().call_event(&event);
 ```
 
-### 7. Custom rendering backends
+For the dedicated drag + contextmenu paths added in Phase 3, the
+host's input pump translates its dead-zone state machine into the
+`dispatch_drag_*` / `dispatch_contextmenu` calls — see *Drag
+dispatch* below.
+
+### 7. Drag dispatch (Phase 3)
+
+The host owns the dead-zone state machine; Ogham provides the
+event-emission and drop-target hit-test. Typical flow:
+
+```rust
+use ogham::widget::event::DragState;
+
+// On mouse_down past the per-widget dead-zone (4px default):
+let target = ogham.get_ui_mut().hit_test_drag_target(&Point::new(x, y));
+let mut drag_state = if let Some(origin) = target {
+    Some(ogham.dispatch_drag_start(origin, payload, Point::new(x, y)))
+} else { None };
+
+// Each subsequent mouse_move while a drag is in flight:
+if let Some(state) = drag_state.as_mut() {
+    ogham.dispatch_drag_move(state, Point::new(x, y));
+}
+
+// On mouse_up:
+if let Some(state) = drag_state.as_mut() {
+    ogham.dispatch_drag_end(state, Point::new(x, y));
+}
+drag_state = None;
+```
+
+`dispatch_drag_end` walks open portal layers (high → low) then
+the base tree, picking the deepest widget whose `accepts_drop`
+predicate returns true. If none accept, `drag_end` fires on the
+originator. The drag preview (if the source widget declared
+`drag_preview:`) renders into the `cursor-attached` portal layer
+at the cursor position; clear it from the host on drag end.
+
+`Ogham::hit_test_drop_target(payload, point)` is exposed for
+hover-style highlighting (e.g. "is the cursor currently over a
+valid drop target?") without firing an event.
+
+For right-click → contextmenu:
+
+```rust
+ogham.dispatch_contextmenu(Point::new(x, y));
+```
+
+### 8. Cursor and key signals
+
+Three Ogham-side accessors let the host coordinate input
+without manually tracking modal / focus state:
+
+```rust
+// True if any open portal has focus_trap: true. Use as a single
+// source of truth for "should game input be blocked?".
+let blocked = ogham.has_input_blocking_portal();
+
+// True if any active portal in overlay-modal / popover OR the
+// focused widget declares cursor-free. Use to release a locked
+// pointer cursor.
+let cursor_free = ogham.wants_cursor_free();
+
+// True if the focused widget consumes Key::Character(_) events
+// (TextInput is the canonical case). Use BEFORE feeding the key
+// into game pressed() / held() queries so typing into a field
+// doesn't trigger hotkeys.
+let typing = ogham.consumes_character_key();
+```
+
+### 9. Custom rendering backends
 
 Two traits live in `src/widget/mod.rs`:
 
@@ -512,19 +808,28 @@ ogham/
     widget/
       mod.rs                -- UI struct, Surface trait, Widget trait, RenderEffects, TickResult
       builder.rs            -- runtime values -> widget tree nodes
-      flex_widget.rs        -- Flex container; transitions + exit lifecycle
+      flex_widget.rs        -- Flex container; transitions + exit lifecycle + drag fields
       text_widget.rs        -- Text display
       text_input_widget.rs  -- Text input
       svg_widget.rs         -- SVG rendering
       grid_widget.rs        -- Grid container
       image_widget.rs       -- Image
       presence_widget.rs    -- Lifecycle-sequencing container
+      portal_widget.rs      -- Portal (deferred-paint two-pass renderer)
+      portal_layer.rs       -- Named portal layers + backdrop / cursor policies
       animation.rs          -- Spring math + per-property animation state
-      event.rs              -- Event, EventContext
+      event.rs              -- Event, EventContext, TickContext, DragState
+    cli/                    -- `ogham` CLI (check, render)
+    lsp/                    -- `ogham-lsp` language server
+    diagnostics/            -- schema-diagnostic engine (used by CLI + LSP)
+    typed.rs                -- TypedOgham handle (typed host state + msg)
     client/
       main.rs               -- standalone browser binary entry point
       client.rs              -- client implementation
       app.rs                 -- application wrapper
-  examples/                  -- .ogh example files
+  crates/
+    ogham-derive/           -- #[derive(OghamState)] / #[derive(OghamMsg)] proc macros
+  examples/                  -- .ogh example files (incl. portals/components.ogh)
   tests/                     -- integration tests
+  docs/internal/             -- design docs + per-phase implementation trailers
 ```

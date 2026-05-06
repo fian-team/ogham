@@ -117,7 +117,7 @@ impl Widget for PortalWidget {
         let mut new_guard = new_widget.lock().expect("widget lock poisoned");
         let new_portal = match new_guard.downcast_mut::<PortalWidget>() {
             Some(p) => p,
-            None => return UpdateResult::REPLACE,
+            None => return UpdateResult::replace(),
         };
         let was_open = self.open;
         let open_changed = self.open != new_portal.open;
@@ -153,6 +153,8 @@ impl Widget for PortalWidget {
                 absorbed: true,
                 needs_layout: false,
                 needs_repaint: false,
+                cancelled_unmount_prefixes: Vec::new(),
+                drained_path_prefixes: Vec::new(),
             }
         } else {
             // Open in both old and new (or open: false → true).
@@ -170,6 +172,8 @@ impl Widget for PortalWidget {
                 || trap_changed
                 || layer_changed
                 || inner_result.needs_repaint,
+            cancelled_unmount_prefixes: inner_result.cancelled_unmount_prefixes,
+            drained_path_prefixes: inner_result.drained_path_prefixes,
         }
     }
 
@@ -290,14 +294,14 @@ impl Widget for PortalWidget {
         None
     }
 
-    fn tick_animations(&mut self, dt: f32) -> TickResult {
+    fn tick_animations(&mut self, ctx: &mut crate::widget::event::TickContext) -> TickResult {
         if !self.open {
             // Even when closed, we still tick exit-animation
             // springs on children that began exiting in the
             // previous reconcile.
-            return self.inner.tick_animations(dt);
+            return self.inner.tick_animations(ctx);
         }
-        self.inner.tick_animations(dt)
+        self.inner.tick_animations(ctx)
     }
 
     // ---- Exit lifecycle: delegate so reconcile cascades --------------

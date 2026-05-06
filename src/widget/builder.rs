@@ -127,6 +127,90 @@ fn make_event_listener_with_arg(
     }
 }
 
+/// Phase 3 M1: like `make_event_listener_with_arg`, but the
+/// closure receives the drag payload (`Event.payload`) rather
+/// than `Event.value`. Used for `drag_start` / `drag_move` /
+/// `drag_end` listeners.
+fn make_drag_event_listener(
+    value: &Value,
+    runtime: &Arc<Mutex<Runtime>>,
+    event_name: &str,
+) -> Option<Box<dyn Fn(&Event)>> {
+    match value {
+        Value::BytecodeClosure(closure) => {
+            let rt = runtime.clone();
+            let closure = closure.clone();
+            let ename = event_name.to_string();
+            Some(Box::new(move |event: &Event| {
+                let arg = event.payload.clone().unwrap_or(Value::Void);
+                let result = rt
+                    .lock()
+                    .expect("runtime lock poisoned")
+                    .call_bytecode_closure(&closure, &[arg]);
+                if let Err(err) = result {
+                    eprintln!("[ogham] {} handler error: {:?}", ename, err);
+                }
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// Phase 3 M1: register a drag event listener (`drag_start` /
+/// `drag_move` / `drag_end`). Closure is invoked with the drag
+/// payload as its sole argument.
+fn register_drag_event_listener(
+    listeners: &mut HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
+    properties: &HashMap<String, Value>,
+    runtime: &Arc<Mutex<Runtime>>,
+    event_name: &str,
+) -> Result<(), BridgeError> {
+    if let Some(value) = properties.get(event_name) {
+        if let Some(listener) = make_drag_event_listener(value, runtime, event_name) {
+            listeners
+                .entry(event_name.to_string())
+                .or_default()
+                .push(listener);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                event_name.to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Phase 3 M1: build an `accepts_drop(payload) -> bool`
+/// predicate from a `Value::BytecodeClosure`. Returns `None`
+/// if the value is not a callable.
+fn make_accepts_drop_predicate(
+    value: &Value,
+    runtime: &Arc<Mutex<Runtime>>,
+) -> Option<Box<dyn Fn(&Value) -> bool>> {
+    match value {
+        Value::BytecodeClosure(closure) => {
+            let rt = runtime.clone();
+            let closure = closure.clone();
+            Some(Box::new(move |payload: &Value| {
+                let result = rt
+                    .lock()
+                    .expect("runtime lock poisoned")
+                    .call_bytecode_closure(&closure, &[payload.clone()]);
+                match result {
+                    Ok(Value::Boolean(b)) => b,
+                    Ok(_) => false,
+                    Err(err) => {
+                        eprintln!("[ogham] accepts_drop predicate error: {:?}", err);
+                        false
+                    }
+                }
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// Register an event listener (no arguments) on a widget's listener map.
 /// Does nothing if the property is absent; returns an error if it is present but not a closure.
 fn register_event_listener(
@@ -592,6 +676,70 @@ fn create_flex_widget(
         runtime,
         "mouse_leave",
     )?;
+
+    // Phase 3 M2: contextmenu fires on right-click (the host's
+    // input pump distinguishes left/right). Standard listener
+    // shape — closure with no args.
+    register_event_listener(
+        &mut flex_widget.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "contextmenu",
+    )?;
+
+    // Phase 3 M1: drag event listeners. drag_start / drag_move
+    // / drag_end fire with a Value argument (the drag payload),
+    // matching the input pump's `dispatch_drag_*` API.
+    register_drag_event_listener(
+        &mut flex_widget.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "drag_start",
+    )?;
+    register_drag_event_listener(
+        &mut flex_widget.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "drag_move",
+    )?;
+    register_drag_event_listener(
+        &mut flex_widget.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "drag_end",
+    )?;
+
+    // Phase 3 M1: drag-source / drop-target properties.
+    if let Some(payload) = descriptor.properties.get("drag_payload") {
+        flex_widget.drag_payload = Some(payload.clone());
+    }
+    if let Some(Value::Float(dz)) = descriptor.properties.get("drag_dead_zone") {
+        flex_widget.drag_dead_zone = Some(*dz as f32);
+    } else if let Some(Value::Integer(dz)) = descriptor.properties.get("drag_dead_zone") {
+        flex_widget.drag_dead_zone = Some(*dz as f32);
+    }
+    if let Some(value) = descriptor.properties.get("accepts_drop") {
+        if let Some(predicate) = make_accepts_drop_predicate(value, runtime) {
+            flex_widget.accepts_drop_predicate = Some(predicate);
+        } else {
+            return Err(BridgeError::InvalidPropertyType(
+                "accepts_drop".to_string(),
+                format!("Expected Closure, got {:?}", value),
+            ));
+        }
+    }
+    // Phase 3 M2: drag_preview accepts a single widget. The
+    // host renderer pulls it out via `Widget::drag_preview`
+    // when this widget is the drag origin and paints it
+    // attached to the cursor.
+    if let Some(Value::Widget(child_widget)) = descriptor.properties.get("drag_preview") {
+        let preview_ref = widget_value_to_widget_ref(
+            registry,
+            runtime,
+            &Value::Widget(child_widget.clone()),
+        )?;
+        flex_widget.drag_preview = Some(preview_ref);
+    }
 
     if let Some(value) = descriptor.properties.get("children") {
         if let Value::Array(children_array) = value {

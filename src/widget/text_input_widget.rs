@@ -202,9 +202,11 @@ impl Widget for TextInputWidget {
                 absorbed: true,
                 needs_layout: style_changed || value_changed,
                 needs_repaint: style_changed || value_changed,
+                cancelled_unmount_prefixes: Vec::new(),
+                drained_path_prefixes: Vec::new(),
             }
         } else {
-            UpdateResult::REPLACE
+            UpdateResult::replace()
         }
     }
 

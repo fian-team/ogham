@@ -273,6 +273,41 @@ pub struct UI {
     /// Used to attribute the next `layout()` call to the right bucket.
     #[cfg(debug_assertions)]
     last_dirty_source: u8,
+    /// Phase 3 M0: path prefixes whose owning widgets drained
+    /// during the most recent `tick_animations`. The runtime
+    /// drains these via [`UI::take_drained_prefixes`] at the
+    /// next render boundary so it can flush owned hooks /
+    /// state cells / effects for the corresponding subtrees.
+    pending_drained_prefixes: Vec<String>,
+    /// Phase 3 M0: path prefixes whose pending unmount was
+    /// cancelled (re-mount during exit animation) since the
+    /// last drain. The runtime consumes these via
+    /// [`UI::take_cancelled_unmount_prefixes`] to remove
+    /// matching entries from any pending unmount queue.
+    pending_cancelled_unmount_prefixes: Vec<String>,
+    /// Phase 3 M2: in-flight drag preview state. When `Some`,
+    /// the renderer pushes the originator's `drag_preview()`
+    /// subtree into the `CursorAttached` portal layer
+    /// positioned at `(point.x, point.y)`. Set by
+    /// `dispatch_drag_start`, updated by `dispatch_drag_move`,
+    /// cleared by `dispatch_drag_end`. `None` outside of an
+    /// active drag.
+    active_drag_preview: Option<DragPreviewState>,
+}
+
+/// Phase 3 M2: state captured by `UI` during an in-flight
+/// drag so the renderer can paint a drag preview attached to
+/// the cursor each frame.
+#[derive(Clone)]
+pub struct DragPreviewState {
+    /// Subtree to render. Snapshot of the originator's
+    /// `drag_preview()` at `dispatch_drag_start` time so the
+    /// preview survives the originator being unmounted
+    /// mid-drag.
+    pub preview: WidgetRef,
+    /// Current cursor position. Updated each
+    /// `dispatch_drag_move`.
+    pub cursor: Point,
 }
 
 impl UI {
@@ -297,7 +332,18 @@ impl UI {
             dirty_sources: [0; 4],
             #[cfg(debug_assertions)]
             last_dirty_source: 0,
+            pending_drained_prefixes: Vec::new(),
+            pending_cancelled_unmount_prefixes: Vec::new(),
+            active_drag_preview: None,
         }
+    }
+
+    /// Phase 3 M2: read-only access to the in-flight drag
+    /// preview (if any). Renderers consult this each frame
+    /// and push the preview into the `CursorAttached` layer
+    /// at the cursor position.
+    pub fn active_drag_preview(&self) -> Option<&DragPreviewState> {
+        self.active_drag_preview.as_ref()
     }
 
     pub fn set_font_collection(&mut self, fc: FontCollection) {
@@ -428,6 +474,281 @@ impl UI {
         false
     }
 
+    /// Phase 3 M1: dispatch `drag_start` directly on the
+    /// originating widget. Constructs a [`event::DragState`]
+    /// seeded from `payload` + `point`, fires the event, and
+    /// returns the seeded DragState so the host's input pump
+    /// can thread it through subsequent `dispatch_drag_move`
+    /// / `dispatch_drag_end` calls.
+    pub fn dispatch_drag_start(
+        &mut self,
+        origin: WidgetRef,
+        payload: crate::runtime::value::Value,
+        point: Point,
+    ) -> event::DragState {
+        let drag_state = event::DragState {
+            origin_widget: Some(origin.clone()),
+            payload: Some(payload.clone()),
+            start_position: point.clone(),
+            current_position: point.clone(),
+            past_dead_zone: true,
+        };
+        let preview_widget = {
+            let g = origin.lock().expect("widget lock poisoned");
+            g.drag_preview()
+        };
+        if let Some(preview) = preview_widget {
+            self.active_drag_preview = Some(DragPreviewState {
+                preview,
+                cursor: point.clone(),
+            });
+            // Preview needs an initial layout pass and a
+            // repaint to appear on screen.
+            self.mark_needs_layout();
+        }
+        let event = Event::drag("drag_start", point, Some(payload));
+        let g = origin.lock().expect("widget lock poisoned");
+        g.fire_event_listener(&event);
+        drop(g);
+        drag_state
+    }
+
+    /// Phase 3 M1: dispatch `drag_move` on the deepest widget
+    /// under `point`. Updates `state.current_position` in place.
+    /// Returns the widget that received the event, if any.
+    pub fn dispatch_drag_move(
+        &mut self,
+        state: &mut event::DragState,
+        point: Point,
+    ) -> Option<WidgetRef> {
+        state.current_position = point.clone();
+        if let Some(preview) = self.active_drag_preview.as_mut() {
+            preview.cursor = point.clone();
+            // Cursor changed — paint pass needs to re-emit
+            // the synthetic CursorAttached entry at the new
+            // viewport_rect. Layout doesn't have to re-run
+            // (preview's intrinsic size is unchanged).
+            self.mark_needs_repaint();
+        }
+        let payload = state.payload.clone().unwrap_or(crate::runtime::value::Value::Void);
+        let target = self.hit_test_drag_target(&point);
+        if let Some(target_ref) = target.clone() {
+            let event = Event::drag("drag_move", point, Some(payload));
+            let g = target_ref.lock().expect("widget lock poisoned");
+            g.fire_event_listener(&event);
+        }
+        target
+    }
+
+    /// Phase 3 M1: dispatch `drag_end`. Walks portal layers
+    /// (high priority → low) then the base tree to find the
+    /// deepest widget whose `accepts_drop(payload)` is true;
+    /// fires `drag_end` on that widget. Falls back to the
+    /// originator if no target accepts. Returns the widget
+    /// that received `drag_end`, if any.
+    pub fn dispatch_drag_end(
+        &mut self,
+        state: &mut event::DragState,
+        point: Point,
+    ) -> Option<WidgetRef> {
+        state.current_position = point.clone();
+        let payload = state.payload.clone().unwrap_or(crate::runtime::value::Value::Void);
+        let target = self
+            .hit_test_drop_target(&payload, &point)
+            .or_else(|| state.origin_widget.clone());
+        if let Some(target_ref) = target.clone() {
+            let event = Event::drag("drag_end", point, Some(payload));
+            let g = target_ref.lock().expect("widget lock poisoned");
+            g.fire_event_listener(&event);
+            drop(g);
+        }
+        // Drag is over — clear the preview so the renderer
+        // stops painting it. Repaint so the cursor-attached
+        // entry disappears from the next frame.
+        let had_preview = self.active_drag_preview.is_some();
+        self.active_drag_preview = None;
+        if had_preview {
+            self.mark_needs_repaint();
+        }
+        target
+    }
+
+    /// Phase 3 M2: dispatch a `contextmenu` event on the
+    /// deepest widget at `point`. Returns `true` if a listener
+    /// fired. Hosts wire this to right-click in their input
+    /// pump; the event is distinct from `mouse_down` so left-
+    /// vs right-click handling can diverge cleanly.
+    pub fn dispatch_contextmenu(&mut self, point: Point) -> bool {
+        let target = self.hit_test_drag_target(&point);
+        if let Some(target_ref) = target {
+            let mut event = Event::with_point("contextmenu".to_string(), point);
+            event.payload = None;
+            let g = target_ref.lock().expect("widget lock poisoned");
+            g.fire_event_listener(&event)
+        } else {
+            false
+        }
+    }
+
+    /// Phase 3 M1: find the deepest widget at `point`,
+    /// walking portal layers high→low then the base tree.
+    /// Used by `dispatch_drag_move` to deliver hover-style
+    /// drag_move dispatches to the widget under the cursor
+    /// regardless of whether it accepts the drop.
+    pub fn hit_test_drag_target(&self, point: &Point) -> Option<WidgetRef> {
+        let entries: Vec<PortalEntry> =
+            self.portal_layers.iter_hit_test_order().cloned().collect();
+        for entry in &entries {
+            let child_point = Point::new(
+                point.x() - entry.viewport_rect.x,
+                point.y() - entry.viewport_rect.y,
+            );
+            let children = {
+                let widget = entry.widget.lock().expect("widget lock poisoned");
+                widget.get_children()
+            };
+            for child in &children {
+                let contains = {
+                    let g = child.lock().expect("widget lock poisoned");
+                    g.contains_point(&child_point)
+                };
+                if contains {
+                    if let Some(deep) =
+                        Self::deepest_at(child, &child_point)
+                    {
+                        return Some(deep);
+                    }
+                    return Some(child.clone());
+                }
+            }
+            if entry.layer.default_backdrop()
+                == portal_layer::BackdropPolicy::Block
+            {
+                return None;
+            }
+        }
+        let root = self.root.clone();
+        let contains = {
+            let g = root.lock().expect("widget lock poisoned");
+            g.contains_point(point)
+        };
+        if contains {
+            Self::deepest_at(&root, point).or(Some(root))
+        } else {
+            None
+        }
+    }
+
+    /// Phase 3 M1: like `hit_test_drag_target` but only returns
+    /// widgets whose `accepts_drop(payload)` returns true.
+    /// `dispatch_drag_end` uses this to pick the drop target.
+    pub fn hit_test_drop_target(
+        &self,
+        payload: &crate::runtime::value::Value,
+        point: &Point,
+    ) -> Option<WidgetRef> {
+        let entries: Vec<PortalEntry> =
+            self.portal_layers.iter_hit_test_order().cloned().collect();
+        for entry in &entries {
+            let child_point = Point::new(
+                point.x() - entry.viewport_rect.x,
+                point.y() - entry.viewport_rect.y,
+            );
+            let children = {
+                let widget = entry.widget.lock().expect("widget lock poisoned");
+                widget.get_children()
+            };
+            for child in &children {
+                let contains = {
+                    let g = child.lock().expect("widget lock poisoned");
+                    g.contains_point(&child_point)
+                };
+                if contains {
+                    if let Some(target) =
+                        Self::deepest_drop_target(child, &child_point, payload)
+                    {
+                        return Some(target);
+                    }
+                }
+            }
+            if entry.layer.default_backdrop()
+                == portal_layer::BackdropPolicy::Block
+            {
+                return None;
+            }
+        }
+        let root = self.root.clone();
+        let contains = {
+            let g = root.lock().expect("widget lock poisoned");
+            g.contains_point(point)
+        };
+        if contains {
+            Self::deepest_drop_target(&root, point, payload)
+        } else {
+            None
+        }
+    }
+
+    /// Recurse into `widget` looking for the deepest descendant
+    /// whose layout rect contains `point`. Returns `None` only
+    /// if none of `widget`'s descendants contain the point.
+    fn deepest_at(widget: &WidgetRef, point: &Point) -> Option<WidgetRef> {
+        let (origin, children) = {
+            let g = widget.lock().expect("widget lock poisoned");
+            let o = g.get_layout_rect().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+            (o, g.get_children())
+        };
+        let local = Point::new(point.x() - origin.0, point.y() - origin.1);
+        for child in children.iter().rev() {
+            let contains = {
+                let cg = child.lock().expect("widget lock poisoned");
+                cg.contains_point(&local)
+            };
+            if contains {
+                if let Some(deeper) = Self::deepest_at(child, &local) {
+                    return Some(deeper);
+                }
+                return Some(child.clone());
+            }
+        }
+        None
+    }
+
+    /// Recurse into `widget` looking for the deepest descendant
+    /// whose `accepts_drop(payload)` is true and whose layout
+    /// rect contains `point`. Returns the widget itself if it
+    /// is the only acceptor.
+    fn deepest_drop_target(
+        widget: &WidgetRef,
+        point: &Point,
+        payload: &crate::runtime::value::Value,
+    ) -> Option<WidgetRef> {
+        let (origin, children, self_accepts) = {
+            let g = widget.lock().expect("widget lock poisoned");
+            let o = g.get_layout_rect().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+            (o, g.get_children(), g.accepts_drop(payload))
+        };
+        let local = Point::new(point.x() - origin.0, point.y() - origin.1);
+        for child in children.iter().rev() {
+            let contains = {
+                let cg = child.lock().expect("widget lock poisoned");
+                cg.contains_point(&local)
+            };
+            if contains {
+                if let Some(deeper) =
+                    Self::deepest_drop_target(child, &local, payload)
+                {
+                    return Some(deeper);
+                }
+            }
+        }
+        if self_accepts {
+            Some(widget.clone())
+        } else {
+            None
+        }
+    }
+
     /// Walk the widget tree and set `hovered = true` on every widget in the
     /// path from the root to the deepest widget that contains `point`.
     /// All other widgets are set to `hovered = false`. Returns `true` if
@@ -536,6 +857,36 @@ impl UI {
             height,
             0.0,
         );
+        drop(root);
+
+        // Phase 3 M2: lay out the in-flight drag preview (if
+        // any) at the local origin (0,0) sized at its declared
+        // dimensions. The Skia paint path translates the
+        // preview by the cursor position via the synthesized
+        // CursorAttached PortalEntry's viewport_rect; laying
+        // out at (0,0) keeps the preview's own layout rect
+        // relative so paint doesn't double-offset by the
+        // cursor. Authors are expected to give drag_preview
+        // widgets explicit width/height (or grow within a
+        // fixed-size wrapper); auto-sizing against an
+        // unbounded viewport is undefined.
+        if let Some(state) = self.active_drag_preview.as_ref() {
+            let preview_ref = state.preview.clone();
+            let mut preview = preview_ref.lock().expect("widget lock poisoned");
+            let pw = preview.get_fixed_width().unwrap_or(0.0);
+            let ph = preview.get_fixed_height().unwrap_or(0.0);
+            preview.layout(
+                &ctx,
+                0.0,
+                0.0,
+                &Direction::Column,
+                pw,
+                pw,
+                ph,
+                ph,
+                0.0,
+            );
+        }
     }
 
     /// Reconcile the current hierarchy with a newly-provided hierarchy.
@@ -548,16 +899,27 @@ impl UI {
     /// uses `needs_layout` / `needs_repaint` to decide whether to invalidate
     /// the layout cache. Does **not** itself trigger a layout pass.
     pub fn reconcile(&mut self, new_root: WidgetRef) -> UpdateResult {
-        let result = {
+        let mut result = {
             // Check if the root references are the same Arc to avoid deadlock
             if Arc::ptr_eq(&self.root, &new_root) {
                 // Same widget reference: nothing to reconcile.
-                UpdateResult::UNCHANGED
+                UpdateResult::unchanged()
             } else {
                 let mut root = self.root.lock().expect("widget lock poisoned");
                 root.update(new_root)
             }
         };
+        // Phase 3 M3: harvest cancelled-unmount prefixes
+        // surfaced during the reconcile (cancel_exit on
+        // ghosts whose key reappeared). The runtime will
+        // consume these via process_drain_queues.
+        self.pending_cancelled_unmount_prefixes
+            .append(&mut result.cancelled_unmount_prefixes);
+        // Phase 3 M3: harvest immediate-drop prefixes for
+        // widgets that disappeared without an exit animation.
+        // Same drain channel as ghost-completion drains.
+        self.pending_drained_prefixes
+            .append(&mut result.drained_path_prefixes);
         if let Some(focused_widget) = self.focused.as_ref() {
             let focused_ref_count = Arc::strong_count(focused_widget);
             // If there's only one reference to the focused widget, it must have
@@ -765,28 +1127,48 @@ impl UI {
         });
     }
 
-    /// Phase 2 M4 (extended in P25-M0): clear all M4 state
-    /// (focus stack + portal_layers + focused). Called on
-    /// hot-reload to prevent stale focus restoration into a
-    /// torn-down tree.
+    /// Phase 2 M4 (extended in P25-M0 / P3-M2): clear all
+    /// per-tree-instance state (focus stack + portal_layers +
+    /// focused widget + in-flight drag preview + pending
+    /// drain-queue prefixes). Called on hot-reload to prevent
+    /// stale references into a torn-down tree.
     pub fn clear_lifecycle_state(&mut self) {
         self.focus_stack.clear();
         self.portal_layers.clear();
         self.focused = None;
+        // Phase 3 M2: drop the drag preview if any was in
+        // flight when the reload landed — its WidgetRef
+        // points into the old tree.
+        self.active_drag_preview = None;
+        // Phase 3 M3: drop pending drain prefixes — they
+        // refer to paths in the old runtime's state map,
+        // which is also being replaced.
+        self.pending_drained_prefixes.clear();
+        self.pending_cancelled_unmount_prefixes.clear();
     }
 
     /// Advance all active animations in the widget tree by `dt` seconds.
     /// Called once per frame before `layout()`. Marks the UI dirty as
     /// appropriate: layout-affecting transitions request a full layout
     /// pass; color-only transitions only request a repaint.
+    ///
+    /// Phase 3 M0: builds a [`event::TickContext`] that widgets can use
+    /// to record drained / cancelled-unmount path prefixes. The vecs
+    /// are appended to the UI's pending-prefix fields so the runtime
+    /// can drain them at the next render boundary.
     pub fn tick_animations(&mut self, dt: f32) {
         if dt <= 0.0 {
             return;
         }
+        let mut ctx = event::TickContext::new(dt);
         let result = {
             let mut root = self.root.lock().expect("widget lock poisoned");
-            root.tick_animations(dt)
+            root.tick_animations(&mut ctx)
         };
+        self.pending_drained_prefixes
+            .append(&mut ctx.drained_path_prefixes);
+        self.pending_cancelled_unmount_prefixes
+            .append(&mut ctx.cancelled_unmount_prefixes);
         if result.needs_layout {
             self.needs_layout = true;
             self.needs_repaint = true;
@@ -797,6 +1179,22 @@ impl UI {
         } else if result.needs_repaint {
             self.needs_repaint = true;
         }
+    }
+
+    /// Phase 3 M0: take and clear the path prefixes whose owning
+    /// widgets drained since the last call. The runtime calls this
+    /// at the next render boundary to flush owned hooks/state for
+    /// the corresponding subtrees.
+    pub fn take_drained_prefixes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_drained_prefixes)
+    }
+
+    /// Phase 3 M0: take and clear the path prefixes whose pending
+    /// unmount was cancelled since the last call. The runtime uses
+    /// these to remove matching entries from any pending unmount
+    /// queue before drain-time runs.
+    pub fn take_cancelled_unmount_prefixes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_cancelled_unmount_prefixes)
     }
 }
 
@@ -917,7 +1315,14 @@ impl TickResult {
 /// the widget tree by `reconcile()` / `reconcile_children()` so the UI
 /// root can decide whether to mark layout dirty — host_state changes that
 /// produce identical widget output should NOT trigger a relayout.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// Phase 3 M0: gains `cancelled_unmount_prefixes` for the
+/// drain-time unmount machinery (M3). Cancel-mid-exit happens
+/// during reconcile (not tick), so the cancel-prefix
+/// communication piggybacks on UpdateResult rather than
+/// `TickContext`. Loses Copy as a result; was already a
+/// small struct of bools so the impact is minimal.
+#[derive(Debug, Clone, Default)]
 pub struct UpdateResult {
     /// True if the new widget's type matched the old widget's type, so
     /// props were copied in place rather than the old widget being
@@ -931,40 +1336,76 @@ pub struct UpdateResult {
     /// True if a render-only prop (color, opacity) changed. Implies a
     /// repaint without a relayout.
     pub needs_repaint: bool,
+    /// Phase 3 M0: path prefixes whose pending unmount was
+    /// cancelled during this reconcile (cancel_exit on a
+    /// widget that was previously exiting). UI accumulates
+    /// these into `pending_cancelled_prefixes` for the next
+    /// frame's `Runtime::process_drain_queues` to consume.
+    pub cancelled_unmount_prefixes: Vec<String>,
+    /// Phase 3 M3: path prefixes whose owning widget was
+    /// dropped *immediately* during this reconcile (no exit
+    /// animation; e.g. type mismatch with no exit_style, or
+    /// a child orphaned without ghost capability). UI
+    /// harvests these into `pending_drained_prefixes` so the
+    /// runtime flushes lifecycle hooks at the next render
+    /// boundary — same drain channel as ghost-completion.
+    pub drained_path_prefixes: Vec<String>,
 }
 
 impl UpdateResult {
     /// Type mismatch: the old widget could not absorb the new one, so the
     /// caller will replace it. A replacement always implies relayout +
     /// repaint of the affected subtree.
-    pub const REPLACE: Self = Self {
-        absorbed: false,
-        needs_layout: true,
-        needs_repaint: true,
-    };
+    ///
+    /// Phase 3 M0: was a `const`; now a fn because
+    /// `cancelled_unmount_prefixes: Vec` isn't const-eligible.
+    pub fn replace() -> Self {
+        Self {
+            absorbed: false,
+            needs_layout: true,
+            needs_repaint: true,
+            cancelled_unmount_prefixes: Vec::new(),
+            drained_path_prefixes: Vec::new(),
+        }
+    }
 
     /// Type matched and every prop was identical: no work needed.
-    pub const UNCHANGED: Self = Self {
-        absorbed: true,
-        needs_layout: false,
-        needs_repaint: false,
-    };
+    pub fn unchanged() -> Self {
+        Self {
+            absorbed: true,
+            needs_layout: false,
+            needs_repaint: false,
+            cancelled_unmount_prefixes: Vec::new(),
+            drained_path_prefixes: Vec::new(),
+        }
+    }
 
     /// Type matched but layout-affecting props differ.
-    pub const LAYOUT_CHANGED: Self = Self {
-        absorbed: true,
-        needs_layout: true,
-        needs_repaint: true,
-    };
+    pub fn layout_changed() -> Self {
+        Self {
+            absorbed: true,
+            needs_layout: true,
+            needs_repaint: true,
+            cancelled_unmount_prefixes: Vec::new(),
+            drained_path_prefixes: Vec::new(),
+        }
+    }
 
     /// Aggregate two results. `absorbed` from `self` is preserved (it
     /// describes the parent widget's own absorption); the `needs_*` flags
-    /// are unioned (any descendant change bubbles up).
-    pub fn merge(self, other: UpdateResult) -> UpdateResult {
+    /// are unioned (any descendant change bubbles up). Phase 3 M0:
+    /// cancelled_unmount_prefixes are concatenated.
+    pub fn merge(mut self, mut other: UpdateResult) -> UpdateResult {
+        self.cancelled_unmount_prefixes
+            .append(&mut other.cancelled_unmount_prefixes);
+        self.drained_path_prefixes
+            .append(&mut other.drained_path_prefixes);
         UpdateResult {
             absorbed: self.absorbed,
             needs_layout: self.needs_layout || other.needs_layout,
             needs_repaint: self.needs_repaint || other.needs_repaint,
+            cancelled_unmount_prefixes: self.cancelled_unmount_prefixes,
+            drained_path_prefixes: self.drained_path_prefixes,
         }
     }
 }
@@ -1105,11 +1546,21 @@ pub trait Widget: Downcast {
     /// return `false`.
     fn is_exit_complete(&self) -> bool { false }
 
-    /// Advance any in-flight style transitions by `dt` seconds and
-    /// recursively tick children. Returns the merged tick result so the
-    /// UI root can flag the tree for repaint/layout when animations are
-    /// running. Default implementation is a no-op.
-    fn tick_animations(&mut self, _dt: f32) -> TickResult { TickResult::NONE }
+    /// Advance any in-flight style transitions and recursively
+    /// tick children. Returns the merged tick result so the UI
+    /// root can flag the tree for repaint/layout when animations
+    /// are running. Default implementation is a no-op.
+    ///
+    /// Phase 3 M0: takes a `&mut TickContext` instead of bare
+    /// `dt` so widgets can push side-effects (drained
+    /// owned-path-prefixes, cancelled exits) into the context's
+    /// vecs. UI's `tick_animations` drains the context and
+    /// stores them on UI's pending fields for the next render
+    /// to consume via Runtime::process_drain_queues.
+    fn tick_animations(&mut self, ctx: &mut event::TickContext) -> TickResult {
+        let _ = ctx;
+        TickResult::NONE
+    }
 
     /// Returns true if this widget needs post_render called after children render.
     fn needs_post_render(&self) -> bool { false }
@@ -1159,6 +1610,52 @@ pub trait Widget: Downcast {
     /// only function-call containers like `FlexWidget` produced
     /// by an `fn` invocation own a path).
     fn owned_path_prefix(&self) -> &str { "" }
+
+    /// Phase 3 M1: drag payload declared on this widget. When
+    /// `Some(_)`, this widget is a valid drag source; the input
+    /// pump constructs a [`event::DragState`] with this payload
+    /// and dispatches `drag_start` once the cursor moves past
+    /// the dead-zone (see [`Widget::drag_dead_zone`]).
+    /// Default `None` means "not draggable".
+    fn drag_payload(&self) -> Option<&crate::runtime::value::Value> {
+        None
+    }
+
+    /// Phase 3 M1: per-widget dead-zone override (in logical
+    /// pixels). Returning `None` defers to the host's default
+    /// (4px). Returning `Some(0.0)` makes this widget drag
+    /// instantly on `mouse_down`.
+    fn drag_dead_zone(&self) -> Option<f32> {
+        None
+    }
+
+    /// Phase 3 M1: predicate determining whether this widget
+    /// accepts a drop with the given payload. Used by the
+    /// drop-target hit-test during a drag — only widgets
+    /// returning `true` can receive `drag_end`. Default `false`
+    /// (most widgets are not drop targets).
+    fn accepts_drop(&self, _payload: &crate::runtime::value::Value) -> bool {
+        false
+    }
+
+    /// Phase 3 M1: invoke any registered listeners for
+    /// `event.name` on this widget. Used by the drag dispatch
+    /// path, which has already chosen the target via hit-test
+    /// and shouldn't re-run hit-test gating inside
+    /// `handle_event`. Returns `true` if any listener fired.
+    /// Default: no-op (most widgets don't carry listeners).
+    fn fire_event_listener(&self, _event: &Event) -> bool {
+        false
+    }
+
+    /// Phase 3 M2: optional drag preview. When this widget is
+    /// the source of an in-flight drag, the returned subtree
+    /// renders attached to the cursor in the
+    /// [`portal_layer::PortalLayer::CursorAttached`] layer.
+    /// Default `None` (no preview).
+    fn drag_preview(&self) -> Option<WidgetRef> {
+        None
+    }
 
     /// Called after all children have been rendered. Used by scrollable
     /// containers to pop their clip rect.

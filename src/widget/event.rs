@@ -3,6 +3,74 @@ use std::sync::{Arc, Mutex};
 
 use crate::widget::Widget;
 
+/// Phase 3 M0: per-tick context threaded through
+/// `Widget::tick_animations`. Widgets push side-effects
+/// (drained widgets' path prefixes, cancelled exits) into
+/// the context vecs; `UI::tick_animations` drains them after
+/// the recursion completes and stores them on UI's pending
+/// fields for the next render cycle to consume.
+///
+/// This replaces the bare `dt: f32` parameter so drag-related
+/// side channels (M1) and drain-time unmount machinery (M3)
+/// can share infrastructure without growing TickResult into
+/// a Vec-bearing struct that loses Copy.
+pub struct TickContext {
+    pub dt: f32,
+    /// Path prefixes whose owning widgets drained this tick.
+    /// Populated by `FlexWidget::drain_exited_children` (and
+    /// any other widget that drains owned-path-prefix
+    /// children). Consumed by `UI::tick_animations` →
+    /// `UI.pending_drained_prefixes` → next frame's
+    /// `Runtime::process_drain_queues`.
+    pub drained_path_prefixes: Vec<String>,
+    /// Path prefixes whose pending unmount was cancelled
+    /// this tick (re-mount during exit animation). Mirror
+    /// of `drained_path_prefixes` for the cancel side.
+    pub cancelled_unmount_prefixes: Vec<String>,
+}
+
+impl TickContext {
+    pub fn new(dt: f32) -> Self {
+        Self {
+            dt,
+            drained_path_prefixes: Vec::new(),
+            cancelled_unmount_prefixes: Vec::new(),
+        }
+    }
+}
+
+/// Phase 3 M1: per-frame drag state. The lorekeeper input
+/// pump constructs this when the dead-zone state machine
+/// (`src/client/input.rs`) detects a drag start; the dispatch
+/// path stashes it in `EventContext.drag_state` for widgets
+/// to read (e.g. for hover highlighting based on
+/// `accepts_drop`).
+///
+/// M0 declares the struct as a placeholder (`Default::default`
+/// produces an empty/sentinel value); M1 wires the actual
+/// fields and dispatch.
+#[derive(Clone, Default)]
+pub struct DragState {
+    /// The widget where the drag originated. Set when
+    /// `mouse_down` past the dead-zone fires `drag_start`.
+    pub origin_widget: Option<Arc<Mutex<dyn Widget>>>,
+    /// The payload value declared by the originator. Untyped
+    /// `Value` per design decision #4 — consumer convention
+    /// (e.g. `kind: "inventory_item"` field) handles
+    /// discrimination.
+    pub payload: Option<crate::runtime::value::Value>,
+    /// Cursor position when drag_start fired. Widget-local to
+    /// the originator at start; reused as the anchor for
+    /// past-dead-zone calculations.
+    pub start_position: Point,
+    /// Cursor position at the most recent drag_move dispatch.
+    pub current_position: Point,
+    /// True once the cursor has moved past the dead-zone (4px
+    /// default; per-widget override). Drag events only fire
+    /// after this flips true.
+    pub past_dead_zone: bool,
+}
+
 /// EventContext is used to communicate UI-level state changes from widgets
 /// back to the root UI during event handling. This allows widgets to request
 /// actions that require coordination at the UI level (like focus management,
@@ -18,6 +86,13 @@ pub struct EventContext {
     /// `block_interactions` was set". Reset by the dispatcher between
     /// top-level events.
     pub listener_fired: bool,
+    /// Phase 3 M0: drag state if a drag is in flight when
+    /// this event was dispatched. Set by `UI::dispatch_drag_*`
+    /// (M1 wires the actual dispatch); widgets read for hover
+    /// highlighting, accepts-drop checks, etc. M0 ships the
+    /// field as a placeholder so M1 can fill the dispatch
+    /// path without re-touching every event call site.
+    pub drag_state: Option<DragState>,
 }
 
 impl EventContext {
@@ -26,6 +101,7 @@ impl EventContext {
             focus_request: None,
             focused_widget: None,
             listener_fired: false,
+            drag_state: None,
         }
     }
 
@@ -35,6 +111,7 @@ impl EventContext {
             focus_request: None,
             focused_widget,
             listener_fired: false,
+            drag_state: None,
         }
     }
 
@@ -88,6 +165,11 @@ pub struct Event {
     pub value: Option<String>,
     /// Scroll wheel delta (dx, dy) in logical pixels.
     pub scroll_delta: Option<(f32, f32)>,
+    /// Phase 3 M1: drag-event payload. Carries the
+    /// `drag_payload` declared on the originating widget
+    /// through `drag_start` / `drag_move` / `drag_end`
+    /// dispatches so listener closures can read it.
+    pub payload: Option<crate::runtime::value::Value>,
 }
 
 impl Event {
@@ -99,6 +181,7 @@ impl Event {
             callback: None,
             value: None,
             scroll_delta: None,
+            payload: None,
         }
     }
 
@@ -110,6 +193,7 @@ impl Event {
             callback: None,
             value: None,
             scroll_delta: None,
+            payload: None,
         }
     }
 
@@ -130,6 +214,7 @@ impl Event {
             callback: None,
             value: None,
             scroll_delta: None,
+            payload: None,
         }
     }
 
@@ -141,6 +226,7 @@ impl Event {
             callback: None,
             value: Some(value),
             scroll_delta: None,
+            payload: None,
         }
     }
 
@@ -152,6 +238,26 @@ impl Event {
             callback: None,
             value: None,
             scroll_delta: Some((dx, dy)),
+            payload: None,
+        }
+    }
+
+    /// Phase 3 M1: construct a drag-event (`drag_start`,
+    /// `drag_move`, `drag_end`) carrying the current cursor
+    /// point and the originator's `drag_payload` Value.
+    pub fn drag(
+        name: &str,
+        point: Point,
+        payload: Option<crate::runtime::value::Value>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            point: Some(point),
+            keyboard_data: None,
+            callback: None,
+            value: None,
+            scroll_delta: None,
+            payload,
         }
     }
 
@@ -179,6 +285,7 @@ impl Event {
             callback: None,
             value: self.value.clone(),
             scroll_delta: self.scroll_delta,
+            payload: self.payload.clone(),
         }
     }
 }

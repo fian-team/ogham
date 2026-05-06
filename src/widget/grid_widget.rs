@@ -239,25 +239,27 @@ impl Widget for GridWidget {
             let old_iter = self.children.drain(..).collect::<Vec<_>>();
 
             let mut result = Vec::new();
+            let mut agg = UpdateResult::layout_changed();
             for (i, (placement, new_child)) in new_children.into_iter().enumerate() {
                 if i < old_iter.len() {
                     let (_, old_child) = &old_iter[i];
-                    let mut old = old_child.lock().expect("widget lock poisoned");
-                    if old.update(new_child).absorbed {
-                        drop(old);
-                        result.push((placement, old_iter[i].1.clone()));
-                    } else {
-                        drop(old);
-                        result.push((placement, old_iter[i].1.clone()));
-                    }
+                    let mut child_result = {
+                        let mut old = old_child.lock().expect("widget lock poisoned");
+                        old.update(new_child)
+                    };
+                    agg.cancelled_unmount_prefixes
+                        .append(&mut child_result.cancelled_unmount_prefixes);
+                    agg.drained_path_prefixes
+                        .append(&mut child_result.drained_path_prefixes);
+                    result.push((placement, old_iter[i].1.clone()));
                 } else {
                     result.push((placement, new_child));
                 }
             }
             self.children = result;
-            UpdateResult::LAYOUT_CHANGED
+            agg
         } else {
-            UpdateResult::REPLACE
+            UpdateResult::replace()
         }
     }
 

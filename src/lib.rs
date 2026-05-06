@@ -260,6 +260,67 @@ impl Ogham {
         self.ui.consumes_character_key()
     }
 
+    /// Phase 3 M1: dispatch `drag_start` on `origin` with the
+    /// given payload + cursor position. Returns the seeded
+    /// [`widget::event::DragState`] so the host's input pump
+    /// can thread it through subsequent `dispatch_drag_move` /
+    /// `dispatch_drag_end` calls.
+    pub fn dispatch_drag_start(
+        &mut self,
+        origin: widget::WidgetRef,
+        payload: runtime::value::Value,
+        point: widget::point::Point,
+    ) -> widget::event::DragState {
+        self.ui.dispatch_drag_start(origin, payload, point)
+    }
+
+    /// Phase 3 M1: dispatch `drag_move` on the deepest widget
+    /// under `point`. Updates `state.current_position` in place.
+    /// Returns the widget that received the event, if any.
+    pub fn dispatch_drag_move(
+        &mut self,
+        state: &mut widget::event::DragState,
+        point: widget::point::Point,
+    ) -> Option<widget::WidgetRef> {
+        self.ui.dispatch_drag_move(state, point)
+    }
+
+    /// Phase 3 M1: dispatch `drag_end`. Walks portal layers
+    /// then the base tree to find the deepest widget whose
+    /// `accepts_drop(payload)` is true; fires `drag_end` on
+    /// that widget. Falls back to the originator if no target
+    /// accepts. Returns the widget that received `drag_end`.
+    pub fn dispatch_drag_end(
+        &mut self,
+        state: &mut widget::event::DragState,
+        point: widget::point::Point,
+    ) -> Option<widget::WidgetRef> {
+        self.ui.dispatch_drag_end(state, point)
+    }
+
+    /// Phase 3 M1: drop-target hit-test. Walks portal layers
+    /// (high priority → low) then the base tree, returning the
+    /// deepest widget at `point` whose `accepts_drop(payload)`
+    /// returns true. Used by `dispatch_drag_end` and exposed
+    /// for hosts that want to drive drop-zone highlighting
+    /// based on the current cursor position during a drag.
+    pub fn hit_test_drop_target(
+        &self,
+        payload: &runtime::value::Value,
+        point: &widget::point::Point,
+    ) -> Option<widget::WidgetRef> {
+        self.ui.hit_test_drop_target(payload, point)
+    }
+
+    /// Phase 3 M2: dispatch a `contextmenu` event on the
+    /// deepest widget at `point`. Hosts wire this to right-
+    /// click in their input pump; the event is distinct from
+    /// `mouse_down`/`mouse_up`. Returns `true` if a listener
+    /// fired.
+    pub fn dispatch_contextmenu(&mut self, point: widget::point::Point) -> bool {
+        self.ui.dispatch_contextmenu(point)
+    }
+
     /// Get a reference to the runtime
     pub fn get_runtime(&self) -> &Arc<Mutex<runtime::Runtime>> {
         &self.runtime
@@ -354,6 +415,31 @@ impl Ogham {
         self.with_runtime_mut(|rt| rt.set_screen_size(width, height));
     }
 
+    /// Phase 3 M3: process the drain-time unmount queues
+    /// surfaced on `UI`. Drains the path prefixes whose
+    /// owning widgets settled their exit animation last
+    /// frame (firing the corresponding unmount hooks +
+    /// effect cleanups), and clears any cancelled-exit
+    /// prefixes (so a re-mount mid-exit doesn't fire its
+    /// pending unmount).
+    ///
+    /// `update()` calls this automatically after each
+    /// reconcile pass; hosts may call it directly after
+    /// `tick_animations` to drain hooks before the next
+    /// render boundary if they're not also calling
+    /// `update()` that frame.
+    pub fn process_drain_queues(&mut self) {
+        let runtime = self.runtime.clone();
+        let mut rt = runtime.lock().expect("runtime lock poisoned");
+        rt.process_drain_queues(&mut self.ui);
+        // Drain any unmount hooks / effect cleanups the
+        // process_drain_queues call just promoted from
+        // candidate to pending. (rerender's earlier
+        // pre_layout_drain ran with empty queues — drain-time
+        // semantics defer flushing until reconcile completes.)
+        rt.pre_layout_drain();
+    }
+
     /// If the runtime has flagged a rerender, re-execute the module,
     /// bridge the resulting widget values into the widget tree, and
     /// reconcile. Returns `true` if a rerender was performed.
@@ -381,6 +467,12 @@ impl Ogham {
         } else if result.needs_repaint {
             self.ui.mark_needs_repaint();
         }
+        // Phase 3 M3: drain the unmount queues surfaced on UI
+        // — the previous tick may have settled an exit and
+        // queued its prefix; the just-completed reconcile may
+        // have cancelled an in-flight exit. Both run here so
+        // hooks fire / cancel in lockstep with the new tree.
+        self.process_drain_queues();
         Ok(true)
     }
 }

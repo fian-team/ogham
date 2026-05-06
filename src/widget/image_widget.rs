@@ -121,9 +121,11 @@ impl Widget for ImageWidget {
                 absorbed: true,
                 needs_layout: dims_changed,
                 needs_repaint: dims_changed || path_changed,
+                cancelled_unmount_prefixes: Vec::new(),
+                drained_path_prefixes: Vec::new(),
             }
         } else {
-            UpdateResult::REPLACE
+            UpdateResult::replace()
         }
     }
 

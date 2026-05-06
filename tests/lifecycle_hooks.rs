@@ -169,6 +169,13 @@ let main = fn () {
     // Flip the gate. Path disappears → unmount fires.
     runtime.inject_host_state("show".to_string(), Value::Boolean(false));
     runtime.rerender().expect("second render");
+    // Phase 3 M3: drain-time semantics defer unmount until
+    // either a widget drain claims the prefix or the host
+    // explicitly flushes remaining candidates. Tests that
+    // exercise Runtime in isolation (no widget tree) flush
+    // explicitly.
+    runtime.flush_remaining_unmount_candidates();
+    runtime.pre_layout_drain();
     let entries = log.lock().unwrap().clone();
     assert_eq!(entries, vec!["panel unmounted".to_string()]);
 }
@@ -204,6 +211,10 @@ let main = fn () {
 
     runtime.inject_host_state("show".to_string(), Value::Boolean(false));
     runtime.rerender().expect("second render");
+    // See `on_unmount_fires_when_path_disappears` for the
+    // drain-time / direct-Runtime contract.
+    runtime.flush_remaining_unmount_candidates();
+    runtime.pre_layout_drain();
     let entries = log.lock().unwrap().clone();
     assert_eq!(entries.len(), 2, "both unmount hooks should fire");
     // Order: hook_id 1 then 2 (source order).

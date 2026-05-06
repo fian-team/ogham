@@ -263,6 +263,13 @@ let main = fn () {
     // Hide panel → path disappears → cleanup runs.
     runtime.inject_host_state("show".to_string(), Value::Boolean(false));
     runtime.rerender().expect("second render");
+    // Phase 3 M3: drain-time semantics defer unmount/cleanup
+    // until either a widget drain pushes the prefix or the
+    // host explicitly flushes remaining candidates. Tests
+    // that exercise Runtime in isolation (no widget tree)
+    // call the explicit flush.
+    runtime.flush_remaining_unmount_candidates();
+    runtime.pre_layout_drain();
     let entries = log.lock().unwrap().clone();
     assert!(
         entries.contains(&"clean".to_string()),

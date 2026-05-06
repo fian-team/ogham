@@ -1,6 +1,8 @@
 # Phase 3 — Drag events + drain-time unmount refinement
 
-> **Status: Implementation plan.** Companion to
+> **Status: Shipped 2026-05-05.** All five merges (P3-M0..M4)
+> are complete; see "What shipped" at the bottom of this doc.
+> Companion to
 > `UL_ADOPTION_READINESS.md` §2.3 (drag events as the
 > remaining Phase 2.5 ↔ UL gap), `PHASE_2_5_IMPLEMENTATION.md`
 > "What's next" (drain-time deferred from M3), and
@@ -669,3 +671,111 @@ When P3-M4's gate passes:
 
 That's Phase 3 done. UL adoption can begin after the
 docs+skill revision pass.
+
+---
+
+## What shipped (2026-05-05)
+
+### P3-M0 — TickContext + UpdateResult extension
+
+- `widget::event::TickContext { dt, drained_path_prefixes,
+  cancelled_unmount_prefixes }` replaces the bare `dt: f32`
+  arg on `Widget::tick_animations`. UI builds the context per
+  frame, harvests both Vecs into `pending_drained_prefixes`
+  and `pending_cancelled_unmount_prefixes`, exposes them via
+  `take_*` for the runtime to consume.
+- `widget::event::DragState { origin_widget, payload,
+  start_position, current_position, past_dead_zone }` and
+  `EventContext.drag_state: Option<DragState>` so M1+M2 can
+  thread drag info through dispatch without re-touching
+  every event call site.
+- `UpdateResult` grows `cancelled_unmount_prefixes:
+  Vec<String>`; constants converted to functions
+  (`replace()`, `unchanged()`, `layout_changed()`) since
+  Vec isn't const-eligible.
+- `FlexWidget::reconcile_children` records cancelled exits'
+  owned_path_prefixes; `drain_exited_children` records
+  drained prefixes into the `TickContext`.
+- Two new tests (`drain_records_owned_path_prefix_in_tick_context`,
+  `cancel_exit_records_owned_path_prefix_in_update_result`)
+  alongside ~13 widget impls migrated to the new
+  `tick_animations(&mut TickContext)` signature.
+
+### P3-M1 — Drag events core
+
+- New widget trait methods: `drag_payload(&self) ->
+  Option<&Value>`, `drag_dead_zone(&self) -> Option<f32>`,
+  `accepts_drop(&self, payload: &Value) -> bool`,
+  `fire_event_listener(&self, event: &Event) -> bool`.
+- `FlexWidget` stores `drag_payload`, `drag_dead_zone`,
+  `accepts_drop_predicate: Option<Box<dyn Fn>>`. Builder
+  reads `drag_payload`, `drag_dead_zone`, `accepts_drop`
+  properties + `drag_start`/`drag_move`/`drag_end` listeners.
+- `Event.payload: Option<Value>` carries the drag payload
+  through dispatch; `Event::drag(name, point, payload)`
+  constructor.
+- UI dispatch surface:
+  `dispatch_drag_start(origin, payload, point) -> DragState`,
+  `dispatch_drag_move(state, point) -> Option<WidgetRef>`,
+  `dispatch_drag_end(state, point) -> Option<WidgetRef>`,
+  `hit_test_drag_target(point)`, `hit_test_drop_target(payload, point)`.
+  Hit-test walks portal layers high→low then base tree;
+  honors Block backdrop policy.
+- All four exposed on `Ogham::dispatch_*` for hosts.
+- 12 tests in `tests/drag_events.rs`.
+
+### P3-M2 — drag_preview + contextmenu
+
+- `Widget::drag_preview() -> Option<WidgetRef>`; FlexWidget
+  stores it; builder reads `drag_preview` (single widget).
+- `UI` tracks `active_drag_preview: Option<DragPreviewState
+  { preview, cursor }>` set by `dispatch_drag_start`,
+  updated by `dispatch_drag_move`, cleared by
+  `dispatch_drag_end`. Skia renderer pushes a synthetic
+  `CursorAttached` PortalEntry each draw with viewport_rect
+  at the cursor.
+- `UI::dispatch_contextmenu(point) -> bool` fires
+  `contextmenu` listener on the deepest widget at the point
+  (uses M1's `hit_test_drag_target` walker). Builder
+  registers `contextmenu` like other mouse events.
+- `Ogham::dispatch_contextmenu` exposed for hosts.
+- 6 tests in `tests/drag_preview.rs` + 3 in
+  `tests/contextmenu.rs`.
+
+### P3-M3 — Drain-time unmount semantics
+
+- `Runtime::process_drain_queues(&mut UI)` consumes UI's
+  `pending_cancelled_unmount_prefixes` (cancels first) and
+  `pending_drained_prefixes` (then flushes). `Ogham::update`
+  calls it after `ui.reconcile()` and runs
+  `pre_layout_drain` again so the freshly-promoted hooks
+  fire in the same frame.
+- `queue_disappeared_unmounts` now stages to
+  `candidate_unmounts` instead of immediately flushing;
+  paths that reappear in `active_state_paths` have their
+  candidate cleared so a re-mount mid-disappear doesn't
+  fire a stale unmount.
+- New `Runtime::flush_remaining_unmount_candidates()`
+  fallback for hosts (or tests) that exercise `Runtime`
+  without the widget tree's drain machinery.
+- `UpdateResult.drained_path_prefixes: Vec<String>` for
+  immediately-dropped widgets (no exit animation);
+  reconcile_children pushes their owned_path_prefix at
+  both drop sites (type-mismatch, orphaned-old).
+- `UI::reconcile` harvests both new vecs into UI's pending
+  vecs.
+- Existing path-disappear tests in `lifecycle_hooks.rs` +
+  `effects.rs::cleanup_runs_when_path_unmounts` updated to
+  call the explicit flush + re-drain (since they exercise
+  `Runtime` directly without a widget tree).
+- 5 tests in `tests/drain_time_unmount.rs`.
+
+### P3-M4 — Docs graduation
+
+- This trailer.
+- Status banner updated.
+- `LIFECYCLE_AND_PORTAL.md` mentions Phase 3.
+- `UL_ADOPTION_READINESS.md` §2.3 marked closed.
+- Memory updated.
+- "What's next": docs + Ogham-skill revision pass, then UL
+  Pass 2 begins.

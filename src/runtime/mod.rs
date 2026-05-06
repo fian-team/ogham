@@ -523,22 +523,24 @@ impl Runtime {
         }
     }
 
-    /// Phase 2: M1 path-disappear unmount semantics. After VM
-    /// execution, walk paths in `previous_active_paths` that are
-    /// no longer in `active_state_paths` and queue their
-    /// registered `on_unmount` hooks for the next pre-layout
-    /// drain. Removes the entries from `unmount_hooks`.
+    /// Phase 2: M1 path-disappear → M3 candidate-staging.
+    /// After VM execution, walk paths in `previous_active_paths`
+    /// that are no longer in `active_state_paths`. For each one,
+    /// register a candidate_unmount entry rather than flushing
+    /// immediately — drain-time semantics defer the actual
+    /// unmount until the owning widget drains (or is dropped
+    /// without an exit animation, which the widget tree
+    /// signals via `UpdateResult.drained_path_prefixes`).
     ///
-    /// LIMITATION (documented in M1): this fires unmount
-    /// immediately when a path stops being visited, not after
-    /// the widget's exit animation drains. The full drain-time
-    /// semantics from the design require threading mutable
-    /// runtime state through the widget tree's tick_animations
-    /// chain — invasive surgery deferred to a later merge
-    /// (likely M3 when Portal needs it for focus stack
-    /// stability). For the M5 canonical deliverables (Settings
-    /// save-on-close, escape menu Portal), path-disappear is
-    /// sufficient.
+    /// Cancelled exits (re-mount mid-exit) clear matching
+    /// candidates via [`StateManager::cancel_unmount_for_prefix`].
+    ///
+    /// Backward-compat note: callers that exercise `Runtime`
+    /// directly (no UI) won't see unmounts fire automatically
+    /// any more; they need to call
+    /// [`Runtime::flush_remaining_unmount_candidates`] to
+    /// drain whatever the widget tree didn't claim. The
+    /// `Ogham::update` helper handles this automatically.
     pub(crate) fn queue_disappeared_unmounts(&mut self) {
         let disappeared: Vec<String> = self
             .state
@@ -547,13 +549,67 @@ impl Runtime {
             .cloned()
             .collect();
         for path in disappeared {
-            // Use flush_for_path_prefix with the full path as
-            // prefix — for a path "panel/foo", this catches any
-            // hook key starting with "panel/foo" (children of the
-            // unmounted function). The same path is rarely a
-            // prefix of an unrelated longer path because path
-            // components are function names plus call counters.
+            self.state.candidate_unmounts.insert(path);
+        }
+        // Phase 3 M3: paths that were candidates from a prior
+        // disappear but became active again this render are
+        // implicitly cancelled — remove their candidate so a
+        // later flush_remaining doesn't fire a stale unmount.
+        let reappeared: Vec<String> = self
+            .state
+            .active_state_paths
+            .iter()
+            .cloned()
+            .collect();
+        for path in &reappeared {
+            self.state.candidate_unmounts.remove(path);
+        }
+    }
+
+    /// Phase 3 M3: flush every remaining `candidate_unmount`
+    /// path that wasn't claimed by a widget drain or
+    /// cancellation. Acts as the path-disappear fallback for
+    /// hosts that exercise `Runtime` directly without going
+    /// through the widget reconcile path. `Ogham::update`
+    /// calls this after `process_drain_queues` so any
+    /// candidates left over (paths whose hooks weren't
+    /// claimed by a drain because the widget tree had nothing
+    /// to drain) still get flushed.
+    pub fn flush_remaining_unmount_candidates(&mut self) {
+        let remaining: Vec<String> =
+            self.state.candidate_unmounts.iter().cloned().collect();
+        for path in remaining {
             self.state.flush_for_path_prefix(&path);
+        }
+    }
+
+    /// Phase 3 M3: drain-time unmount processing. Consumes the
+    /// path prefixes the previous frame's `tick_animations`
+    /// surfaced on `UI` and flushes the matching unmount hooks
+    /// + effect cleanups.
+    ///
+    /// `drained_path_prefixes` come from widgets whose
+    /// `is_exit_complete()` flipped true and got dropped by
+    /// `drain_exited_children`. They identify subtrees whose
+    /// exit animation has settled — the canonical drain-time
+    /// unmount moment.
+    ///
+    /// `cancelled_unmount_prefixes` come from
+    /// `reconcile_children`'s exit-cancel path: an exiting
+    /// ghost whose key reappeared in the new child set has its
+    /// exit reverted; any pending unmount queued for that
+    /// subtree must be cleared so the cleanup doesn't run.
+    ///
+    /// Cancellation is processed first — if a path is in both
+    /// vecs in the same frame, the cancel wins (matches the
+    /// "cancel-then-re-exit fires unmount on the second
+    /// drain" semantics in the design).
+    pub fn process_drain_queues(&mut self, ui: &mut crate::widget::UI) {
+        for prefix in ui.take_cancelled_unmount_prefixes() {
+            self.state.cancel_unmount_for_prefix(&prefix);
+        }
+        for prefix in ui.take_drained_prefixes() {
+            self.state.flush_for_path_prefix(&prefix);
         }
     }
 

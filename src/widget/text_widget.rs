@@ -156,9 +156,11 @@ impl Widget for TextWidget {
                 absorbed: true,
                 needs_layout: text_changed,
                 needs_repaint: text_changed,
+                cancelled_unmount_prefixes: Vec::new(),
+                drained_path_prefixes: Vec::new(),
             }
         } else {
-            UpdateResult::REPLACE
+            UpdateResult::replace()
         }
     }
 

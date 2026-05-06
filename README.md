@@ -20,7 +20,7 @@ let counter = fn (): widget {
   Flex {
     children: [
       Flex {
-        on_click: fn () {
+        mouse_down: fn () {
           count++;
         },
         children: [

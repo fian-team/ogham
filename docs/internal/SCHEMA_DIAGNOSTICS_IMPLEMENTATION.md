@@ -1,6 +1,6 @@
 # Schema Diagnostics — Implementation Plan
 
-> **Status: Plan — not yet started.**
+> **Status: Phase 0 Ogham-side complete; UL adoption pending.**
 >
 > Concrete, merge-by-merge implementation plan for the
 > Schema-Diagnostic Surface design. Builds on
@@ -14,13 +14,18 @@
 > merges).
 >
 > **Status by merge:**
-> - P0-M1 — Attribute parser. ⏳ Not started.
-> - P0-M2 — Manifest types + TypeRef canonical-string. ⏳
-> - P0-M3 — Proc-macro emit. ⏳
-> - P0-M4 — Diagnostic backend. ⏳
-> - P0-M5 — `ogham check` CLI. ⏳
-> - P0-M6 — UL validation gate. ⏳ (consumer-side)
-> - P1-M1..M6 — Phase 1 LSP integration. ⏳
+> - P0-M1 — Attribute parser. ✅ Shipped.
+> - P0-M2 — Manifest types + TypeRef canonical-string. ✅ Shipped.
+> - P0-M3 — Proc-macro emit. ✅ Shipped.
+> - P0-M4 — Diagnostic backend. ✅ Shipped.
+> - P0-M5 — `ogham check` CLI. ✅ Shipped.
+> - P0-M6 — UL validation gate. ⏳ Consumer-side; not started.
+> - P1-M1..M6 — Phase 1 LSP integration. ⏳ Not started.
+>
+> **Test posture (Phase 0 complete):** 207 lib unit tests, 17
+> ogham-derive unit tests, 8 cli_check integration tests, 10
+> binding_module_attr integration tests, plus all pre-existing
+> tests — workspace runs clean.
 
 ---
 

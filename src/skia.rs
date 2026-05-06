@@ -566,6 +566,32 @@ impl Surface for SkiaEnv {
             (0.0, 0.0), // accumulated_translate — viewport origin at root
         );
 
+        // Phase 3 M2: synthesize a CursorAttached layer entry
+        // for the in-flight drag preview, if any. Positioned
+        // at the cursor; the preview's own layout rect is
+        // drawn by paint_portal_entry like any other layer
+        // entry.
+        if let Some(preview_state) = ui.active_drag_preview().cloned() {
+            let preview_rect = {
+                let g = preview_state.preview.lock().expect("widget lock poisoned");
+                g.get_layout_rect().cloned().unwrap_or_else(|| {
+                    crate::widget::rect::Rect::new(0.0, 0.0, 0.0, 0.0)
+                })
+            };
+            ui.portal_layers.push(crate::widget::PortalEntry {
+                widget: preview_state.preview.clone(),
+                focus_trap: false,
+                viewport_rect: crate::widget::rect::Rect::new(
+                    preview_state.cursor.x(),
+                    preview_state.cursor.y(),
+                    preview_rect.width.max(0.0),
+                    preview_rect.height.max(0.0),
+                ),
+                layer: crate::widget::portal_layer::PortalLayer::CursorAttached,
+                cursor: crate::widget::portal_layer::CursorPreference::Inherit,
+            });
+        }
+
         // Pass B: walk layers in priority order. For each
         // layer with `Block` backdrop policy and any open
         // entry, paint a viewport-sized translucent backdrop
