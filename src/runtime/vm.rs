@@ -833,6 +833,41 @@ impl VM {
                         }
                     }
                 }
+                OpCode::ArrayJoin => {
+                    let sep = self.pop()?;
+                    let arr = self.pop()?;
+                    let sep = match sep {
+                        Value::String(s) => s,
+                        other => {
+                            return Err(VMError::TypeMismatch(format!(
+                                "join() separator must be a string, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let arr = match arr {
+                        Value::Array(a) => a,
+                        other => {
+                            return Err(VMError::InvalidOperation(format!(
+                                "join() can only be called on an array, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let mut parts: Vec<String> = Vec::with_capacity(arr.len());
+                    for v in arr {
+                        match v {
+                            Value::String(s) => parts.push(s),
+                            other => {
+                                return Err(VMError::TypeMismatch(format!(
+                                    "join() requires array of strings, got {:?}",
+                                    other
+                                )));
+                            }
+                        }
+                    }
+                    self.push(Value::String(parts.join(&sep)))?;
+                }
                 OpCode::EmitEvent(arg_count) => {
                     let ac = arg_count as usize;
                     // First arg is the event name; rest are extra args.

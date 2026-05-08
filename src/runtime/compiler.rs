@@ -423,6 +423,7 @@ impl Compiler {
             | OpCode::Le
             | OpCode::And
             | OpCode::Or
+            | OpCode::ArrayJoin
             | OpCode::GetIndex => -1,
 
             // Pop 2n key-value pairs, push 1
@@ -1629,6 +1630,17 @@ impl Compiler {
             if access.property.get() == "length" {
                 self.compile_expression(&access.object)?;
                 self.emit(OpCode::ArrayLength);
+                return Ok(());
+            }
+            if access.property.get() == "join" {
+                if call.arguments.len() != 1 {
+                    return Err(VMError::InvalidOperation(
+                        "join() takes exactly one separator argument".to_string(),
+                    ));
+                }
+                self.compile_expression(&access.object)?;
+                self.compile_expression(&call.arguments[0])?;
+                self.emit(OpCode::ArrayJoin);
                 return Ok(());
             }
         }

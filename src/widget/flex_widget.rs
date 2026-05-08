@@ -274,15 +274,17 @@ impl FlexWidget {
                     eprintln!(
                         "[ogham] layout-affecting spring stuck on widget key={:?} \
                          exiting={} hovered={} \
-                         border={} padding={} margin={} corner_radius={} gap={} text_size={} \
+                         border_width={} padding={} margin={} gap={} text_size={} \
                          ({} frames)",
                         self.key,
                         self.exiting,
                         self.hovered,
-                        self.animations.border.is_some(),
+                        self.animations
+                            .border
+                            .as_ref()
+                            .is_some_and(|b| b.width_animating()),
                         self.animations.padding.is_some(),
                         self.animations.margin.is_some(),
-                        self.animations.corner_radius.is_some(),
                         self.animations.gap.is_some(),
                         self.animations.text_size.is_some(),
                         self.layout_anim_frames,

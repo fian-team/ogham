@@ -356,6 +356,17 @@ impl BorderSprings {
             && self.bottom_color.is_settled()
             && self.left_color.is_settled()
     }
+
+    /// True if any of the four width springs is still moving. Border
+    /// *width* feeds into the box-model inset and so changes layout;
+    /// border *color* is paint-only. A color-only hover transition must
+    /// not trigger relayout.
+    pub fn width_animating(&self) -> bool {
+        !(self.top_width.is_settled()
+            && self.right_width.is_settled()
+            && self.bottom_width.is_settled()
+            && self.left_width.is_settled())
+    }
 }
 
 /// Springs for the five scalar components of an affine transform.
@@ -734,14 +745,15 @@ impl AnimationState {
     }
 
     /// True if any active spring drives a layout-affecting property
-    /// (padding, margin, border width, gap, corner radius, text size).
-    /// Used to decide whether a layout pass is required while ticking.
+    /// (padding, margin, border width, gap, text size). Border *color*
+    /// and corner-radius springs are paint-only — see `FlexStyle::layout_equal`
+    /// — so we only flag a border spring when its width components are
+    /// still moving, and corner_radius is excluded entirely.
     pub fn has_layout_effects(&self) -> bool {
-        self.border.is_some()
+        self.border.as_ref().is_some_and(|b| b.width_animating())
             || self.padding.is_some()
             || self.margin.is_some()
             || self.gap.is_some()
-            || self.corner_radius.is_some()
             || self.text_size.is_some()
     }
 }

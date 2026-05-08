@@ -387,7 +387,7 @@ impl UI {
             }
 
             if handled {
-                self.mark_dirty();
+                self.mark_after_event(&ctx);
             }
             handled
         } else {
@@ -408,9 +408,23 @@ impl UI {
             }
 
             if handled {
-                self.mark_dirty();
+                self.mark_after_event(&ctx);
             }
             handled
+        }
+    }
+
+    /// Choose between layout-invalidation and repaint-only after a handled
+    /// event, based on whether any widget reported a layout-affecting
+    /// mutation via `EventContext::request_layout`. Most listeners just
+    /// fire host events — the host's response flows back through reconcile,
+    /// so a same-frame layout pass is unnecessary. Today only a `TextInput`
+    /// with `width: Shrink` ingesting a character opts in.
+    fn mark_after_event(&mut self, ctx: &EventContext) {
+        if ctx.needs_layout {
+            self.mark_dirty();
+        } else {
+            self.mark_needs_repaint();
         }
     }
 

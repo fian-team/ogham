@@ -93,6 +93,15 @@ pub struct EventContext {
     /// field as a placeholder so M1 can fill the dispatch
     /// path without re-touching every event call site.
     pub drag_state: Option<DragState>,
+    /// Set true by a widget whose event handling mutated its own
+    /// state in a way that affects the layout this frame (e.g. a
+    /// `TextInput` with `width: Shrink` ingesting a character).
+    /// Most handlers just fire host events — the resulting state
+    /// flows back through reconcile, so a same-frame layout pass
+    /// is unnecessary. `UI::call_event` checks this flag on
+    /// handled events to choose between `mark_needs_layout` and
+    /// the cheaper `mark_needs_repaint`.
+    pub needs_layout: bool,
 }
 
 impl EventContext {
@@ -102,6 +111,7 @@ impl EventContext {
             focused_widget: None,
             listener_fired: false,
             drag_state: None,
+            needs_layout: false,
         }
     }
 
@@ -112,7 +122,15 @@ impl EventContext {
             focused_widget,
             listener_fired: false,
             drag_state: None,
+            needs_layout: false,
         }
+    }
+
+    /// Signal that the just-processed event mutated widget state in a way
+    /// that requires a layout pass this frame. See [`needs_layout`] for
+    /// the contract. Idempotent.
+    pub fn request_layout(&mut self) {
+        self.needs_layout = true;
     }
 
     /// Request that a widget receives focus

@@ -198,9 +198,15 @@ impl Widget for TextInputWidget {
                 self.value.len()
             };
             let value_changed = !value_unchanged;
+            // Value only feeds into layout when width is `Shrink` —
+            // `get_dimensions` derives the box width from `self.value.len()`
+            // in that case. For `Fixed` / `Grow` / `Percent` the box is
+            // unaffected and the new text is paint-only.
+            let value_affects_layout =
+                value_changed && matches!(self.style.width, Size::Shrink);
             UpdateResult {
                 absorbed: true,
-                needs_layout: style_changed || value_changed,
+                needs_layout: style_changed || value_affects_layout,
                 needs_repaint: style_changed || value_changed,
                 cancelled_unmount_prefixes: Vec::new(),
                 drained_path_prefixes: Vec::new(),
@@ -308,6 +314,10 @@ impl Widget for TextInputWidget {
 
         // Handle keyboard events if focused
         if event.name.starts_with("key") && ctx.is_focused(self_ref) {
+            // Track whether the keystroke mutated `self.value`. Cursor-only
+            // moves don't change the rendered text width; insertions and
+            // deletions can — but only matter for layout if width is Shrink.
+            let mut value_mutated = false;
             if let Some(keyboard_data) = &event.keyboard_data {
                 match event.name.as_str() {
                     "keydown" => {
@@ -315,7 +325,9 @@ impl Widget for TextInputWidget {
                             match key_code {
                                 8 => {
                                     // Backspace
+                                    let len_before = self.value.len();
                                     self.delete_char();
+                                    value_mutated = self.value.len() != len_before;
                                     event_handled = true;
                                 }
                                 37 => {
@@ -352,6 +364,7 @@ impl Widget for TextInputWidget {
                                     // Delete
                                     if self.cursor_position < self.value.len() {
                                         self.value.remove(self.cursor_position);
+                                        value_mutated = true;
                                     }
                                     event_handled = true;
                                 }
@@ -366,12 +379,19 @@ impl Widget for TextInputWidget {
                             // Only insert printable characters
                             if character.is_ascii_graphic() || character.is_ascii_whitespace() {
                                 self.insert_char(character);
+                                value_mutated = true;
                                 event_handled = true;
                             }
                         }
                     }
                     _ => {}
                 }
+            }
+            // Layout only depends on value when width is `Shrink` — see
+            // `get_dimensions`. For Fixed/Grow/Percent the box is fixed
+            // and a repaint suffices.
+            if value_mutated && matches!(self.style.width, Size::Shrink) {
+                ctx.request_layout();
             }
             if event_handled {
                 let mut dummy_ctx = EventContext::new();
@@ -458,7 +478,22 @@ impl Widget for TextInputWidget {
             let bg = style
                 .background_color
                 .unwrap_or(crate::widget::style::Color::new(255, 255, 255, 255));
-            ctx.fill_rect(box_x, box_y, box_width, box_height, &bg);
+            if style.corner_radii.top_left > 0.0
+                || style.corner_radii.top_right > 0.0
+                || style.corner_radii.bottom_left > 0.0
+                || style.corner_radii.bottom_right > 0.0
+            {
+                ctx.fill_rounded_rect(
+                    box_x,
+                    box_y,
+                    box_width,
+                    box_height,
+                    &style.corner_radii,
+                    &bg,
+                );
+            } else {
+                ctx.fill_rect(box_x, box_y, box_width, box_height, &bg);
+            }
 
             // Borders
             ctx.draw_border(

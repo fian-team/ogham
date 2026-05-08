@@ -106,6 +106,9 @@ pub enum OpCode {
     // -- Built-ins ----------------------------------------------------------
     /// Pop array, push its length as an integer.
     ArrayLength,
+    /// Pop separator string, pop array, push the elements joined by the
+    /// separator. All array elements must be strings.
+    ArrayJoin,
     /// Emit an event: pop `arg_count` args, then pop the event-name string.
     EmitEvent(u8),
     /// Pop value and log it.
