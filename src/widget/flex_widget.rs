@@ -1692,6 +1692,27 @@ impl Widget for FlexWidget {
             let border_box_height =
                 layout.height - style.margin.get_top() - style.margin.get_bottom();
 
+            // Backdrop filter (frosted-glass): captures the canvas
+            // under the border box, blurs it, and the panel's own
+            // background image / colour composite on top of that
+            // blurred capture. The border draws *outside* the layer
+            // so it stays sharp on the main canvas.
+            let backdrop_active = style
+                .backdrop_filter
+                .map(|bf| bf.is_active())
+                .unwrap_or(false);
+            if backdrop_active {
+                let sigma = style.backdrop_filter.unwrap().blur;
+                ctx.push_backdrop_blur(
+                    border_box_x,
+                    border_box_y,
+                    border_box_width,
+                    border_box_height,
+                    &style.corner_radii,
+                    sigma,
+                );
+            }
+
             if let Some(background_image_path) = &style.background_image {
                 ctx.draw_image(
                     background_image_path,
@@ -1726,6 +1747,10 @@ impl Widget for FlexWidget {
                         background_color,
                     );
                 }
+            }
+
+            if backdrop_active {
+                ctx.pop_backdrop_blur();
             }
 
             ctx.draw_border(

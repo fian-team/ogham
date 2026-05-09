@@ -61,9 +61,35 @@ pub struct FlexStyle {
     /// descendants. Pivots around the widget's center. Does not affect
     /// layout or hit-testing (hit-tests ignore the transform for now).
     pub transform: Transform,
+    /// Paint-time backdrop filter applied to the canvas content
+    /// underneath this widget's border box (i.e. the panel "frosts"
+    /// what's behind it). `None` is a no-op. The filter is captured
+    /// when this widget paints its own background; descendants
+    /// render normally on top of the blurred composite.
+    pub backdrop_filter: Option<BackdropFilter>,
     /// Spring-driven transitions declared for specific style properties.
     /// Empty by default — properties snap to new values unless opted in.
     pub transitions: TransitionSet,
+}
+
+/// A single-knob backdrop filter. Currently exposes Gaussian blur only;
+/// future variants (saturate, brightness) can extend this type without
+/// a breaking change to call sites that just read `.blur`.
+///
+/// Sigma is in unscaled pixels — Skia's symmetric kernel sigma. Values
+/// of 8–16 read as "frosted glass" over typical UI imagery; values
+/// above ~32 collapse to a near-uniform tint and aren't worth the cost.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BackdropFilter {
+    pub blur: f32,
+}
+
+impl BackdropFilter {
+    /// True when the filter would do anything useful — call sites use
+    /// this to skip the (expensive) save-layer for zero-sigma filters.
+    pub fn is_active(&self) -> bool {
+        self.blur > 0.0
+    }
 }
 
 /// Single-scalar opacity wrapped so it has a non-zero `Default`. Values
@@ -147,6 +173,7 @@ impl Default for FlexStyle {
             overflow: Overflow::Visible,
             opacity: Opacity::OPAQUE,
             transform: Transform::IDENTITY,
+            backdrop_filter: None,
             transitions: TransitionSet::default(),
         }
     }

@@ -422,6 +422,11 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     style.transform = t;
                 }
             }
+            "backdrop_filter" => {
+                if let Some(bf) = parse_backdrop_filter_value(value) {
+                    style.backdrop_filter = Some(bf);
+                }
+            }
             "transition" => {
                 if let Some(set) = parse_transition_value(value) {
                     style.transitions = set;
@@ -463,6 +468,21 @@ fn parse_transform_value(value: &Value) -> Option<Transform> {
                 t.rotate = v;
             }
             Some(t)
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `backdrop_filter:` value.
+///
+/// Accepted shapes:
+/// - `{ blur: N }` — Gaussian blur with sigma `N` (unscaled px).
+/// - any other shape — ignored.
+fn parse_backdrop_filter_value(value: &Value) -> Option<BackdropFilter> {
+    match value {
+        Value::Map(map) => {
+            let blur = map.get("blur").and_then(value_to_f32).unwrap_or(0.0);
+            Some(BackdropFilter { blur })
         }
         _ => None,
     }

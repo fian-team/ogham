@@ -324,6 +324,24 @@ Use `Presence` for route boundaries; nest one per "slot" that should sequence in
 
 `opacity` (number 0..1, default 1) and `transform` (`{ translate_x, translate_y, scale, scale_x, scale_y, rotate }`, default identity) are paint-only — they don't affect layout or hit-testing. `transform` pivots around the widget's center. Both are spring-animatable when listed in `transition:`.
 
+#### `backdrop_filter` — frosted glass over what's behind a panel
+
+`backdrop_filter: { blur: N }` (default `None`) blurs the canvas content already painted under the widget's border box. The widget's own background image / colour and any descendants composite *on top of* the blurred capture; the border draws sharp on the main canvas. `N` is Gaussian sigma in unscaled px — values of 8–16 read as "frosted glass" over typical UI imagery; values above ~32 collapse to a near-uniform tint. Backends that don't support backdrop sampling fall back to no-op via the trait defaults; the panel still renders, just without the frost.
+
+```ogh
+Flex {
+  style: {
+    background_color: { r: 22, g: 24, b: 28, a: 80 },
+    border: { width: 1, color: hairline, style: "solid" },
+    corner_radius: 8,
+    backdrop_filter: { blur: 14 },
+  },
+  children: [ /* ... */ ],
+}
+```
+
+**Cost.** `backdrop_filter` triggers a Skia `save_layer` with an `image_filter::blur` backdrop on every paint. Static panels at hub speed (~60fps with little behind them moving) cost a couple of ms; the same primitive on hot-path HUD elements painted over a moving 3D scene is much more expensive because the blurred capture can't be cached frame-to-frame. Use it for chrome that asks the player to slow down — not for combat-time HUD widgets. Sigma is *not* spring-animatable today; assigning a different `blur` value snaps.
+
 ### Lifecycle hooks (Phase 2)
 
 Inside any function body, four block-statement keywords let you

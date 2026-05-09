@@ -534,6 +534,71 @@ impl RenderContext for SkiaEnv {
     fn pop_effects(&mut self) {
         self.surface.canvas().restore();
     }
+
+    fn push_backdrop_blur(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: &crate::widget::style::CornerRadii,
+        sigma: f32,
+    ) {
+        let sx = self.scale_coord(x);
+        let sy = self.scale_coord(y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+        let s_sigma = self.scale_dim(sigma);
+        let rect = skia_safe::Rect::from_xywh(sx, sy, sw, sh);
+        // Build a rounded-rect mask so the blurred capture is clipped to
+        // the panel shape — without this, a plain rect clip leaves
+        // blurred halos at the corners.
+        let tl = self.scale_dim(radii.top_left);
+        let tr = self.scale_dim(radii.top_right);
+        let br = self.scale_dim(radii.bottom_right);
+        let bl = self.scale_dim(radii.bottom_left);
+        let rrect = skia_safe::RRect::new_rect_radii(
+            rect,
+            &[
+                skia_safe::Point::new(tl, tl),
+                skia_safe::Point::new(tr, tr),
+                skia_safe::Point::new(br, br),
+                skia_safe::Point::new(bl, bl),
+            ],
+        );
+
+        let canvas = self.surface.canvas();
+        // Outer save: lets pop_backdrop_blur restore() back past the
+        // clip in addition to the save_layer.
+        canvas.save();
+        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+
+        let filter = skia_safe::image_filters::blur(
+            (s_sigma, s_sigma),
+            skia_safe::TileMode::Clamp,
+            None,
+            None,
+        );
+        if let Some(filter) = filter.as_ref() {
+            let rec = skia_safe::canvas::SaveLayerRec::default()
+                .bounds(&rect)
+                .backdrop(filter);
+            canvas.save_layer(&rec);
+        } else {
+            // Filter creation failed (zero sigma rounds to a no-op,
+            // GPU-context oddities, etc.). Match the push count so the
+            // paired pop stays balanced.
+            canvas.save();
+        }
+    }
+
+    fn pop_backdrop_blur(&mut self) {
+        let canvas = self.surface.canvas();
+        // Pop the save_layer (or the fallback save), then the outer
+        // save that owns the clip.
+        canvas.restore();
+        canvas.restore();
+    }
 }
 
 impl Surface for SkiaEnv {

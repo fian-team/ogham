@@ -1282,6 +1282,29 @@ pub trait RenderContext {
 
     /// Pop the most recently pushed effects layer.
     fn pop_effects(&mut self) {}
+
+    /// Begin a backdrop-filter layer over the rect `(x, y, w, h)`,
+    /// clipped to `radii`. Skia-style backends apply a Gaussian blur
+    /// of `sigma` to the canvas content already painted under the
+    /// rect; the layer is then ready to receive the panel's own
+    /// translucent paint, which composites *on top* of the blurred
+    /// capture. Backends that can't do backdrop sampling can leave
+    /// this a no-op — the panel still renders, just without the
+    /// frosted-glass effect. Always paired with `pop_backdrop_blur`.
+    fn push_backdrop_blur(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _w: f32,
+        _h: f32,
+        _radii: &CornerRadii,
+        _sigma: f32,
+    ) {
+    }
+
+    /// Pop the most recently pushed backdrop-filter layer, compositing
+    /// it back onto the underlying canvas.
+    fn pop_backdrop_blur(&mut self) {}
 }
 
 use downcast_rs::{impl_downcast, Downcast};
