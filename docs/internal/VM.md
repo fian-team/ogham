@@ -244,6 +244,22 @@ These are hard caps; exceeding any of them errors out cleanly
   - Bypassing `OpCode::Return` to exit a frame (e.g. by
     truncating frames directly).
 
+- **Lifecycle opcodes key on the current call-stack path.**
+  `RegisterMountHook`, `RegisterUnmountHook`, and
+  `RegisterEffect` all use `runtime.state.current_path` plus
+  the encoded `hook_id` as their registry key. The `hook_id` is
+  assigned at compile time per source-position, so the same
+  hook re-registers into the same slot on every render. This
+  is what makes hook identity path-based, not order-based —
+  see [INTENT §9](INTENT.md#9-hook-identity-is-path-based-not-order-based).
+
+  *Drift indicators:*
+  - A new lifecycle opcode that uses something other than
+    `current_path` for its registry key.
+  - A `Call` opcode variant that doesn't push a path frame
+    (would silently fold callee hooks into the caller's
+    identity space).
+
 - **`Call` over a `BoundTrigger` is event dispatch, not
   function call.** When the callee is a `Value::BoundTrigger`
   (produced by `<mutation>.trigger`), `Call` doesn't push a new
@@ -316,7 +332,7 @@ key-value-pairs), `GetIndex`, `GetProperty(u16)`.
 **Widgets:** `Widget { identifier_constant: u16,
 property_count: u16 }`.
 
-**Built-ins:** `ArrayLength`, `EmitEvent(u8)`, `Log`,
+**Built-ins:** `ArrayLength`, `ArrayJoin`, `EmitEvent(u8)`, `Log`,
 `CreateMutation`.
 
 **Context:** `PushContext`, `PopContext`, `GetContext(u16)`.
@@ -333,6 +349,28 @@ a result array.
 `match` expression. Used by `Runtime::state` to decide whether
 state declarations after the branch are problematic. (See open
 questions.)
+
+**Lifecycle hooks (Phase 2):**
+- `RegisterMountHook(hook_id: u16)` — pop a closure. If the
+  current call-stack path is *new* this frame (not in
+  `previous_active_paths`), enqueue `(path, hook_id, closure)`
+  onto `pending_mounts`; otherwise drop the closure. Mount has
+  no persistent registry — it queues inline and fires after
+  reconcile + layout.
+- `RegisterUnmountHook(hook_id: u16)` — pop a closure. Insert
+  into `unmount_hooks` keyed by `(current_path, hook_id)`,
+  overwriting any prior entry. Re-registered every render so
+  the closure's upvalues reflect current scope. Fires when the
+  path drains (see `Runtime::process_drain_queues`).
+- `RegisterEffect { hook_id: u16, dep_count: u8 }` — pop
+  `dep_count` values then a closure. Compare deps to
+  `effects[(path, hook_id)].previous_deps`; if changed (or
+  first run), schedule cleanup-then-fire. Always update the
+  slot's closure so the body reflects current scope.
+- `RegisterEffectCleanup` — pop a closure. Attach as the
+  pending-cleanup of the currently-executing effect. Compile-
+  time error if used outside an `effect` body (parser-enforced
+  via `in_effect_body`).
 
 ### The Value enum as ABI
 
@@ -352,6 +390,12 @@ runtime, and the widget builder. The variants:
   produced by `m.trigger`, immediately consumed by `Call`.
   *Should never appear in stored state*; it's an
   "in-flight call" shape and storing it doesn't make sense.
+- `WidgetRef(u64)` — Phase 2.5. An opaque widget identity
+  allocated by `WidgetTree`, returned by the `focused_widget()`
+  built-in and consumed by `focus(ref)`. Distinct from the
+  `widget::WidgetRef` type alias (`Arc<Mutex<dyn Widget>>`)
+  used inside the widget tree — this is a script-visible
+  *identifier*, not a pointer.
 
 `PartialEq` for `Value` is structural for primitives and
 composites, identity (`Rc::ptr_eq`) for closures and mutations.
@@ -365,7 +409,12 @@ runtime fields the VM reaches into:
 
 - `state` (`StateManager`) — read for `GetState`/`DeclareState`,
   written by `SetState` and `Call` (which pushes a new
-  call-stack frame and increments the call-counter).
+  call-stack frame and increments the call-counter). Also owns
+  the lifecycle-hook registry (`unmount_hooks`, `effects`,
+  `pending_mounts`, plus drain-side `candidate_unmounts` /
+  `cancelled_unmount_prefixes`) written by the four
+  `Register*Hook` opcodes and consumed by
+  `Runtime::process_drain_queues`.
 - `host_state` — read by `GetHostState` and by `GetState`
   fall-through. Written internally by `OpCode::Import` to lift
   imported bindings.

@@ -60,8 +60,8 @@ children, wiring up event listeners.
 
 A `HashMap<String, WidgetFactory>` keyed by lowercased type name.
 `with_defaults()` populates: `flex`, `text`, `textinput`, `svg`,
-`image`, `grid`, `presence`. `RuntimeConfig::with_widget` adds
-custom widgets (and overrides built-ins on collision).
+`image`, `grid`, `presence`, `portal`. `RuntimeConfig::with_widget`
+adds custom widgets (and overrides built-ins on collision).
 
 ### Tenets
 
@@ -139,8 +139,11 @@ custom widgets (and overrides built-ins on collision).
 - **`flex` / `Flex`** — see `create_flex_widget`. Builds
   `FlexWidget`, parses style/hover_style/initial/exit/key, wires
   pointer event listeners (`mouse_down`, `mouse_up`,
-  `mouse_enter`, `mouse_leave`), recursively builds children,
-  applies entry transition.
+  `mouse_enter`, `mouse_leave`), drag listeners (`drag_start`,
+  `drag_move`, `drag_end`) via `register_drag_event_listener`,
+  reads drag-source/drop-target fields (`drag_payload`,
+  `drag_dead_zone`, `accepts_drop`, `drag_preview`), recursively
+  builds children, applies entry transition.
 - **`text` / `Text`** — see `create_text_widget`. Required `text`
   property; coerces ints/floats/booleans to strings. Default
   width/height = `Shrink`.
@@ -151,6 +154,29 @@ custom widgets (and overrides built-ins on collision).
 - **`grid` / `Grid`** — grid layout with placement properties.
 - **`presence` / `Presence`** — generation-keyed sequencer; see
   [ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md).
+- **`portal` / `Portal`** — deferred-paint container that lifts
+  its children into a named layer; see [Portal layers](#portal-layers)
+  below.
+
+### `WidgetDescriptor.owned_path`
+
+Every `Value::Widget` carries the call-stack path of the
+function that produced it (set by `OpCode::Widget` from
+`runtime.state.current_path`). The builder copies that path onto
+the produced widget's `owned_path_prefix` field. This is what
+makes drain-time unmount work: when the widget drains, its
+prefix is what gets pushed into the tick's
+`drained_path_prefixes` (consumed by
+`Runtime::process_drain_queues` to fire the registered hooks
+under that prefix).
+
+`owned_path_prefix` is currently set on `FlexWidget` and
+`PortalWidget` — the two widget types that own lifecycle paths
+(any `fn` body whose render produces one of these). Custom
+widgets that wrap a `FlexWidget` inherit the prefix from the
+inner widget; custom widgets that don't wrap one are responsible
+for storing their own prefix if they want hooks under their fn
+to drain correctly.
 
 ---
 
@@ -335,10 +361,20 @@ fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
 - `render_effects()` — opacity + transform.
 - `is_exiting`, `begin_exit`, `cancel_exit`, `is_exit_complete` —
   see [ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md).
-- `tick_animations(dt)` — see
-  [STYLE_AND_ANIMATION.md](STYLE_AND_ANIMATION.md).
+- `tick_animations(&mut TickContext)` — see
+  [STYLE_AND_ANIMATION.md](STYLE_AND_ANIMATION.md). The
+  `TickContext` (defined in `src/widget/event.rs`) carries `dt`
+  plus the per-tick drain side-channels
+  (`drained_path_prefixes`, `cancelled_unmount_prefixes`) that
+  the [drain-time unmount machinery](#drain-time-unmount)
+  consumes. The host-facing `UI::tick_animations(dt)` builds
+  the context internally.
 - `needs_post_render`, `post_render` — used by scroll containers
   to pop their clip rect.
+- `accepts_drop_predicate(payload) -> bool`,
+  `drag_payload`, `drag_dead_zone`, `drag_preview` — Phase 3
+  drag-source / drop-target hooks on `FlexWidget`. See
+  [EVENTS.md](EVENTS.md) for dispatch behaviour.
 
 ### Tenets
 
@@ -363,6 +399,110 @@ fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
   - A trait method with a generic parameter.
   - Helpers added to the trait that should be free functions
     instead.
+
+---
+
+## Portal layers
+
+`Portal` is special-cased throughout the tree: it contributes
+nothing to its parent's layout flow, paints into a named
+*layer* in a second pass, and hit-tests outside the parent's
+clip / order. The layer machinery is owned by `UI`:
+
+- `UI::portal_layers: PortalLayers` — a fixed, ordered set of
+  six named layers (`Main`, `OverlayModal`, `Popover`,
+  `Tooltip`, `Toast`, `CursorAttached`). Each layer carries a
+  `BackdropPolicy` (`Block` / `None`) and a cursor preference
+  (`Free` / `Inherit`).
+- `UI::portal_layers.entries: HashMap<Layer, Vec<PortalEntry>>`
+  — populated each render by `PortalWidget::collect_into_layer`.
+- `UI::active_drag_preview: Option<DragPreviewState>` — set by
+  `dispatch_drag_start` when the originator declared
+  `drag_preview:`; rendered as a synthetic `CursorAttached`
+  entry by the surface backend.
+
+### `PortalEntry`
+
+```rust
+struct PortalEntry {
+    children: Vec<WidgetRef>,
+    viewport_origin: Point,    // viewport-absolute, not parent-relative
+    open: bool,
+    focus_trap: bool,
+    layer: Layer,
+}
+```
+
+The viewport-absolute origin is the Phase 2.5 M0 fix to a
+Phase 2 limitation — earlier prototypes painted nested portals
+at parent-relative coords, which was wrong whenever the parent
+sat inside a transformed / scrolled subtree.
+
+### Tenets
+
+- **Layer set is fixed.** Authors *cannot* register new layers
+  at runtime. The priority math, backdrop logic, and cursor
+  policy are baked in.
+
+  *Why:* unbounded layer registration would force every layer
+  consumer to consult a runtime priority table, breaking the
+  current "compile-time priority" simplicity. Six layers cover
+  every use case the audit found.
+
+  *Drift indicators:*
+  - A `register_portal_layer` API.
+  - Layer enum variants spreading beyond `portal_layer.rs`.
+
+- **Hit-testing walks layers high-priority-to-low *before* the
+  base tree.** A click on an open `OverlayModal` layer with
+  `Block` policy never reaches the base tree.
+
+  *Drift indicators:*
+  - A hit-test path that walks the base tree before consulting
+    open layers.
+  - A layer with `Block` policy whose pointer fall-through is
+    bypassed by some new dispatch path.
+
+- **Drag preview is synthesized, not authored as a Portal.**
+  When `dispatch_drag_start` fires and the originator has a
+  `drag_preview:`, `UI::active_drag_preview` is set; the Skia
+  backend builds a `CursorAttached` `PortalEntry` for it each
+  frame from the cursor position. Authors don't write a Portal
+  manually for this case.
+
+  *Drift indicators:*
+  - A drag preview built as an explicit Portal in `.ogh`
+    (would double-paint with the synthesized one).
+
+---
+
+## Drain-time unmount
+
+`UI` carries two pending vecs that interact with the runtime's
+hook machinery:
+
+- `UI::pending_drained_prefixes: Vec<String>` — populated by
+  `UI::tick_animations` from this tick's
+  `TickContext.drained_path_prefixes`. Consumed by
+  `Runtime::process_drain_queues` to promote
+  `candidate_unmounts` to fired hooks.
+- `UI::pending_cancelled_prefixes: Vec<String>` — same shape,
+  for cancelled exits (re-mount mid-exit).
+
+Each `FlexWidget` / `PortalWidget` records its
+`owned_path_prefix` at construction. When `tick_animations`
+notices that an exit animation has settled, the widget pushes
+its prefix into `TickContext.drained_path_prefixes`
+*before* `drain_exited_children` removes it from
+`self.children`. The recursion-driven push is what lets
+`UI::tick_animations` collect every drained prefix in one pass
+without each widget needing direct access to the UI.
+
+`UI::clear_lifecycle_state` clears both pending vecs (plus the
+focus stack and `portal_layers` entries). Called by
+`Ogham::reload_file` / `recompile_from_source` before swapping
+in a new UI, to keep stale prefixes from the previous module
+out of the new one's drain processing.
 
 ---
 

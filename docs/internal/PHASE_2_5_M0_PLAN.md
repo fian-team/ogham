@@ -1,20 +1,27 @@
 # P25-M0 — Portal layer system + viewport-absolute coords
 
-> **Status: Planning doc.** Concrete design + per-step plan
-> for Phase 2.5's first merge. Companion to
-> `PHASE_2_5_IMPLEMENTATION.md` (the phase-level plan) and
-> `LIFECYCLE_AND_PORTAL.md` (the Phase 2 design this extends).
-> Read those first.
+> **Status: Shipped 2026-05-05.** Original planning doc preserved
+> below; the design landed substantially as drafted. Layer enum
+> (`Main` / `OverlayModal` / `Popover` / `Tooltip` / `Toast` /
+> `CursorAttached`), per-layer `BackdropPolicy` + cursor preference,
+> two-pass Skia render, viewport-absolute `PortalEntry` coords, and
+> hit-test layer-walk all shipped on `main`. The companion
+> [`PHASE_2_5_IMPLEMENTATION.md`](PHASE_2_5_IMPLEMENTATION.md)
+> trailer records the per-merge "what shipped" details across M0–M5.
+> See [`SUBSYSTEMS.md → Portal widget and layers`](SUBSYSTEMS.md)
+> and [`SURFACE.md`](SURFACE.md) for the live contract.
+>
+> Companion to `PHASE_2_5_IMPLEMENTATION.md` (the phase-level plan)
+> and `LIFECYCLE_AND_PORTAL.md` (the Phase 2 design this extends).
 >
 > M0 is the foundation for Phase 2.5: replaces Phase 2's
 > single per-frame `portal_layer` with a named-and-priority-
 > ordered layer system per UL's `UI_RUNTIME.md` §1. Folds in
 > the M3-deferred viewport-absolute coordinate fix.
 >
-> Estimated ~700 LOC + ~15 tests, ~3 person-days. Highest-risk
-> P25 merge — the rework touches Skia draw, hit-test, `Portal`
-> widget, builder, and `UI` — every test that pokes
-> `ui.portal_layer` directly will break.
+> Original estimate: ~700 LOC + ~15 tests, ~3 person-days.
+> Highest-risk P25 merge — the rework touches Skia draw, hit-test,
+> `Portal` widget, builder, and `UI`.
 
 ---
 

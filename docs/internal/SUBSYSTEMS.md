@@ -188,6 +188,36 @@ This subsystem has its own document: [`RUNTIME.md`](RUNTIME.md).
 
 ---
 
+## Typed host bindings
+
+**Problem:** give Rust hosts a typed wrapper around `Ogham` that
+moves host state and host events through `#[derive(...)]`-
+generated bridges instead of `HashMap<String, Value>` /
+`Vec<Value>` plumbing — and emit a compile-time schema
+manifest that the `ogham check` CLI / LSP can validate `.ogh`
+files against.
+
+**Invariants:**
+- `TypedOgham<S, M>` wraps an `Ogham` plus the previous frame's
+  `S`. `set_state(new)` diffs `new` against the previous `S` and
+  only injects the changed top-level fields via
+  `Runtime::inject_host_state_if_changed`.
+- Host events delivered to the registered `OghamMsg` decoder turn
+  into typed `M` values pushed onto a `VecDeque`; consumers drain
+  via `poll_msg` / `drain_msgs`.
+- The `#[derive(OghamState)]` / `#[derive(OghamMsg)]` macros each
+  emit a manifest fragment (`binding_module`, top-level fields /
+  variants and their Ogham types). The `ogham check` CLI loads
+  the manifest at `.ogh` analysis time so a typo in
+  `event("setvolume", v)` flags as an error before run.
+
+**Authority:** `src/typed.rs` (`TypedOgham`, `OghamState`,
+`OghamMsg`); `crates/ogham-derive/` (proc-macros);
+`src/diagnostics/manifest.rs` (manifest format consumed by
+`ogham check`).
+
+---
+
 ## State management (component state)
 
 **Problem:** persist `state` declarations across rerenders, keyed
@@ -236,6 +266,60 @@ component get distinct state.
 
 ---
 
+## Lifecycle hooks (mount / unmount / effect / cleanup)
+
+**Problem:** let `.ogh` code attach side-effects to a widget's
+mount, unmount, and dependency changes — without the React
+rules-of-hooks problem ("must be called unconditionally in the
+same order every render").
+
+**Invariants:**
+
+- **Hook identity is path-based.** Every `(call_stack, hook_id)`
+  pair is a fresh slot on the `StateManager`'s lifecycle registry;
+  hooks survive reorders and re-renders without re-firing unless
+  their dependencies actually change.
+
+  *Why:* the same call-stack-path mechanism that keys component
+  state. Re-using it means a `state` cell and an `effect` declared
+  next to each other share an identity discipline; re-rendering a
+  function from a different parent gives both a fresh slot.
+
+  *Drift indicators:*
+  - A new hook variant whose registry key uses something other
+    than the current call-stack path.
+  - A re-render path that increments the per-(parent, function)
+    counter twice for the same call site (would shift hook
+    identities and re-fire everything).
+
+- **Mount fires inside `rerender` (pre-layout); unmount fires
+  on drain.** `RegisterMountHook` opcodes stage onto
+  `StateManager::pending_mounts`; `Runtime::pre_layout_drain`
+  (called from inside `Runtime::rerender` after module
+  execution) flushes the queue *before* the host's layout call.
+  Mount bodies therefore cannot read post-layout sizes from the
+  just-rendered tree — this is the M1 implementation
+  trade-off, with post-layout mount timing on the backlog.
+  Unmount fires when the widget owning the path-prefix
+  drains — for widgets with an `exit:` style, that's after
+  the exit animation settles and the next render's
+  `process_drain_queues` consumes
+  `UI.pending_drained_prefixes`.
+
+- **Conditional hook registration is legal but warned.** The LSP
+  emits a warning when an `on_mount` / `on_unmount` / `effect`
+  appears inside an `if`, because conditional registration shifts
+  hook identity. Body-level conditionals are encouraged instead.
+
+**Authority:** `StateManager` in `src/runtime/mod.rs` (registry +
+rotate / flush / cancel helpers); lifecycle opcodes
+(`RegisterMountHook`, `RegisterUnmountHook`, `RegisterEffect`,
+`RegisterEffectCleanup`) in `src/runtime/vm.rs`; parser support
+in `src/parser/mod.rs` (`parse_mount`, `parse_unmount`,
+`parse_effect`, `parse_cleanup`).
+
+---
+
 ## Imports and modules
 
 **Problem:** allow `.ogh` files to import bindings from other
@@ -273,14 +357,23 @@ This subsystem has its own document:
 **Invariants:**
 - `WidgetRegistry` is keyed by lowercased type name; the built-in
   set is `flex`, `text`, `textinput`, `svg`, `image`, `grid`,
-  `presence`. Host-registered widgets override built-ins on name
-  collision.
+  `presence`, `portal`. Host-registered widgets override built-ins
+  on name collision.
 - The builder is the *only* place a `WidgetRef` is constructed
   from a descriptor. The VM never reaches into widget internals.
   (`INTENT §1`.)
 - Event listeners are wired up at build time: a property like
   `mouse_down: fn () { ... }` becomes a `Box<dyn Fn(&Event)>`
   closure that re-locks the runtime to call the bytecode closure.
+  Drag listeners (`drag_start` / `drag_move` / `drag_end`) take
+  the same shape but are wired through `register_drag_event_listener`
+  so they can carry an `Event.payload` from the originating widget
+  through dispatch.
+- `WidgetDescriptor.owned_path` is captured by the builder from
+  the VM's call-stack path at the descriptor's construction site
+  and copied onto the produced widget's `owned_path_prefix`. This
+  is what makes drain-time unmount work: when a widget drains, its
+  prefix is what gets pushed into the tick's `drained_path_prefixes`.
 
 **Authority:** `src/widget/builder.rs`.
 
@@ -387,6 +480,62 @@ sequencing).
 
 ---
 
+## Portal widget and layers
+
+**Problem:** lift a subtree's paint and hit-test out of its
+parent's clip / paint order into a named per-frame *layer*, so
+modals, popovers, tooltips, drag previews, and toasts can render
+above unrelated UI without authors having to hoist their state to
+the root.
+
+**Invariants:**
+
+- **Portal contributes nothing to layout.** A `Portal` node has
+  zero size in the parent's flow; its children are collected
+  during the base-tree walk (Pass A) and painted during a separate
+  layer pass (Pass B). Hit-testing walks open layers
+  high-priority-to-low *before* the base tree.
+
+- **Layers are a fixed, ordered set with declared policies.**
+  `main` (0) → `overlay-modal` (100) → `popover` (200) →
+  `tooltip` (300) → `toast` (400) → `cursor-attached` (500).
+  Each layer carries a `BackdropPolicy` (`Block` blocks
+  click-through and paints a translucent backdrop; `None` does
+  neither) and a cursor preference (`Free` / `Inherit`).
+
+  *Why:* a fixed set keeps the priority math obvious and prevents
+  authors from inventing conflicting orderings. Per-layer
+  policies (especially `Block`) collapse the "modal blocks input"
+  pattern into a render-time concern instead of forcing every
+  call site to wire its own `block_interactions` chrome.
+
+  *Drift indicators:*
+  - A new layer added with priority that overlaps an existing
+    one.
+  - A layer with `Block` policy whose backdrop fall-through is
+    bypassed by some new dispatch path.
+  - A widget that paints "above" another by reaching into the
+    surface directly instead of declaring a layer.
+
+- **Children paint at viewport-absolute coordinates.** Pass B
+  uses each `PortalEntry`'s viewport-absolute rect, so a Portal
+  nested inside a transformed/clipped ancestor still lands in the
+  right place. (This was the Phase 2.5 M0 fix to a Phase 2 known
+  limitation.)
+
+- **Drag preview is a synthetic Portal entry.** While a drag is
+  in flight, the Skia backend synthesizes a `cursor-attached`
+  `PortalEntry` from `UI::active_drag_preview` so the preview
+  follows the cursor without touching the live tree.
+
+**Authority:** `src/widget/portal_widget.rs` (the widget itself);
+`src/widget/portal_layer.rs` (`PortalLayers`, `PortalEntry`,
+`BackdropPolicy`); `src/widget/mod.rs` (UI registration of layer
+policies, `active_drag_preview` accessor); `src/skia.rs` for the
+two-pass rendering (Pass A / Pass B) and backdrop-blur capture.
+
+---
+
 ## Event dispatch
 
 **Problem:** route mouse/keyboard/scroll events from the host's
@@ -416,6 +565,87 @@ This subsystem has its own document: [`EVENTS.md`](EVENTS.md).
 
 ---
 
+## Drag and contextmenu dispatch
+
+**Problem:** support real drag-and-drop with a typed payload, a
+dead-zone before drag begins, declarative drop targets, an
+optional cursor-attached preview, and right-click context menus —
+without forcing every author to hand-roll the state machine on
+top of `mouse_down` / `mouse_move` / `mouse_up`.
+
+**Invariants:**
+
+- **The host owns the dead-zone state machine; Ogham owns the
+  hit-test and dispatch.** Ogham exposes
+  `dispatch_drag_start` / `dispatch_drag_move` / `dispatch_drag_end`
+  and `hit_test_drag_target` / `hit_test_drop_target`; the host's
+  input pump decides when the cursor has crossed the drag origin's
+  per-widget dead-zone (`drag_dead_zone:`, default 4px) and feeds
+  the dispatchers a `DragState`.
+
+- **Drag end resolves a drop target by walking layers
+  high-to-low, then the base tree.** The deepest widget whose
+  `accepts_drop(payload)` returns `true` wins. If none accept,
+  `drag_end` fires on the originator (cancel-style behaviour).
+
+- **`Event.payload` carries the drag payload through every drag
+  dispatch.** Listeners read it via `payload` in their argument
+  list; the `accepts_drop:` predicate sees the same value.
+
+- **`contextmenu` is a separate dispatch path, not a
+  reinterpreted `mouse_down`.** `Ogham::dispatch_contextmenu`
+  fires on the deepest widget at the cursor (no automatic
+  bubble). This keeps left-click / right-click routes
+  independent.
+
+**Authority:** `src/widget/event.rs` (`Event::payload`,
+`DragState`, `EventContext::drag_state`); `Ogham::dispatch_drag_*`
+and `dispatch_contextmenu` in `src/lib.rs`;
+`UI::hit_test_drag_target` / `hit_test_drop_target` in
+`src/widget/mod.rs`; drag/drop fields and listener registration on
+`FlexWidget` in `src/widget/flex_widget.rs`;
+`register_drag_event_listener` in `src/widget/builder.rs`.
+
+---
+
+## Drain-time unmount
+
+**Problem:** make `on_unmount` / `effect` cleanups fire at the
+*right* moment for widgets that exit-animate — after the exit
+springs settle, not when the descriptor first disappears from the
+declarative tree.
+
+**Invariants:**
+
+- **Drain queues are per-tick, owned by `UI`, consumed by
+  `Runtime`.** `Widget::tick_animations` pushes drained-widget
+  path prefixes into `TickContext.drained_path_prefixes` (and
+  cancelled exits into `cancelled_unmount_prefixes`).
+  `UI::tick_animations` moves them onto `UI.pending_drained_prefixes`
+  / `UI.pending_cancelled_prefixes`. `Ogham::process_drain_queues`
+  forwards them to `Runtime::process_drain_queues`, which fires
+  the registered `on_unmount` / `cleanup` hooks under each prefix.
+
+- **Cancellation undoes a pending unmount.** If a widget's `key`
+  reappears mid-exit (Presence revert, conditional re-mount), the
+  `cancel_exit` path pushes its prefix into
+  `cancelled_unmount_prefixes`; the runtime drops the pending
+  unmount instead of firing it.
+
+- **Direct-Runtime users who don't tick a UI get a fallback.**
+  `Runtime::flush_remaining_unmount_candidates` fires every
+  pending unmount synchronously. Used by tests and by hosts that
+  drive the runtime without a widget tree.
+
+**Authority:** `src/widget/event.rs` (`TickContext`);
+`UI::tick_animations` and pending-prefix fields in
+`src/widget/mod.rs`; `Runtime::process_drain_queues` /
+`flush_remaining_unmount_candidates` /
+`queue_disappeared_unmounts` in `src/runtime/mod.rs`;
+`Ogham::process_drain_queues` in `src/lib.rs`.
+
+---
+
 ## Rendering (Surface)
 
 **Problem:** turn the laid-out widget tree into pixels via a
@@ -429,10 +659,21 @@ This subsystem has its own document: [`SURFACE.md`](SURFACE.md).
   walker translates the canvas before recursing.
 - `RenderEffects` (opacity + transform) push around the widget
   *and* its descendants; pivot is the widget's layout center.
+- **Rendering is two-pass when portals are open.** Pass A walks
+  the base tree as usual, collecting any `PortalEntry`s into
+  `UI::portal_layers`. Pass B walks each open layer in priority
+  order at the layer's viewport-absolute coordinates, applying
+  the layer's `BackdropPolicy` before painting that layer's
+  children.
+- `RenderContext` exposes optional `push_backdrop_blur` /
+  `pop_backdrop_blur` scopes for `backdrop_filter` panels;
+  backends without backdrop sampling get the trait's no-op
+  default and the panel renders without the frost.
 
 **Authority:** `widget::Surface` and `widget::RenderContext`
 traits in `src/widget/mod.rs`; `src/skia.rs` is the reference
-implementation.
+implementation; portal-layer two-pass walk in
+`SkiaEnv::draw`.
 
 ---
 
@@ -449,12 +690,43 @@ This subsystem has its own document: [`LSP.md`](LSP.md).
   instantiates a `Runtime` or builds a widget tree. (`INTENT §1`.)
 - LSP positions are 0-indexed; Ogham spans are 1-indexed.
   Conversion happens at the boundary in `server.rs`.
-- Diagnostics come from two sources: scanner `Error` tokens and
-  parser `SyntaxError`. The LSP doesn't try to recover; one error
-  truncates analysis for the document.
+- Diagnostics come from three sources: scanner `Error` tokens,
+  parser `SyntaxError`, and lifecycle-hook conditional-registration
+  warnings (`collect_lifecycle_warnings`). Schema diagnostics from
+  `src/diagnostics/` are not yet wired through the LSP. The LSP
+  doesn't try to recover from parse errors; one error truncates
+  analysis for the document.
 
 **Authority:** `src/lsp/server.rs` (capabilities, dispatch);
 `src/lsp/document.rs` (per-document scan + parse).
+
+---
+
+## Schema diagnostics
+
+**Problem:** catch drift between a `.ogh` file and the host's
+typed-bindings manifest (top-level identifiers that no longer
+exist, `event(...)` calls whose name / arity doesn't match the
+declared message variants, etc.) at analysis time rather than
+at runtime.
+
+**Invariants:**
+- The schema-diagnostic engine takes a parsed `.ogh` AST plus a
+  manifest and emits `Diagnostic`s with `Severity` (Error /
+  Warning) and span info. It never loads the runtime.
+- The `ogham check` CLI is the canonical consumer today.
+- LSP integration (surfacing schema diagnostics alongside
+  scanner / parser / lifecycle warnings) is on the roadmap; the
+  engine exists in `src/diagnostics/` but the LSP doesn't call
+  it yet (it currently emits parse, scanner, and conditional-hook
+  diagnostics only).
+
+**Authority:** `src/diagnostics/check.rs` (the analysis pass);
+`src/diagnostics/diagnostic.rs` (the `Diagnostic` /
+`Severity` types); `src/diagnostics/manifest.rs` (the format
+emitted by the derive macros). See
+[`SCHEMA_DIAGNOSTICS.md`](SCHEMA_DIAGNOSTICS.md) for the design
+discussion.
 
 ---
 
@@ -470,9 +742,12 @@ changes on disk.
 - The set of watched paths includes the main file plus every
   imported module the runtime resolved on the previous load.
   Adding a new import requires a reload to start watching it.
-- Reload swaps in a brand-new `Runtime`. Component state is
-  dropped; widget tree state survives because it lives on the
-  `UI` and reconciles. (`INTENT §7`.)
+- Reload swaps in a brand-new `Runtime` and calls
+  `UI::clear_lifecycle_state` on the existing `UI`. Component
+  state, the lifecycle-hook registry, and any pending drain queues
+  are dropped; widget tree state (animation / hover / scroll /
+  focus) survives because it lives on the `UI` and reconciles.
+  (`INTENT §7`.)
 
 **Authority:** `src/file_watcher.rs`; `Ogham::reload` /
 `Ogham::reload_file` in `src/lib.rs`.

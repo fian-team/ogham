@@ -27,14 +27,32 @@
 ```
 Host:   surface.draw(&mut ui)
    ↓
-Surface::draw walks the tree:
-   for each widget:
-     widget.render_effects()  → push opacity/transform layer
-     widget.render(ctx, ...)  → background, border, text, etc.
-     translate canvas by (layout origin - scroll)
-     recurse into widget.get_children()
-     widget.post_render(...)  → pop scroll clip rect
-     pop opacity/transform layer
+Surface::draw walks the tree in two passes:
+   Pass A — base tree:
+     for each widget:
+       widget.render_effects()        → push opacity/transform layer
+       widget.style.backdrop_filter   → push_backdrop_blur (if set)
+       widget.render(ctx, ...)        → background, border, text, etc.
+       translate canvas by (layout origin - scroll)
+       recurse into widget.get_children()
+       widget.post_render(...)        → pop scroll clip rect
+       pop_backdrop_blur (if pushed)
+       pop opacity/transform layer
+       (Portal widgets register a PortalEntry into ui.portal_layers
+        and do nothing else in Pass A.)
+   Pass B — portal layers (Phase 2/2.5):
+     for each open layer in priority order (overlay-modal → popover
+                                            → tooltip → toast →
+                                            cursor-attached):
+       apply layer's BackdropPolicy (Block paints a translucent
+                                     backdrop; None paints nothing)
+       for each PortalEntry in this layer:
+         translate canvas to entry.viewport_origin (viewport-absolute)
+         recurse into entry.children using the same Pass-A logic
+   ↓
+Drag preview (if a drag is in flight):
+   ui.active_drag_preview is rendered as a synthetic
+   cursor-attached entry positioned at the cursor.
 ```
 
 Two traits collaborate:
@@ -80,8 +98,17 @@ pub trait RenderContext {
     fn pop_clip_rect(&mut self);
     fn push_effects(&mut self, opacity, transform, pivot_x, pivot_y);
     fn pop_effects(&mut self);
+    fn push_backdrop_blur(&mut self, x, y, w, h, radii, sigma);
+    fn pop_backdrop_blur(&mut self);
 }
 ```
+
+`push_backdrop_blur` / `pop_backdrop_blur` are the seam for
+`backdrop_filter: { blur: N }` style on a `Flex`. Backends that
+can sample the canvas (Skia) implement them with
+`save_layer` + `image_filter::blur`; backends that can't leave
+the trait's no-op default in place — the widget still renders,
+just without the frosted-glass capture.
 
 All coordinates are *logical* (pre-DPI). The backend is
 responsible for any scaling. The Skia implementation multiplies
@@ -145,25 +172,84 @@ every argument by `dpi_scale` inside the trait method body.
 
 ## How the Skia walker drives rendering
 
-`SkiaEnv::draw_widget_recursive`:
+`SkiaEnv::draw` runs in two passes:
+
+### Pass A — base tree
+
+`SkiaEnv::draw_widget_recursive` walks the live tree:
 
 1. Determine focus (compare `widget_ref` to UI's focused).
 2. Read the widget's `render_effects()`. If non-`None`, call
    `push_effects(opacity, transform, pivot_x, pivot_y)`.
-3. Lock the widget; call `widget.render(env, focused, image_cache)`
+3. If the widget's style has `backdrop_filter: Some(_)`, call
+   `push_backdrop_blur(x, y, w, h, radii, sigma)` so the
+   widget's own paint composites on top of a blurred capture
+   of what's behind it.
+4. Lock the widget; call `widget.render(env, focused, image_cache)`
    — the widget paints its own background/border/content using
    the `RenderContext` methods.
-4. Read the widget's children, layout origin, and scroll offset.
-5. Drop the lock.
-6. If the origin or scroll requires translation: `env.save();
+5. If the widget is a `PortalWidget` and its `open` is true,
+   register its children + viewport-absolute origin as a
+   `PortalEntry` on `ui.portal_layers` and *skip the recurse*
+   for this widget — its children paint in Pass B.
+6. Read the widget's children, layout origin, and scroll offset.
+7. Drop the lock.
+8. If the origin or scroll requires translation: `env.save();
    env.translate((origin.x - scroll.x) * dpi, (origin.y -
    scroll.y) * dpi)`. Recurse into children. `env.restore()`.
-7. If `widget.needs_post_render()`: re-lock and call
+9. If `widget.needs_post_render()`: re-lock and call
    `post_render(...)`. (Used by scroll containers to pop their
    clip rect after children render.)
-8. If effects were pushed: `pop_effects()`.
+10. Pop any pushed `backdrop_blur` and effect layers in reverse
+    order.
+
+### Pass B — portal layers
+
+After Pass A returns, the walker iterates open layers in
+priority order (`overlay-modal` → `popover` → `tooltip` →
+`toast` → `cursor-attached`). For each layer:
+
+1. If the layer's `BackdropPolicy` is `Block` and at least one
+   entry is open, paint a translucent runtime backdrop covering
+   the viewport.
+2. For each `PortalEntry` in the layer:
+   - Translate the canvas to the entry's viewport-absolute
+     origin.
+   - Recurse into the entry's children using the Pass-A logic.
+
+If `ui.active_drag_preview` is `Some`, the backend synthesizes
+a `cursor-attached` entry from the cursor position and paints
+it during the `cursor-attached` layer pass.
 
 ### Tenets — Skia walker
+
+- **Pass A and Pass B share the same recurse logic.** Pass B's
+  per-entry recurse uses the same
+  effects/clip/scroll/post_render code path as Pass A. The
+  difference is the *starting transform*: Pass A starts at the
+  viewport origin; Pass B starts at each entry's
+  viewport-absolute origin.
+
+  *Why:* portals would otherwise require duplicating the entire
+  walker, and any drift between the two paths would produce
+  invisible bugs (e.g. opacity not applied inside a portal).
+
+  *Drift indicators:*
+  - A Pass-B path that re-implements `push_effects` /
+    backdrop-blur / scroll handling instead of reusing the
+    Pass-A code.
+  - Portal entries painted at parent-relative coordinates (the
+    pre-Phase-2.5 bug).
+
+- **Layer iteration is fixed and high-priority-last.** The
+  iteration order matches the layer enum's priority order;
+  `cursor-attached` paints last so the drag preview sits on
+  top of every other layer.
+
+  *Drift indicators:*
+  - A backend that picks a different layer order.
+  - A new layer registered at runtime (the layer set is
+    fixed; see [WIDGET_TREE.md → Portal layers](WIDGET_TREE.md#portal-layers)).
 
 - **Walker translates between widgets, not within them.** Each
   widget paints in its own parent-relative coordinate system.

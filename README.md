@@ -1,69 +1,161 @@
 # Ogham
-> At least it's not JavaScript!
 
-## What is Ogham?
+Ogham is a UI language and embeddable runtime for Rust applications. The
+runtime compiles `.ogh` source to bytecode, executes it on a stack-based VM,
+and reconciles the resulting widget tree against a live UI. A Skia-based
+backend ships out of the box; alternative backends implement the
+`Surface` trait.
 
-Ogham is a language designed for UI development. It draws inspiration from the DOM for representing page structure, CSS for styling (flexbox in particular), and React for component structure, state management, and much more.
+This document is the contributor onboarding map. Library users embedding
+Ogham in a host application should read [`AGENTS.md`](AGENTS.md) for the
+integration guide. The design contracts behind each subsystem live in
+[`docs/internal/`](docs/internal/).
 
-The objective in creating Ogham is to simplify UI development in Rust applications; although it ships with [Skia](https://skia.org/) rendering out of the box via [rust-skia](https://github.com/rust-skia/rust-skia), custom rendering backends can be implemented to allow integrations with projects where using Skia may have obstacles. State can be tracked within a given Ogham application or provided by the host Rust application; events may be propagated upwards from the Ogham app to its host application.
+## Repository layout
 
-Alternatively, Ogham can be used to create standalone applications using the Ogham browser. This functionality is somewhat useless in practice, as many features necessary to create applications on parity with modern web apps are missing (the ability to make network requests comes to mind). Maybe it will be viable someday, who knows!
-
-## Basic Example
-
-Here's a simple counter app that tracks state and updates on button clicks:
-
-```ogh
-let counter = fn (): widget {
-  state count = 0;
-  
-  Flex {
-    children: [
-      Flex {
-        mouse_down: fn () {
-          count++;
-        },
-        children: [
-          Text {
-            text: "Increment counter",
-          }
-        ]
-      },
-      Text {
-        text: count -> string,
-      },
-    ],
-  }
-};
-
-let main = fn () {
-  counter()
-};
+```
+ogham/
+├─ src/
+│  ├─ lib.rs                  — top-level Ogham facade (Arc<Mutex<Runtime>> + UI)
+│  ├─ scanner/                — lexer (.ogh source → tokens)
+│  ├─ parser/                 — recursive-descent parser (tokens → AST)
+│  ├─ runtime/                — Runtime, RuntimeConfig, bytecode compiler, VM
+│  ├─ widget/                 — UI struct, widget tree, Surface trait, layout, animation
+│  ├─ skia.rs                 — reference Skia backend
+│  ├─ typed.rs                — TypedOgham<S, M> wrapper for derive-based bindings
+│  ├─ diagnostics/            — schema-diagnostic engine (consumed by `ogham check`)
+│  ├─ cli/                    — `ogham` CLI binary
+│  ├─ lsp/                    — `ogham-lsp` language server binary
+│  ├─ client/                 — standalone .ogh viewer binary
+│  └─ file_watcher.rs         — hot-reload file watching
+├─ crates/
+│  └─ ogham-derive/           — proc-macros: #[derive(OghamState)], #[derive(OghamMsg)]
+├─ examples/                  — runnable .ogh programs
+├─ editors/vscode/            — VS Code extension (talks to ogham-lsp)
+├─ tests/                     — integration tests (cargo test)
+└─ docs/internal/             — design contracts and per-phase implementation plans
 ```
 
-We can see a number of concepts displayed here.
+The crate is a Cargo workspace. `crates/ogham-derive` is split out so the
+proc-macro can be a `proc-macro = true` crate without forcing the rest of
+the library to compile in that mode.
 
-- Defining variables with the `let` keyword.
-- Creating components by defining a function with the `widget` return type.
-- Implicitly returning values from functions following the Rust idiom of omitting semicolons.
-- Creating an application entry point by defining a `main` function.
-- Calling (and implicitly returning the value of) `counter` in the `main` function.
+## Binaries
 
-## Getting Started
+The workspace produces three binaries plus the `ogham` library crate:
 
-### Standalone
+| Binary       | Path                | Purpose                                                           |
+|--------------|---------------------|-------------------------------------------------------------------|
+| `ogham`      | `src/cli/main.rs`   | CLI. Currently one subcommand: `check` (validates `.ogh` files against typed-bindings manifests). |
+| `ogham-lsp`  | `src/lsp/main.rs`   | Language Server (LSP over stdio). Used by the VS Code extension and any LSP-capable editor. |
+| `client`     | `src/client/main.rs`| Standalone `.ogh` viewer with a winit + Skia window.              |
 
-Create an `.ogh` file with your UI code and open it in the Ogham browser. The browser provides a development environment for writing and testing Ogham applications.
+## Quick start
 
-[Download Ogham Browser]() *(Releases coming soon)*
+```sh
+# Build everything (library + 3 binaries).
+cargo build
 
-### Integration
+# Run the standalone client. Opens a built-in home page; press Ctrl+O
+# to load any .ogh file from disk (e.g. examples/counter.ogh).
+cargo run --bin client
 
-Coming soon!
+# Validate every .ogh file in the workspace against host bindings.
+cargo run --bin ogham -- check --all
+
+# Or validate a single file:
+cargo run --bin ogham -- check path/to/ui.ogh
+
+# Build and run the LSP (most editors discover it via $PATH).
+cargo build --bin ogham-lsp
+./target/debug/ogham-lsp        # speaks LSP over stdin/stdout
+
+# Run the test suite.
+cargo test
+```
+
+The test suite (`tests/*.rs`) doubles as the acceptance suite for the
+language and the runtime. Drag, lifecycle, portal, hot-reload, and typed-
+binding behaviors all have dedicated test files.
+
+## Embedding the library
+
+Add `ogham` as a dependency, build a `RuntimeConfig`, and call
+`Ogham::watch` (file-backed, hot-reload) or `Ogham::from_source`
+(string-backed, no watcher). Per frame, drive the runtime with `tick`,
+`tick_animations`, `layout`, and `draw`.
+
+For typed host state and event handling via Rust types rather than
+`HashMap<String, Value>`, derive `OghamState` and `OghamMsg` and use
+`TypedOgham::watch_typed`. The derive macros also emit a manifest fragment
+the `ogham check` CLI uses to flag stale `.ogh` references at analysis
+time.
+
+The full integration recipe — `RuntimeConfig` builder, host-state
+injection, event handlers, hot-reload loop, animation tick, layout pass,
+draw, drag dispatch, contextmenu, drain queues, cursor/key signals, and
+custom rendering backends — lives in [`AGENTS.md`](AGENTS.md).
+
+## Documentation
+
+- [`AGENTS.md`](AGENTS.md) — integration guide for library consumers and
+  language overview for `.ogh` authors.
+- [`docs/internal/ARCHITECTURE.md`](docs/internal/ARCHITECTURE.md) —
+  one-page orientation: pipeline, embedding seam, per-frame loop, module
+  layout, where state lives.
+- [`docs/internal/SUBSYSTEMS.md`](docs/internal/SUBSYSTEMS.md) — subsystem
+  map: invariants, drift indicators, authority files for each piece.
+- [`docs/internal/INTENT.md`](docs/internal/INTENT.md) — cross-cutting
+  design tenets and the rationale behind each.
+- [`docs/internal/GLOSSARY.md`](docs/internal/GLOSSARY.md) — vocabulary
+  used across the contributor docs.
+- Per-subsystem live contracts: `LANGUAGE.md`, `VM.md`, `RUNTIME.md`,
+  `WIDGET_TREE.md`, `FLEX.md`, `STYLE_AND_ANIMATION.md`,
+  `ANIMATION_LIFECYCLE.md`, `EVENTS.md`, `SURFACE.md`, `LSP.md`.
+- Phase implementation trailers (typed bindings, lifecycle + portal,
+  Phase 2.5 UL alignment, Phase 3 drag + drain) — same directory.
+
+If a doc disagrees with code, the code wins, but flag the discrepancy —
+the design discipline behind these contracts depends on drift being made
+visible. See `INTENT.md` for the convention.
+
+## Coding conventions
+
+- Rust 2021, MSRV 1.80.
+- `rustfmt.toml`: `max_width = 100`. `cargo fmt` before pushing.
+- `cargo clippy --all-targets` should pass cleanly.
+- Inline unit tests in `#[cfg(test)]` modules; integration tests in
+  `tests/`.
+- Public items get `///` doc comments; modules get `//!` headers. Comments
+  on internal items are reserved for non-obvious *why* — naming carries
+  *what*.
+- `Runtime` is shared as `Arc<Mutex<Runtime>>`. The interior is
+  single-threaded; thread safety comes from the wrapper, not the runtime
+  itself.
+
+## Editor support
+
+The VS Code extension in `editors/vscode/` talks to `ogham-lsp` over
+stdio. After building the binary, set `ogham.lspPath` in the extension's
+settings (defaults to `ogham-lsp` on `$PATH`). Capabilities today:
+diagnostics (scanner + parser + typed-bindings AST validation +
+lifecycle conditional-registration warnings), hover, go-to-definition,
+document symbols, semantic tokens. Completion, find-references, and
+rename are not implemented; see
+[`docs/internal/LSP.md`](docs/internal/LSP.md) for the roadmap.
 
 ## Contributing
 
-We welcome contributions! Flag bugs, submit pull requests, and join our developer community. Have questions or want to discuss development? Join us on Discord.
+Bug reports and pull requests are welcome on the project's issue tracker.
+Before submitting non-trivial work, please read
+[`docs/internal/INTENT.md`](docs/internal/INTENT.md) — the design tenets
+there are load-bearing and the most common review feedback is "this
+violates `INTENT §N`". Phase-scoped implementation plans in
+`docs/internal/PHASE_*.md` capture the contracts that recently-shipped
+work was held against; they are good models for new proposals.
 
-[Join the Fian Dev Community](https://discord.gg/JYfC2baP2y)
+Discord: <https://discord.gg/JYfC2baP2y> (Fian Dev community).
 
+## License
+
+MIT. See [`LICENSE`](LICENSE).

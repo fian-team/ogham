@@ -7,9 +7,9 @@ name = "ogham"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
-description = "A UI language and framework inspired by DOM, CSS/Flexbox, and React"
+description = "Embeddable UI language and runtime for Rust applications: bytecode VM, reconciling widget tree, Skia rendering backend"
 license = "MIT"
-repository = "https://github.com/user/ogham"
+repository = "https://github.com/fian-team/ogham"
 keywords = ["ui", "framework", "language", "flexbox"]
 categories = ["gui"]
 

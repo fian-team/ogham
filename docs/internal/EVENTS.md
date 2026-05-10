@@ -34,18 +34,21 @@
 
 ```rust
 struct Event {
-    name: String,           // "mouse_down", "mouse_up", "scroll", "keydown", …
-    point: Option<Point>,   // for pointer events
+    name: String,             // "mouse_down", "mouse_up", "scroll", "keydown", "drag_start", …
+    point: Option<Point>,     // for pointer events
     keyboard_data: Option<KeyboardData>,
     callback: Option<Box<dyn Fn(&Event)>>,
-    value: Option<String>,  // for "on_change" etc.
+    value: Option<String>,    // for "on_change" etc.
     scroll_delta: Option<(f32, f32)>,
+    payload: Option<Value>,   // Phase 3 — drag payload travels here through
+                              // drag_start / drag_move / drag_end dispatch
 }
 ```
 
 Constructors: `Event::new(name)`, `Event::with_point(name, p)`,
 `Event::with_keyboard(...)`, `Event::with_value(name, value)`,
-`Event::scroll(point, dx, dy)`, `Event::keydown/keypress/keyup`.
+`Event::scroll(point, dx, dy)`, `Event::keydown/keypress/keyup`,
+`Event::drag(name, point, payload)`.
 
 `Event::shift_point(dx, dy)` returns a clone with the point
 shifted; this is how the dispatcher walks the tree without
@@ -68,6 +71,55 @@ coordination with the UI root:
   Critical for distinguishing "a child consumed the event by
   invoking a real handler" from "a child returned `true` purely
   because `block_interactions` was set". See tenets below.
+- `drag_state: Option<DragState>` (Phase 3) — set by
+  `UI::dispatch_drag_*` for the duration of a drag dispatch.
+  Widgets read it for hover highlighting and `accepts_drop`
+  checks against the current cursor.
+- `needs_layout: bool` — set when an event handler mutated
+  widget state in a way that affects layout (e.g. `TextInput`
+  with `width: Shrink` ingesting a character). Most handlers
+  just fire host events; the resulting state flows back through
+  reconcile, so a same-frame layout pass is unnecessary.
+
+### `TickContext` (per-frame, not per-event)
+
+Distinct from `EventContext`: `TickContext`
+(`src/widget/event.rs`) is the per-tick context threaded
+through `Widget::tick_animations`. It carries:
+
+- `dt: f32` — elapsed seconds since the last tick.
+- `drained_path_prefixes: Vec<String>` — path prefixes whose
+  owning widgets drained this tick (settled exit animation).
+  Populated by `FlexWidget::drain_exited_children` and the
+  equivalent path on other drainable widgets. Consumed by
+  `UI::tick_animations` → `UI.pending_drained_prefixes` →
+  next render's `Runtime::process_drain_queues` to fire
+  delayed `on_unmount` / effect cleanups.
+- `cancelled_unmount_prefixes: Vec<String>` — mirror of the
+  above for re-mount-during-exit cancellations.
+
+`TickContext` replaces the bare `dt: f32` parameter that
+existed before Phase 3 M0 — the side channels let drag and
+drain machinery share infrastructure without growing
+`TickResult` into a Vec-bearing struct that loses `Copy`.
+
+### `DragState` (per-frame)
+
+```rust
+struct DragState {
+    origin_widget: Option<WidgetRef>, // where drag_start fired
+    payload: Option<Value>,            // declared by originator
+    start_position: Point,             // anchor for dead-zone math
+    current_position: Point,           // most recent dispatch
+    past_dead_zone: bool,              // true once cursor moved past N px
+}
+```
+
+Constructed by `UI::dispatch_drag_start`; the host's input pump
+threads the same `DragState` through subsequent
+`dispatch_drag_move` / `dispatch_drag_end` calls. Lifecycle
+ends on `dispatch_drag_end` or when the host drops it
+(cancellation).
 
 ### Dispatch model
 
@@ -247,6 +299,10 @@ origin-and-scroll rule as click dispatch.
 | `keypress`     | Character typed (focused widget)             | `keyboard_data`               |
 | `keyup`        | Key released (focused widget)                | `keyboard_data`               |
 | `on_change`    | TextInput value changed                      | `value`                       |
+| `drag_start`   | Cursor crossed dead-zone past `mouse_down` on a widget with `drag_payload:` | `point`, `payload` |
+| `drag_move`    | `mouse_move` while a drag is in flight (deepest widget at cursor) | `point`, `payload` |
+| `drag_end`     | `mouse_up` while a drag is in flight (resolves to the deepest accepting drop target, or originator) | `point`, `payload` |
+| `contextmenu`  | Right-click on the deepest widget at cursor (no auto-bubble) | `point`           |
 
 The widget's listener map is built from descriptor properties
 of matching name (e.g. `mouse_down: fn () { ... }`). Listeners
@@ -254,6 +310,55 @@ are `Box<dyn Fn(&Event)>`; the standard one-arg version
 (`make_event_listener`) ignores the event payload, while
 `make_event_listener_with_arg` (used for `on_change`) extracts
 `event.value` and passes it as the closure's first argument.
+
+### Drag dispatch (Phase 3)
+
+Drag isn't dispatched through `UI::call_event` — it has its own
+seam through `UI::dispatch_drag_*`, called by `Ogham::dispatch_drag_*`
+on the host side. The split exists because:
+
+- The dead-zone state machine (deciding when a `mouse_down` plus
+  cursor delta becomes a drag rather than a click) lives in the
+  host's input pump; the runtime doesn't know how the host
+  reasons about the boundary.
+- Drag end has to walk *portal layers* high-priority-to-low
+  before the base tree to find the right drop target — a
+  routing path `call_event` doesn't do.
+- Drag preview rendering goes through the
+  `cursor-attached` portal layer; the dispatch path needs to
+  know about it to set up `UI::active_drag_preview`.
+
+Source-side fields on a draggable `FlexWidget`:
+
+- `drag_payload: Option<Value>` — the value carried through the
+  gesture. Travels on `Event.payload`.
+- `drag_dead_zone: f32` — px the cursor must cross before
+  `drag_start` fires. Default 4.
+- `drag_preview: Option<WidgetRef>` — optional widget rendered
+  attached to the cursor while the drag is in flight.
+
+Drop-target side:
+
+- `accepts_drop_predicate: Option<...Closure>` — invoked with
+  the current `payload` during drop-target hit-test. Returns
+  truthy to opt in.
+
+Listeners on the source: `drag_start`, `drag_move`, `drag_end`.
+Listeners on the drop target: `drag_end` (fired only after
+`accepts_drop` returns truthy). Both share `Event.payload`.
+
+`UI::dispatch_drag_end` walks open portal layers
+high-priority-to-low, then the base tree, picking the deepest
+widget whose `accepts_drop(payload)` returns truthy. If none
+accept, `drag_end` fires on the originator (cancel-style
+behaviour).
+
+### `contextmenu`
+
+`Ogham::dispatch_contextmenu(point)` fires on the deepest widget
+at the cursor and stops there — *no automatic bubble*. Wrap if
+ancestor handling is needed. Use this instead of overloading
+`mouse_down` so left-click and right-click route independently.
 
 ### Tenets — names
 

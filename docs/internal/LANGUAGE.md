@@ -44,11 +44,13 @@ A `Vec<Token>` terminated by `TokenType::EOF`. Each token carries
 
 The token enum (`TokenType` in `token_type.rs`) covers
 punctuation, arithmetic, comparison, logical operators, the
-keywords `let state if else return log fn for in match import
-from`, the boolean literals `true false`, `Identifier(String)`
-`String(String)` `Integer(i32)` `Float(f64)`, and the catch-all
-`Error(String)` for unrecognized characters or unterminated
-strings/comments.
+core keywords `let state if else return log fn for in match
+import from`, the typed-bindings keywords `record host_state
+events Self` (Phase 1), the lifecycle keywords `on_mount
+on_unmount effect cleanup` (Phase 2), the boolean literals
+`true false`, `Identifier(String)` `String(String)`
+`Integer(i32)` `Float(f64)`, and the catch-all `Error(String)`
+for unrecognized characters or unterminated strings/comments.
 
 ### Tenets
 
@@ -144,6 +146,13 @@ Statements are dispatched by the leading token in
 | `Identifier`  | `parse_identifier_statement` — see below  |
 | `log`         | `LogStatement`                            |
 | `for`         | `ForLoopStatement`                        |
+| `record`      | `RecordDeclaration` (top-level only, Phase 1) |
+| `host_state`  | `HostStateDeclaration` (top-level only, ≤1 per module) |
+| `events`      | `EventsDeclaration` (top-level only, ≤1 per module) |
+| `on_mount`    | `OnMount` lifecycle hook (fn-body only, Phase 2)   |
+| `on_unmount`  | `OnUnmount` lifecycle hook (fn-body only, Phase 2) |
+| `effect`      | `Effect` lifecycle hook (fn-body only, Phase 2)    |
+| `cleanup`     | `Cleanup` (effect-body only, Phase 2)              |
 | (anything else) | `ExpressionStatement` via `expression()` |
 
 `parse_identifier_statement` peeks one token to decide:
@@ -270,19 +279,45 @@ intended.
   - LSP code that *requires* a type annotation to provide
     tooling — annotations should remain advisory.
 
+- **Lifecycle hook bodies parse with `in_effect_body` mode
+  state.** `parse_effect` flips a flag while descending into
+  the effect's body so `parse_cleanup` can refuse a `cleanup`
+  outside an effect. The same flag is *not* set inside
+  `parse_mount` / `parse_unmount`, so a `cleanup` inside an
+  `on_mount` is a parse error.
+
+  *Why:* `cleanup { ... }` is meaningful only as the back-edge
+  of an `effect`'s body. Parser-side rejection gives the LSP a
+  clean diagnostic at the call site; the alternative would be a
+  compiler error that would have to be plumbed back through
+  positional info.
+
+  *Drift indicators:*
+  - A new lifecycle keyword with cleanup-style semantics that
+    forgets to set/check `in_effect_body`.
+  - A change that allows `cleanup` inside `on_mount` /
+    `on_unmount` (the runtime has no slot to attach it to).
+
 ### AST node types
 
 All `Statement` and `Expression` variants live under
 `src/parser/`:
 
 - `Statement::{Expression, Declare, DeclareState, Assign, Return,
-  Conditional, Log, ForLoop, Import}` — see `statement.rs`.
+  Conditional, Log, ForLoop, Import, RecordDeclaration,
+  HostStateDeclaration, EventsDeclaration, OnMount, OnUnmount,
+  Effect, Cleanup}` — see `statement.rs`. The last seven were
+  added in Phase 1 (typed bindings) and Phase 2 (lifecycle
+  hooks).
 - `Expression::{Literal, Unary, Binary, Grouping, Widget,
   MemberAccess, Call, IndexAccess, Range, ForLoop,
   SpreadForLoop, Spread, Match, PrefixIncrement,
   PostfixIncrement}` — see `expression.rs`.
 - `Literal::{Integer, Float, Boolean, String, Identifier, Map,
   Array, Function}` — see `literal.rs`.
+- Phase 1 typed-bindings types (`RecordDecl`, `HostStateDecl`,
+  `EventsDecl`, `RecordField`, `EventVariant`) live in
+  `typed_bindings.rs`.
 
 Every node carries a `Span` (start/end line+column). The compiler
 uses `span.start_line` for emitted-bytecode line numbers.

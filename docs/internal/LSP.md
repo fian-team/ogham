@@ -35,9 +35,13 @@
     Document::analyze:
       Scanner → tokens
       Parser  → ast (best-effort; None on syntax error)
+      parse_schema(ast) → schema_error (typed-bindings AST
+                                       validation — Phase 1)
   → collect_diagnostics:
-      scanner Error tokens → Diagnostic
-      parser SyntaxError   → Diagnostic
+      scanner Error tokens                → Diagnostic (Error)
+      parser SyntaxError                  → Diagnostic (severity from err)
+      doc.schema_error (typed-bindings)   → Diagnostic (severity from err)
+      collect_lifecycle_warnings(ast)     → Diagnostic (Warning)
   → publish_diagnostics
 
 .hover / .goto_definition / .document_symbol / .semantic_tokens_full
@@ -141,16 +145,28 @@ fair game.
   - A scanner-only LSP that can't classify identifiers
     semantically.
 
-- **Diagnostics come from two sources only.** Scanner `Error`
-  tokens become diagnostics first; if the parser then errors,
-  its `SyntaxError` becomes one more diagnostic at its
-  reported position. There is no recovery — a parse error
-  truncates analysis at the error point.
+- **Diagnostics come from three sources.** Scanner `Error`
+  tokens become diagnostics first; the parser's `SyntaxError`
+  (including typed-bindings AST validation surfaced through
+  `Document::parse_schema` as `doc.schema_error`) becomes one
+  more diagnostic at its reported position; lifecycle-hook
+  conditional-registration warnings (`collect_lifecycle_warnings`)
+  add Warning-severity diagnostics for any `on_mount` /
+  `on_unmount` / `effect` / `cleanup` that appears inside an
+  `if`. There is no parser recovery — a parse error truncates
+  AST-driven analysis at the error point (lifecycle warnings
+  rely on a complete AST, so they only run when parse
+  succeeds).
 
   *Why:* a "real" parser-recovery layer would let later
   errors surface even after an early one. Worth doing
   eventually; today the trade-off is simplicity vs. one
   diagnostic per save (which mostly works for short files).
+  Lifecycle conditional-registration warnings are the only
+  semantic check that flows through the LSP today; the
+  schema-diagnostic engine (`src/diagnostics/`) is a separate
+  consumer (`ogham check` CLI) and is not yet wired into the
+  LSP — see open questions.
 
   *Drift indicators:*
   - A diagnostics path that doesn't include scanner Error
@@ -158,6 +174,10 @@ fair game.
   - Multiple parser errors per document without a recovery
     strategy — would mean the parser silently swallowed
     intermediate errors.
+  - Lifecycle warnings firing on `on_mount` blocks at
+    fn-body scope (the warning is specifically about
+    `if`-gated registration; body-level conditionals inside
+    the hook body are encouraged).
 
 - **Edits are applied incrementally to `source`, then
   analyze re-runs the whole thing.** `apply_edits` walks
@@ -198,6 +218,11 @@ Returns markdown content describing the identifier:
 - For function parameters: shows the parameter type identifier
   (advisory — types are unenforced).
 - For widget identifiers: shows the widget type name.
+- For lifecycle keywords (`on_mount`, `on_unmount`, `cleanup`):
+  emits a `LifecycleHook { kind }` hover variant with a
+  description of when the hook fires.
+- For `effect (deps)`: emits an `Effect { dep_count }` hover
+  variant noting the dependency count and re-fire semantics.
 
 ### Goto definition
 
@@ -301,6 +326,15 @@ path; defaults to `"ogham-lsp"` on `$PATH`.
   are advisory. The LSP could surface mismatches without
   enforcing them at the runtime layer — opt-in static checking
   on top of dynamic typing.
+- **Schema-diagnostic engine integration.** The engine in
+  `src/diagnostics/` validates a `.ogh` AST against a typed-
+  bindings manifest emitted by `#[derive(OghamState)]` /
+  `#[derive(OghamMsg)]` and powers the `ogham check` CLI. The
+  LSP doesn't currently invoke it (no `use ogham::diagnostics`
+  in `src/lsp/`). Wiring it through would let a `.ogh` file's
+  references to `host_state` / `events` declarations surface
+  drift against the host's current Rust types directly in the
+  editor. See [SCHEMA_DIAGNOSTICS.md](SCHEMA_DIAGNOSTICS.md).
 - **Performance: per-edit full re-parse.** Fine for typical UI
   files. A pathological 10k-line `.ogh` would re-scan +
   re-parse on every keystroke. Incremental parsing (tree-sitter

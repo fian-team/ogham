@@ -232,9 +232,11 @@ When the file watcher fires, the runtime is rebuilt from disk and
 a fresh widget tree is constructed by the builder. The live UI
 then `reconcile`s against it. Same-key, same-shape widgets
 preserve animation/hover/scroll state; structural changes drop
-state silently. The runtime's component-state map is **not**
-preserved across a reload — `Ogham::reload` swaps in a brand-new
-`Runtime`. Host-injected state is re-applied from
+state silently. The runtime's component-state map and the
+lifecycle-hook registry are **not** preserved across a reload —
+`Ogham::reload` swaps in a brand-new `Runtime` and calls
+`UI::clear_lifecycle_state` to scrub any pending drain queues on
+the UI side. Host-injected state is re-applied from
 `RuntimeConfig`.
 
 **Why this matters:** hot reload exists to be cheap and
@@ -247,12 +249,15 @@ visible UI snaps where the *new* program disagrees with the old.
 
 **Drift indicators:**
 - A code path that copies the old runtime's `state.component_state`
-  into a new runtime on reload.
+  or the lifecycle-hook registry into a new runtime on reload.
 - A reload that bypasses `UI::reconcile` and rebuilds the tree
   from scratch — that would also drop animation/hover state on
   every reload, defeating the cheapness.
 - A reload that *does* preserve state but silently coerces values
   across type changes.
+- A reload path that skips `UI::clear_lifecycle_state` and lets
+  the previous module's pending drain queues fire against the
+  new module's hook registry.
 
 ---
 
@@ -280,3 +285,44 @@ AST interpreter" in comments are historical.
 - Compiler comments that defer behavior to "the interpreter" —
   the compiler *is* responsible for choosing what each construct
   becomes.
+
+---
+
+## 9. Hook identity is path-based, not order-based.
+
+`state` cells, `on_mount` / `on_unmount` blocks, and `effect` /
+`cleanup` blocks all key onto the call-stack path of the
+declaring function plus a per-block hook ID. Re-rendering a
+function from the same call site finds its hooks at the same
+slot; calling the function from a *different* parent gets a
+fresh slot. There is **no** "must be called in the same order
+every render" rule — a hook inside an `if` is legal (just
+warned, since whether it registers shifts identity).
+
+**Why this matters:** React's rules-of-hooks problem is what
+breaks when hook identity is order-based — a developer who puts
+a hook inside a conditional silently corrupts every later
+hook's identity, and the framework has to ban conditional
+registration to make the model tractable. Path-based identity
+sidesteps this: the call-stack path encodes "where in the
+program this hook lives" *structurally*, so reorder of sibling
+hooks within a function is fine, and a hook gated by an `if`
+is just "registered or not" — there's no later hook whose
+identity depends on it. This is the same mechanism that gives
+component state independence across multiple calls of the same
+component, and reusing it for hooks means the two systems
+share a single discipline.
+
+**Drift indicators:**
+- A new hook variant whose registry key uses something other
+  than the current call-stack path (e.g. a monotonic counter
+  per render).
+- A re-render path that increments the per-(parent, function)
+  call counter twice for the same call site (would shift
+  identities and re-fire every hook).
+- A "rules of hooks" linter that bans conditional hook
+  registration outright instead of warning — that constraint
+  belongs to a different model.
+- A new `Call` opcode variant that calls a closure without
+  pushing a path frame; would silently fold callee hooks into
+  the caller's identity space.

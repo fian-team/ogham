@@ -32,8 +32,16 @@ FlexStyle                       Layout pass:
   overflow                      Render:
   opacity                         render          → background, border, scroll clip
   transform                       (children rendered by Surface walker)
-  transitions
+  backdrop_filter                 (paint-only; opacity / transform / backdrop pushed
+  transitions                      via Surface effect scopes)
 ```
+
+Drag-source / drop-target fields (`drag_payload`,
+`drag_dead_zone`, `accepts_drop_predicate`, `drag_preview`) live
+on `FlexWidget` alongside the layout fields but are paint /
+event-time concerns; see [EVENTS.md](EVENTS.md) for the
+dispatch contract and [WIDGET_TREE.md](WIDGET_TREE.md) for how
+the builder wires them.
 
 **Authority:**
 - [`src/widget/flex_widget.rs`](../../src/widget/flex_widget.rs)

@@ -27,10 +27,11 @@ flowchart LR
 ```
 
 `Runtime` owns the long-lived state: host state, event handlers,
-component state, the import cache, the compiled module cache,
-the widget registry, the prelude bindings, the screen size, and
-the transient context stack. `Ogham` (in `lib.rs`) owns *the*
-`Arc<Mutex<Runtime>>` plus the `UI`.
+component state, the lifecycle-hook registry, the import cache,
+the compiled module cache, the widget registry, the prelude
+bindings, the screen size, and the transient context stack.
+`Ogham` (in `lib.rs`) owns *the* `Arc<Mutex<Runtime>>` plus the
+`UI`.
 
 **Authority:**
 - Runtime: [`src/runtime/mod.rs`](../../src/runtime/mod.rs).
@@ -38,6 +39,8 @@ the transient context stack. `Ogham` (in `lib.rs`) owns *the*
 - Host-state helpers:
   [`src/runtime/host_state.rs`](../../src/runtime/host_state.rs).
 - Top-level facade: [`src/lib.rs`](../../src/lib.rs).
+- Typed bindings: [`src/typed.rs`](../../src/typed.rs);
+  derive macros in [`crates/ogham-derive/`](../../crates/ogham-derive/).
 
 ---
 
@@ -161,9 +164,18 @@ Ogham::tick(inject)
   └─ update()
         ├─ runtime.needs_rerender()? → no, return false
         ├─ runtime.rerender()        → fresh Value::Widget
+        │    └─ pre_layout_drain    — fire pending mounts +
+        │                             stale unmounts on
+        │                             call-stack paths that
+        │                             didn't reappear
         ├─ widget_value_to_widget_ref(...)  — builder
         ├─ ui.reconcile(new_root)    → UpdateResult
-        └─ ui.mark_needs_layout/repaint as needed
+        ├─ ui.mark_needs_layout/repaint as needed
+        └─ process_drain_queues      — promote any path
+                                       prefixes drained by
+                                       last frame's
+                                       tick_animations into
+                                       fired hooks
 ```
 
 Three things drive the `needs_rerender` flag:
@@ -181,8 +193,14 @@ Three things drive the `needs_rerender` flag:
 Resets the per-render scratch: clears `environment` (so all
 top-level bindings are re-defined by the module body),
 `active_state_paths`, `call_stack`, `call_counters`, the import
-loading stack, and the context stack. It does **not** clear:
-`host_state`, `state.component_state`, `event_handlers`,
+loading stack, and the context stack. **Rotates** the lifecycle
+registry's per-render fields: previous-frame's
+`previous_active_paths` is dropped, the current frame's
+`active_paths` becomes the new `previous` for the next render,
+and `pending_mounts` is drained into the post-reconcile hook
+firing pass. It does **not** clear: `host_state`,
+`state.component_state`, the persistent lifecycle slots
+(`unmount_hooks`, `effects`), `event_handlers`,
 `compiled_module`, or `widget_registry`.
 
 Imports are *not* re-loaded from disk on rerender — the
@@ -254,6 +272,98 @@ The piece that matters at the runtime level: `rerender` clears
 then calls `cleanup_unmounted_state` to drop any keys whose path
 wasn't visited this render. Top-level state (empty path) is
 always considered active.
+
+---
+
+## Lifecycle hooks and drain queues (Phase 2 / Phase 3)
+
+`StateManager` carries a parallel registry for lifecycle hooks,
+keyed by the same call-stack path mechanism as component state
+(see [INTENT §9](INTENT.md#9-hook-identity-is-path-based-not-order-based)).
+The fields:
+
+- `unmount_hooks: HashMap<(Path, HookId), VMClosure>` —
+  re-registered every render so the closure's upvalues reflect
+  current scope. Fires on drain.
+- `effects: HashMap<(Path, HookId), EffectSlot>` — each
+  `EffectSlot` carries the closure, the previous deps, and an
+  optional pending-cleanup closure (set by
+  `RegisterEffectCleanup` while the effect body runs).
+- `pending_mounts: Vec<(Path, HookId, VMClosure)>` — staged by
+  `RegisterMountHook` when the path is *new* this frame. Drained
+  by the post-reconcile firing pass.
+- `previous_active_paths: HashSet<Path>` — populated at end of
+  `rerender`, consulted by the next render's
+  `RegisterMountHook` to decide whether the path is new.
+- `candidate_unmounts: HashSet<Path>` — staged by
+  `queue_disappeared_unmounts` (paths that disappeared from the
+  declarative tree mid-exit-animation); promoted to fired by
+  `process_drain_queues` once the owning widget actually drains.
+- `cancelled_unmount_prefixes: HashSet<Path>` — paths whose
+  pending unmount was cancelled by a re-mount mid-exit; consumed
+  to remove entries from `candidate_unmounts`.
+
+### `process_drain_queues`
+
+Called by `Ogham::update` after reconcile and by the host
+directly via `Ogham::process_drain_queues` (e.g. after
+`tick_animations` if the host wants to flush hooks before the
+next render). The flow:
+
+1. Read `UI.pending_drained_prefixes` and
+   `UI.pending_cancelled_prefixes` (filled by
+   `UI::tick_animations` from the previous tick's `TickContext`).
+2. For each cancelled prefix: remove any matching paths from
+   `candidate_unmounts`.
+3. For each drained prefix: promote any matching paths from
+   `candidate_unmounts` to fired. Fire the registered
+   `unmount_hooks` and any active `effects` cleanup closures.
+4. Clear the pending vecs on `UI`.
+
+`flush_remaining_unmount_candidates` is the fallback for tests
+and for hosts that drive `Runtime` directly without a `UI` —
+it fires every entry in `candidate_unmounts` synchronously.
+
+### Tenets
+
+- **Mount fires inside `rerender` (pre-layout); unmount fires
+  on drain.** `pending_mounts` is the queue, not a registry —
+  once flushed it's gone. The M1 implementation flushes inside
+  `pre_layout_drain` (which `rerender` calls after module
+  execution), *before* the host's `ui.layout(w, h)` call. Mount
+  bodies therefore cannot read post-layout sizes from the
+  just-rendered tree — refining mount timing to post-layout is
+  on the backlog (will land when Portal positioning forces it).
+  Unmounts and effect-cleanups, by contrast, may sit in
+  `candidate_unmounts` for many frames while an exit animation
+  runs.
+
+  *Why:* unmounts have to wait until the widget's exit
+  animation actually completes — otherwise an `on_unmount` on
+  a fading-out modal would fire while the modal is still
+  visible and animating. Mount timing is the opposite trade-
+  off: firing in `rerender` keeps the implementation simple at
+  the cost of "no layout reads in mount bodies"; the post-
+  layout refinement would invert that.
+
+  *Drift indicators:*
+  - `unmount_hooks` fired the moment the path disappears from
+    the declarative tree, ignoring the drain queue.
+  - A change to mount timing that doesn't update the AGENTS.md
+    + SUBSYSTEMS.md notes about "no layout reads in mount
+    bodies" — keeping the docs in sync with the actual timing
+    is what lets authors trust the contract.
+
+- **Cancellation must remove `candidate_unmounts` entries
+  *before* the drain firing pass runs.** If a key reappears
+  mid-exit, its prefix flows through
+  `cancelled_unmount_prefixes` first; only then does the drain
+  prefix get processed. Otherwise a same-tick cancel-and-drain
+  sequence would fire the unmount it's meant to cancel.
+
+  *Drift indicators:*
+  - A drain pass that processes `drained_path_prefixes` before
+    `cancelled_unmount_prefixes` in the same call.
 
 ---
 
@@ -365,6 +475,53 @@ The mutation's properties — `status`, `pending`, `data`, `error`,
 
 ---
 
+## Typed bindings (`TypedOgham<S, M>`)
+
+`TypedOgham<S, M>` (in `src/typed.rs`) is the typed wrapper
+hosts use when their state and message types are
+`#[derive(OghamState)]` / `#[derive(OghamMsg)]` Rust types
+rather than free-form `HashMap<String, Value>` /
+`Vec<Value>` plumbing. It owns:
+
+- An inner `Ogham`.
+- The previous frame's `S` (so `set_state(new)` can diff).
+- A `VecDeque<M>` of typed messages decoded from the host
+  event bus.
+
+Construction routes through `Ogham::watch_typed` /
+`Ogham::from_source_typed`, which install a single event
+handler that runs the `M::decode(name, args)` derived from
+`#[derive(OghamMsg)]` and pushes successful decodes into the
+queue.
+
+### Tenets
+
+- **`set_state` diffs against the previous `S`.** Each top-level
+  field is compared; only changed fields are passed through
+  `Runtime::inject_host_state_if_changed`. This preserves the
+  diff-on-write contract under the typed wrapper.
+- **The `OghamState` / `OghamMsg` derives emit a manifest
+  fragment.** The fragment lists `binding_module`, the typed
+  fields, and the typed events. The `ogham check` CLI loads
+  manifests at analysis time so a `.ogh` file that calls
+  `event("setvolume", v)` against an `events { SetVolume(f32) }`
+  declaration flags the typo as an error before it can ship.
+  See [`SCHEMA_DIAGNOSTICS.md`](SCHEMA_DIAGNOSTICS.md).
+- **Typed and untyped APIs coexist.** `TypedOgham::inner_mut`
+  exposes the underlying `Ogham`, so a host can mix
+  `inject_host_state` for keys not on `S` (e.g. fields the host
+  computes per-frame and the `S` doesn't model) with `set_state`
+  for the typed fields.
+
+  *Drift indicators:*
+  - A `TypedOgham` method that bypasses the diff (would
+    re-render every frame even when nothing changed).
+  - Two parallel ways to register an event handler — the typed
+    decode handler should be the only registered consumer for
+    the typed event bus.
+
+---
+
 ## Frame seam (`Ogham::tick`)
 
 ```rust
@@ -397,6 +554,54 @@ construct a watcher; `check_for_changes` is then a no-op.
   - `Ogham::tick` calling `ui.layout` internally.
   - Layout being driven by `request_rerender`.
 
+- **`tick_animations` is per-frame, independent of
+  `tick`.** The host always calls `Ogham::get_ui_mut().tick_animations(dt)`
+  every frame, even when no rerender ran. Springs and the
+  drain-time machinery both depend on it; skipping a frame
+  freezes any in-flight transitions and leaves drained widgets
+  unflushed.
+
+---
+
+## Cursor, key, and drag signals
+
+The Ogham facade exposes a few accessors so hosts can derive
+cursor / key / focus state from the runtime instead of tracking
+it manually:
+
+- `Ogham::has_input_blocking_portal()` — `true` if any active
+  Portal has `focus_trap: true`. Use as a single source of truth
+  for "should game input be blocked?".
+- `Ogham::wants_cursor_free()` — `true` if any active Portal in
+  the `overlay-modal` / `popover` layers, or the focused widget,
+  declares cursor-free. Use to release a locked pointer.
+- `Ogham::consumes_character_key()` — `true` if the focused
+  widget consumes `Key::Character(_)` events (`TextInput` is
+  the canonical case). Hosts consult this *before* feeding key
+  events into game `pressed()` / `held()` queries so typing
+  into a field doesn't trigger hotkeys.
+
+For drag-and-drop, the host owns the dead-zone state machine;
+Ogham owns dispatch and hit-test:
+
+- `Ogham::dispatch_drag_start(origin, payload, point) -> DragState`
+  — fires `drag_start` on `origin` and returns the seed state
+  to be threaded through the rest of the gesture.
+- `Ogham::dispatch_drag_move(&mut state, point) -> Option<WidgetRef>`
+  — fires `drag_move` on the deepest widget at `point`.
+- `Ogham::dispatch_drag_end(&mut state, point) -> Option<WidgetRef>`
+  — walks portal layers high-to-low then the base tree, firing
+  `drag_end` on the deepest widget whose `accepts_drop(payload)`
+  returns `true`. Falls back to the originator if none accept.
+- `Ogham::hit_test_drop_target(&payload, &point) -> Option<WidgetRef>`
+  — read-only variant for hover-style drop-zone highlighting.
+- `Ogham::dispatch_contextmenu(point) -> bool` — fires the
+  `contextmenu` event on the deepest widget at `point`.
+
+See [EVENTS.md](EVENTS.md) for the dispatch model and
+[WIDGET_TREE.md](WIDGET_TREE.md) for the drag fields and
+`accepts_drop` predicate on widgets.
+
 ---
 
 ## Reload behavior
@@ -404,11 +609,14 @@ construct a watcher; `check_for_changes` is then a no-op.
 `Ogham::reload` (called when the file watcher fires, or
 explicitly by the host):
 
-1. Build a fresh `Runtime::from_file(path, self.config.clone())`.
-2. Build a fresh `UI` from that runtime's first execution.
-3. Carry the existing font collection and default font onto the
+1. Call `self.ui.clear_lifecycle_state()` on the *old* UI before
+   dropping it — scrubs the focus stack and the pending drain
+   queues so nothing carries over by accident.
+2. Build a fresh `Runtime::from_file(path, self.config.clone())`.
+3. Build a fresh `UI` from that runtime's first execution.
+4. Carry the existing font collection and default font onto the
    new `UI`.
-4. Replace `self.runtime` and `self.ui`.
+5. Replace `self.runtime` and `self.ui`.
 
 What this *does* preserve:
 - Host configuration (cloned from the original config).
@@ -416,6 +624,12 @@ What this *does* preserve:
 
 What this *doesn't* preserve:
 - Component state (lives on the old runtime, dropped).
+- The lifecycle-hook registry (lives on the old runtime,
+  dropped).
+- Pending drain queues on the UI (cleared explicitly by
+  `clear_lifecycle_state` so a re-mount under the same path
+  in the new module doesn't fire the old module's pending
+  unmount).
 - Widget tree state — strictly speaking, the *new* UI is a fresh
   tree, so springs, hover, scroll all reset. (Hot reload here
   is heavier than reconciliation against the same runtime.)

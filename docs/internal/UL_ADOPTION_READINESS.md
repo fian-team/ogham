@@ -1,10 +1,19 @@
 # Ogham — Untold Lore Adoption Readiness
 
-> **Status: Planning doc.** What needs to be true before UL can
-> begin adopting Phase 2's lifecycle hooks and Portal widget.
-> Derived from a survey of UL's forward-looking UI documentation
-> (`UI_RUNTIME.md`, `UI_SHELL.md`, `SETTINGS.md`, `ROADMAP.md`)
-> against what Phase 2 shipped on 2026-05-05.
+> **Status: Ogham-side ready; UL adoption (Pass 2) outstanding.**
+> All Ogham primitives UL needs (Phase 2 lifecycle + Portal, Phase
+> 2.5 layer system + cursor / key signals + hot-reload reset, Phase
+> 3 drag events + contextmenu + drain-time unmount) shipped
+> 2026-05-05. AGENTS.md and the subsystem docs reflect the full
+> shipped surface. The remaining work is consumer-side: UL Pass 2,
+> a ~12 person-day per-UI migration to the new APIs, including the
+> lorekeeper input-pump rewire (`dispatch_drag_*` /
+> `dispatch_contextmenu`) and the cursor / key-signal coordination
+> calls. See "Status snapshot" below for the full breakdown.
+>
+> Originally derived from a survey of UL's forward-looking UI
+> documentation (`UI_RUNTIME.md`, `UI_SHELL.md`, `SETTINGS.md`,
+> `ROADMAP.md`) against what Phase 2 shipped on 2026-05-05.
 >
 > Companion to `LIFECYCLE_AND_PORTAL.md` (the design),
 > `LIFECYCLE_AND_PORTAL_UL_AUDIT.md` (the per-UI migration

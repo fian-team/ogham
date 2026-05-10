@@ -60,7 +60,7 @@ Source (.ogh)
 | `src/skia.rs` | Skia rendering backend (implements `Surface`) |
 | `src/typed.rs` | `TypedOgham` handle for `#[derive(OghamState)]` / `#[derive(OghamMsg)]` integration |
 | `src/diagnostics/` | Schema-diagnostic engine used by `ogham check` and the LSP |
-| `src/cli/` | `ogham` CLI binary (`check`, `render`) |
+| `src/cli/` | `ogham` CLI binary (currently `check`; `render.rs` is the diagnostic-formatting helper, not a subcommand) |
 | `src/lsp/` | `ogham-lsp` language server binary |
 | `src/client/` | Standalone browser binary |
 | `src/file_watcher.rs` | File watching for hot-reload |
@@ -379,9 +379,12 @@ exit animation settles AND `drain_exited_children` removes it
 from the tree. Cancellation (key reappears mid-exit) clears the
 pending unmount.
 
-**Mount timing.** Mounts fire after the next render's reconcile
-+ layout pass — so mount bodies can safely query layout sizes
-the parent populated.
+**Mount timing.** Mounts fire inside `Runtime::rerender` —
+specifically `pre_layout_drain`, after module execution and
+before the host's layout pass. Mount bodies therefore *cannot*
+read layout sizes from the just-rendered tree (the M1
+implementation deferred post-layout mount timing; refining it
+is on the backlog when Portal positioning needs it).
 
 **Conditional hooks** (e.g. `if (x) { on_mount {...} }`) are
 legal but the LSP warns about them — you almost certainly want
@@ -393,8 +396,9 @@ identity. Restructure to put the condition inside the body.
 
 Two `#[derive(...)]` macros generate the bridge code between Rust
 host types and the Ogham runtime, plus a compile-time schema
-manifest the `ogham check` CLI / LSP validate `.ogh` files
-against:
+manifest the `ogham check` CLI validates `.ogh` files against
+(LSP integration of the schema-diagnostic engine in
+`src/diagnostics/` is on the roadmap but not yet wired):
 
 ```rust
 use ogham_derive::{OghamState, OghamMsg};
@@ -423,17 +427,28 @@ use ogham::TypedOgham;
 let handle: TypedOgham<SettingsState, SettingsMsg> =
     TypedOgham::watch("./data/settings.ogh", SettingsState::default(), config)?;
 
-handle.set_state(|s| s.volume = 0.8);          // typed mutation
-while let Some(msg) = handle.next_msg() {       // typed event recv
+// set_state takes a full S; the wrapper diffs against the
+// previous frame and only injects changed fields.
+let mut next = current.clone();
+next.volume = 0.8;
+handle.set_state(next);
+
+while let Some(msg) = handle.poll_msg() {       // typed event recv
     match msg { SettingsMsg::SetVolume(v) => /* ... */, .. }
 }
+// Or drain all queued messages in one go:
+// for msg in handle.drain_msgs() { ... }
 ```
 
 In the `.ogh` file, top-level identifiers `volume`, `label`,
 `items` resolve to the host state directly; events fire through
-`event("set_volume", value)`. The LSP and `ogham check` cross-
-reference the manifest, so a typo in `event("setvolume", ...)`
-flags as an error.
+`event("set_volume", value)`. `ogham check` cross-references
+the manifest at analysis time, so a typo in
+`event("setvolume", ...)` flags as an error before run. (LSP
+integration of the schema-diagnostic engine is on the
+roadmap; today the LSP reports scanner / parser / typed-
+bindings AST validation / lifecycle conditional-registration
+diagnostics only.)
 
 ### Portal widget (Phase 2 + 2.5)
 
@@ -768,7 +783,7 @@ let typing = ogham.consumes_character_key();
 Two traits live in `src/widget/mod.rs`:
 
 - **`Surface`** — entry point. Implementations walk the widget tree and call each widget's `render()` / `post_render()` methods. Its only required method is `draw(&mut self, ui: &mut UI)`.
-- **`RenderContext`** — the drawing API widgets call from inside their `render()` methods. Implementations provide primitives like `fill_rect`, `draw_border`, `draw_text`, plus stack-based scopes via `push_clip_rect` / `pop_clip_rect` and `push_effects` / `pop_effects`.
+- **`RenderContext`** — the drawing API widgets call from inside their `render()` methods. Implementations provide primitives like `fill_rect`, `draw_border`, `draw_text`, plus stack-based scopes via `push_clip_rect` / `pop_clip_rect`, `push_effects` / `pop_effects`, and `push_backdrop_blur` / `pop_backdrop_blur`.
 
 ```rust
 pub trait Surface {
@@ -793,8 +808,32 @@ pub trait RenderContext {
     /// render correctly.
     fn push_effects(&mut self, opacity: f32, transform: &Transform, pivot_x: f32, pivot_y: f32) {}
     fn pop_effects(&mut self) {}
+
+    /// Begin a backdrop-filter layer over `(x, y, w, h)` clipped to `radii`,
+    /// applying a Gaussian blur of `sigma` to the canvas content already
+    /// painted under the rect. Backends without backdrop sampling can leave
+    /// the no-op default — the panel still renders, just without the
+    /// frosted-glass capture. Always paired with `pop_backdrop_blur`.
+    fn push_backdrop_blur(
+        &mut self, x: f32, y: f32, w: f32, h: f32,
+        radii: &CornerRadii, sigma: f32,
+    ) {}
+    fn pop_backdrop_blur(&mut self) {}
 }
 ```
+
+**Two-pass rendering.** Backends draw the base tree first
+(Pass A), collecting any `Portal` widgets as `PortalEntry`s on
+`UI::portal_layers`. After Pass A returns, the backend walks
+each open portal layer in priority order
+(`overlay-modal` → `popover` → `tooltip` → `toast` →
+`cursor-attached`) and paints its entries at viewport-absolute
+coordinates (Pass B), applying the layer's `BackdropPolicy`
+before painting children. While a drag is in flight, the
+backend synthesizes a `cursor-attached` entry from
+`UI::active_drag_preview` and the cursor position. See
+[`docs/internal/SURFACE.md`](docs/internal/SURFACE.md) for
+the full walker description.
 
 `SkiaEnv` in `src/skia.rs` is the reference implementation of both traits.
 
@@ -837,7 +876,7 @@ ogham/
       portal_layer.rs       -- Named portal layers + backdrop / cursor policies
       animation.rs          -- Spring math + per-property animation state
       event.rs              -- Event, EventContext, TickContext, DragState
-    cli/                    -- `ogham` CLI (check, render)
+    cli/                    -- `ogham` CLI (check subcommand; render.rs is the diagnostic formatter)
     lsp/                    -- `ogham-lsp` language server
     diagnostics/            -- schema-diagnostic engine (used by CLI + LSP)
     typed.rs                -- TypedOgham handle (typed host state + msg)

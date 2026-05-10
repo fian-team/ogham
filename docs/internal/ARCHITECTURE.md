@@ -113,9 +113,23 @@ animation ticks. Each can request a layout pass; debug builds
 attribute layout calls per source so a chronic over-marking
 regression shows up as a per-second warning.
 
+After draw the host calls `Ogham::process_drain_queues()` to
+flush any `on_unmount` / `cleanup` hooks owed by widgets that
+settled their exit animation in this tick — the drain machinery
+crosses the UI/Runtime seam and is the reason `tick_animations`
+threads a `TickContext` (carrying `drained_path_prefixes` and
+`cancelled_unmount_prefixes`) rather than a bare `dt`. Drag and
+context-menu dispatch take their own paths
+(`Ogham::dispatch_drag_*` / `dispatch_contextmenu`) — see
+[EVENTS.md](EVENTS.md).
+
 **Read next:** [`WIDGET_TREE.md`](WIDGET_TREE.md) for what
 `reconcile` actually does, [`STYLE_AND_ANIMATION.md`](STYLE_AND_ANIMATION.md)
-for `tick_animations`, [`SURFACE.md`](SURFACE.md) for the draw seam.
+for `tick_animations`, [`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECYCLE.md)
+for entry/exit + Presence sequencing, [`SURFACE.md`](SURFACE.md)
+for the draw seam, [`EVENTS.md`](EVENTS.md) for drag and
+context-menu dispatch, [`RUNTIME.md`](RUNTIME.md) for drain
+queues and host-state injection.
 
 ## 4. Module layout
 
@@ -137,7 +151,15 @@ flowchart TB
         end
 
         subgraph widget["widget/"]
-            w["mod.rs (UI, Widget trait, Surface trait)<br/>builder.rs (Value → tree)<br/>flex_widget.rs · presence_widget.rs<br/>grid_widget.rs · text_widget.rs<br/>text_input_widget.rs · svg_widget.rs<br/>image_widget.rs<br/>style.rs · animation.rs · event.rs<br/>point.rs · rect.rs · image.rs"]
+            w["mod.rs (UI, Widget trait, Surface trait, RenderEffects)<br/>builder.rs (Value → tree)<br/>flex_widget.rs · presence_widget.rs<br/>portal_widget.rs · portal_layer.rs<br/>grid_widget.rs · text_widget.rs<br/>text_input_widget.rs · svg_widget.rs<br/>image_widget.rs<br/>style.rs · animation.rs · event.rs<br/>point.rs · rect.rs · image.rs"]
+        end
+
+        subgraph diag["diagnostics/"]
+            dg["check.rs · diagnostic.rs · manifest.rs<br/>(schema-diagnostic engine)"]
+        end
+
+        subgraph cli["cli/ (binary: ogham)"]
+            cli_files["check.rs · render.rs · main.rs"]
         end
 
         subgraph lsp["lsp/ (binary: ogham-lsp)"]
@@ -148,6 +170,7 @@ flowchart TB
             c["standalone .ogh viewer"]
         end
 
+        typed["typed.rs<br/>(TypedOgham&lt;S, M&gt;)"]
         skia_mod["skia.rs<br/>(SkiaEnv : Surface)"]
         fw["file_watcher.rs"]
     end
@@ -158,10 +181,14 @@ flowchart TB
     lib --> widget
     lib --> skia_mod
     lib --> fw
+    lib --> typed
     runtime --> parser
     runtime --> scanner
     widget --> runtime
     skia_mod --> widget
+    typed --> lib
+    cli --> diag
+    cli --> lib
     lsp --> scanner
     lsp --> parser
     client --> lib
@@ -179,6 +206,7 @@ flowchart LR
     subgraph runtime["Runtime (one per Ogham instance)"]
         hs["host_state<br/>HashMap&lt;String, Value&gt;"]
         cs["state.component_state<br/>HashMap&lt;path:name, Value&gt;"]
+        lh["state.lifecycle hooks<br/>(mount / unmount / effect / cleanup<br/>per call-stack path)"]
         eh["event_handlers"]
         ctx["context_stack<br/>(transient per render)"]
         env["environment<br/>(transient per render)"]
@@ -190,18 +218,23 @@ flowchart LR
         hov["per-widget hover"]
         sc["per-Flex scroll_y"]
         focus["focused widget"]
+        layers["portal_layers<br/>(per-frame, rebuilt by reconcile)"]
+        drag["active_drag_preview<br/>(while drag in flight)"]
+        pend["pending_drained_prefixes<br/>pending_cancelled_prefixes<br/>(flushed by process_drain_queues)"]
     end
 
     rust["Host Rust app"] -- write --> hs
     runtime -- "VM reads via GetState (with fallback)" --- env
     runtime -- "VM reads via GetHostState" --- hs
     runtime -- "DeclareState/SetState writes" --- cs
+    runtime -- "RegisterMountHook / Unmount / Effect writes" --- lh
     ui -- "preserved across reconcile" --- sp
     ui -- "preserved across reconcile" --- hov
     ui -- "preserved across reconcile" --- sc
+    ui -- "rebuilt per reconcile (entries) /<br/>persistent (registry)" --- layers
 
     classDef volatile fill:#ffeebb,stroke:#aa8833;
-    class env,ctx,comp volatile;
+    class env,ctx,comp,layers volatile;
 ```
 
 Yellow boxes are derived/transient and rebuilt every render (the
@@ -212,7 +245,10 @@ rerenders — that persistence is what makes spring animations and
 state-driven UI work.
 
 **Watch out:** `Ogham::reload` and `recompile_from_source` build
-a *new* `Runtime`, so component state is dropped on hot reload.
-Widget tree state survives because it lives on the `UI`, which
-reconciles against the new descriptors. See
+a *new* `Runtime`, so component state and the lifecycle-hook
+registry are dropped on hot reload (the reload path also calls
+`UI::clear_lifecycle_state` to scrub any pending drain queues
+on the UI side). Widget-tree animation/hover/scroll state
+survives because it lives on the `UI`, which reconciles against
+the new descriptors. See
 [INTENT §7](INTENT.md#7-hot-reload-preserves-what-it-can-drops-what-it-cant).

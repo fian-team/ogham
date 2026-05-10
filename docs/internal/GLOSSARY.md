@@ -49,7 +49,8 @@ function.
 
 **Value** — The runtime's dynamic-type enum. Variants:
 `Integer`, `Float`, `Boolean`, `String`, `Map`, `Array`,
-`BytecodeClosure`, `Widget`, `Void`, `Mutation`, `BoundTrigger`.
+`BytecodeClosure`, `Widget`, `Void`, `Mutation`, `BoundTrigger`,
+`WidgetRef`.
 
 **Map vs. struct** — There are no structs. Object-shaped data
 (colors, transforms, transitions, widget styles) is `Value::Map`.
@@ -84,8 +85,22 @@ arg1, arg2)`. The handler's return value is discarded; tracked
 flows go through mutations.
 
 **Event** (in widget tree) — A `widget::event::Event` carrying a
-name plus optional point/keyboard/scroll/value payload. Dispatched
-to widget listeners during `UI::call_event`.
+name plus optional point/keyboard/scroll/value/payload data.
+Dispatched to widget listeners during `UI::call_event` and the
+dedicated `dispatch_drag_*` / `dispatch_contextmenu` paths.
+
+**Lifecycle hooks** — Block-statement keywords that attach
+side-effects to a widget's mount, unmount, or dependency changes:
+`on_mount { ... }`, `on_unmount { ... }`, `effect (deps) { ... }`,
+`cleanup { ... }` (only valid inside an effect body). Identity is
+path-based — every `(call_stack, hook_id)` pair is a fresh slot.
+See [RUNTIME.md](RUNTIME.md) for drain semantics.
+
+**TypedOgham** — `TypedOgham<S, M>` in `src/typed.rs`. A typed
+wrapper around `Ogham` that uses `#[derive(OghamState)]` /
+`#[derive(OghamMsg)]` to bridge a Rust struct/enum to the
+runtime's host state and event bus. `set_state` diffs against
+the previous frame's `S` and only injects changed fields.
 
 ---
 
@@ -95,13 +110,21 @@ to widget listeners during `UI::call_event`.
 `widget::Widget` trait. Long-lived: the same `Widget` instance
 survives across rerenders when reconciliation finds a match.
 
-**WidgetRef** — `Arc<Mutex<dyn Widget>>`. The shared, lockable
-handle the tree is built out of.
+**WidgetRef** (handle) — `Arc<Mutex<dyn Widget>>`, the shared
+lockable handle the tree is built out of. Type alias in
+`widget/mod.rs`.
+
+**WidgetRef** (`Value` variant) — `Value::WidgetRef(u64)`. An
+opaque identity allocated by `WidgetTree`, returned by the
+`focused_widget()` built-in and consumed by `focus(ref)`.
+Distinct from the handle above: this one is a script-visible
+*identifier*, not a pointer.
 
 **Builder** — `widget/builder.rs`. Converts `Value::Widget`
 descriptors into `WidgetRef`s using a registry of factories
 (`flex`, `text`, `textinput`, `svg`, `image`, `grid`, `presence`,
-plus any custom widgets registered via `RuntimeConfig::with_widget`).
+`portal`, plus any custom widgets registered via
+`RuntimeConfig::with_widget`).
 
 **Reconciliation** — The `Widget::update` walk. Compares the new
 tree against the live tree, copies props in place where types
@@ -122,6 +145,47 @@ animation. Drained on the next tick after its springs settle. See
 **Pending** (Presence) — Children staged inside a `Presence`
 container while the previous generation finishes exiting. Mounted
 once no ghosts remain. Latest-wins on rapid key changes.
+
+**Portal** — A widget whose children paint into a named
+*portal layer* in a second pass instead of in their parent's
+flow. The Portal node contributes nothing to layout. See
+[WIDGET_TREE.md](WIDGET_TREE.md) and [SURFACE.md](SURFACE.md).
+
+**Portal layer** — A named, priority-ordered render slot
+(`main`, `overlay-modal`, `popover`, `tooltip`, `toast`,
+`cursor-attached`). Each layer carries a *backdrop policy*
+(Block / None) and a *cursor preference* (Free / Inherit).
+Defined in `src/widget/portal_layer.rs`.
+
+**Owned-path prefix** — A path string recorded on each
+`FlexWidget` / `PortalWidget` at construction (the call-stack
+path of the function that produced it). Drives drain-time
+unmount: when a widget drains, its owned-path prefix is pushed
+into the tick's `drained_path_prefixes`, and any lifecycle
+state under that prefix unmounts on the next render.
+
+**TickContext** — Per-tick context threaded through
+`Widget::tick_animations` (`src/widget/event.rs`). Replaces the
+bare `dt: f32` parameter; carries `dt`, `drained_path_prefixes`
+(widgets drained this tick), and `cancelled_unmount_prefixes`
+(exits cancelled mid-flight).
+
+**DragState** — Per-frame drag context constructed by
+`UI::dispatch_drag_start` and threaded through subsequent
+`dispatch_drag_move` / `dispatch_drag_end` calls. Carries
+origin widget, payload, cursor positions, and a past-dead-zone
+flag. Stashed on `EventContext.drag_state` during dispatch so
+listeners can read it.
+
+**Drag payload** — The `Value` declared by a drag-source widget
+via `drag_payload:`. Travels through `drag_start` / `drag_move` /
+`drag_end` listeners on `Event.payload` and feeds the
+`accepts_drop(payload)` predicate on candidate drop targets.
+
+**Drain queue** — A pair of `Vec<String>` (drained / cancelled
+path prefixes) that `UI::tick_animations` populates from
+`TickContext` and `Runtime::process_drain_queues` consumes on
+the next render to fire delayed `on_unmount` / `cleanup` hooks.
 
 **Layout pass** — A full top-down `Widget::layout` walk that
 resolves widget rects. Triggered by `needs_layout`; expensive
@@ -191,6 +255,17 @@ backend implements this.
 a widget's `render_effects()` and applied for the widget *and its
 descendants*. Paint-only — does not affect layout or hit-testing.
 
+**Backdrop blur** — A `backdrop_filter: { blur: N }` style on a
+`Flex` triggers a `push_backdrop_blur` / `pop_backdrop_blur`
+scope on the `RenderContext`. Backends that don't support
+backdrop sampling use the trait's no-op default; the panel
+still renders, just without the frost. See [SURFACE.md](SURFACE.md).
+
+**Two-pass rendering** — Skia's `draw` walks the base tree
+(Pass A) collecting `PortalEntry`s into `PortalLayers`, then
+walks each open layer in priority order (Pass B), applying the
+layer's backdrop policy before painting that layer's children.
+
 **Logical vs. physical pixels** — Widgets work entirely in logical
 (pre-DPI) coordinates. The Skia backend multiplies by `dpi_scale`
 inside `RenderContext` calls.
@@ -208,6 +283,14 @@ and parser; never instantiates the runtime or widget tree. See
 `ast`.
 
 **Hot reload** — File-watcher-driven recompilation. Triggers a
-fresh `Runtime::from_file` and a tree reconcile against the new
+fresh `Runtime::from_file`, a `UI::clear_lifecycle_state` call to
+drop the old hook registry, and a tree reconcile against the new
 output; *some* state survives if keys and shapes match. See
 [RUNTIME.md](RUNTIME.md).
+
+**Schema diagnostic** — Cross-side check between a `.ogh` file
+and the typed-bindings manifest produced by
+`#[derive(OghamState)]` / `#[derive(OghamMsg)]`. Engine lives
+in `src/diagnostics/`; consumed by the `ogham check` CLI.
+LSP wiring is on the roadmap (Phase 1 in
+[SCHEMA_DIAGNOSTICS.md](SCHEMA_DIAGNOSTICS.md)).

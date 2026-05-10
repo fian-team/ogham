@@ -53,6 +53,11 @@ Ghost
   remains in parent's children
   ticks each frame; once animations.is_empty() and exiting,
     drain_exited_children removes it from the parent
+  pushes the dropped widget's owned_path_prefix into
+    TickContext.drained_path_prefixes
+  → UI promotes the prefix to UI.pending_drained_prefixes
+  → next render's process_drain_queues fires owned hooks
+    (on_unmount + effect cleanups under that prefix)
 ```
 
 A `Presence` container layers over this with generation
@@ -165,10 +170,16 @@ key is no longer present), `reconcile_children` calls
    `false`. The parent (`reconcile_children`) drops the widget.
 
 Once a widget is exiting:
-- It still ticks via `tick_animations`. Each tick advances its
-  springs and recurses into its children.
-- `drain_exited_children` is called inside `tick_animations`;
-  it removes any child whose `is_exit_complete()` is true.
+- It still ticks via `tick_animations(&mut TickContext)`. Each
+  tick advances its springs and recurses into its children.
+- `drain_exited_children(ctx)` is called inside
+  `tick_animations`; it removes any child whose
+  `is_exit_complete()` is true. Before removing the child, the
+  drain pushes the child's `owned_path_prefix` into
+  `ctx.drained_path_prefixes` so the lifecycle-hook drain
+  machinery can fire `on_unmount` / effect cleanups under that
+  prefix on the next render boundary (see [RUNTIME.md →
+  Lifecycle hooks and drain queues](RUNTIME.md#lifecycle-hooks-and-drain-queues-phase-2--phase-3)).
 - A passive ghost reports `is_exit_complete = false` while its
   children still have running springs; once they all settle,
   it returns true and is drained.
@@ -239,11 +250,22 @@ Once a widget is exiting:
   exiting ghost, `reconcile_children`'s pre-pass calls
   `cancel_exit()` on the ghost. The widget then re-enters
   normal life: animations retarget toward `declared_style`
-  (or `hover_style`).
+  (or `hover_style`). Cancellation cascades — a passive ghost
+  whose descendants are mid-exit propagates `cancel_exit` to
+  every child so the whole subtree returns to normal state
+  together. The cancel pass also captures each cancelled
+  widget's `owned_path_prefix` and pushes it into
+  `TickContext.cancelled_unmount_prefixes` so the runtime can
+  drop any pending unmount under that prefix instead of firing
+  it on the next drain pass.
 
   *Why:* an author toggling a key off and on rapidly should see
   a smooth round-trip rather than a "kill the old, mount a
-  new instance from scratch" experience.
+  new instance from scratch" experience. Without the
+  prefix-capture, the unmount hook of a re-mounted widget
+  would fire after `cancel_exit` and leave the lifecycle in an
+  incoherent state (the new widget would observe the old's
+  cleanup running on it).
 
   *Drift indicators:*
   - A reconcile that doesn't pre-check existing ghosts for
@@ -251,6 +273,9 @@ Once a widget is exiting:
   - `cancel_exit` not cascading to descendants — passive
     ghosts whose children are exiting need their children
     canceled too.
+  - A cancel path that doesn't push to
+    `cancelled_unmount_prefixes` — the runtime would fire a
+    pending unmount whose owning widget is back in the tree.
 
 - **A widget that returns `true` from `begin_exit` is
   responsible for eventually returning `true` from
@@ -314,9 +339,10 @@ struct PresenceWidget {
 
 ### Tick flow
 
-`PresenceWidget::tick_animations(dt)`:
-1. Calls `inner.tick_animations(dt)` (which advances springs
-   and drains exit-complete children).
+`PresenceWidget::tick_animations(&mut TickContext)`:
+1. Calls `inner.tick_animations(ctx)` (which advances springs
+   and drains exit-complete children, pushing their
+   `owned_path_prefix`s into `ctx.drained_path_prefixes`).
 2. If `pending_children` is set and `inner.children` is empty,
    commit pending: swap pending into inner.children, set
    `generation_key = pending_key`, request layout + repaint.
@@ -398,8 +424,8 @@ sequenceDiagram
     Note over Flex: style = initial, animations target = declared
 
     loop Frames 1..N
-        Tick->>Flex: tick_animations(dt)
-        Flex->>Flex: tick_own_animations advances springs
+        Tick->>Flex: tick_animations(&mut TickContext)
+        Flex->>Flex: tick_own_animations(ctx.dt) advances springs
         Flex-->>Tick: TickResult { still_animating: true }
     end
     Note over Flex: settled at declared
@@ -416,11 +442,12 @@ sequenceDiagram
     end
 
     loop Frames N+2..M
-        Tick->>Flex: tick_animations(dt)
+        Tick->>Flex: tick_animations(&mut ctx)
         alt A's exit still moving
             Flex-->>Tick: still_animating: true
         else settled
-            Note over Tick: drain_exited_children removes A
+            Note over Tick: drain_exited_children pushes A's
+            Note over Tick: owned_path_prefix into ctx and removes A
         end
     end
 ```

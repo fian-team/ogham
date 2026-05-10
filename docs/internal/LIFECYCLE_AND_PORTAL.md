@@ -1,27 +1,38 @@
-# Ogham — Lifecycle Hooks + Portal Widget (Phase 2)
+# Ogham — Lifecycle Hooks + Portal Widget
 
-> **Status: Live contract — Phase 2 shipped 2026-05-05;
-> Phase 2.5 layer system + cursor coord + key suppression
-> shipped same day; Phase 3 (drag events + drain-time
-> unmount) shipped same day. Body of this doc still describes
-> the Phase 2 single-layer Portal; layer system spec lives in
-> `PHASE_2_5_M0_PLAN.md` and the drag/drain-time spec lives
-> in `PHASE_3_IMPLEMENTATION.md` "What shipped" trailer
-> until the docs revision pass folds them back in (see
-> `PHASE_2_5_IMPLEMENTATION.md` "What's next").**
+> **Status: Live contract.** Phase 2 (lifecycle hooks
+> `on_mount` / `on_unmount` / `effect` / `cleanup` and the
+> minimal Portal widget) shipped 2026-05-05. Phase 2.5 (6-layer
+> Portal system + per-layer backdrop / cursor policies +
+> viewport-absolute coords + cursor / key coordination signals
+> + hot-reload `clear_lifecycle_state`) and Phase 3 (drag events
+> + contextmenu + true drain-time unmount + `TickContext`)
+> shipped the same day. This doc was written as the Phase 2
+> design contract and folded in the Phase 2.5 / Phase 3
+> additions in the 2026-05-09 docs revision. Per-merge
+> implementation history lives in
+> [`LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md`](LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md);
+> the Phase 2.5 / Phase 3 trailers in
+> [`PHASE_2_5_IMPLEMENTATION.md`](PHASE_2_5_IMPLEMENTATION.md)
+> and [`PHASE_3_IMPLEMENTATION.md`](PHASE_3_IMPLEMENTATION.md)
+> record the deviations from this design.
 >
-> This document specifies Phase 2 of the post-audit roadmap: a
+> This document specifies the lifecycle + Portal subsystems: a
 > path-based callback lifecycle (`on_mount`, `on_unmount`,
-> `effect` with `cleanup`) and a minimal `Portal` widget. It
-> supersedes none of the existing live contracts; it adds two
-> opt-in subsystems that compose with today's primitives.
+> `effect` with `cleanup`), a Portal widget that lifts paint
+> and hit-test out of its parent's flow into a named layer,
+> drag events that share the layer system's hit-test path, and
+> drain-time unmount semantics that bridge the lifecycle into
+> the animation pipeline. It supersedes none of the existing
+> live contracts; it adds opt-in subsystems that compose with
+> today's primitives.
 >
-> All four hook kinds and the Portal widget are implemented
-> end-to-end. UL adoption (Settings save, escape menu Portal,
-> inventory tooltip) is deferred to a post-Phase-2 backlog
-> per the audit doc — UL's `overlay_state` instance-swap
-> pattern requires restructuring beyond the M5 scope, and
-> in-progress UL combat work raises cross-repo risk.
+> All four hook kinds, the Portal widget (with the full layer
+> system), drag dispatch, contextmenu, and drain-time unmount
+> are implemented end-to-end. UL adoption (Settings save,
+> escape menu Portal, inventory tooltip, drag-and-drop
+> migration) is deferred to UL Pass 2 — see
+> [`UL_ADOPTION_READINESS.md`](UL_ADOPTION_READINESS.md).
 >
 > See [`INTENT.md`](INTENT.md) §3 for the path-based identity
 > story this design extends from `state` to lifecycle.
@@ -40,6 +51,115 @@
 > [`LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md`](LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md)
 > (the per-merge implementation history, populated as M0–M5
 > ship).
+
+---
+
+## Phase 2.5 + Phase 3 supplements (read first)
+
+This section names what was added on top of the Phase 2 design
+below. The rest of the document still describes the Phase 2
+contract verbatim because the design rationale is unchanged;
+this block highlights where the *implementation* differs from
+the original spec or extends it.
+
+**Phase 2.5 — Portal layer system + cursor / key signals.**
+The single per-frame `portal_layer: Vec<...>` of Phase 2 was
+replaced with a fixed, priority-ordered set of six named
+layers, each carrying a `BackdropPolicy` (`Block` / `None`)
+and cursor preference (`Free` / `Inherit`). The Portal API
+gained two optional properties — `layer` and `cursor` — both
+of which fall back to the layer's defaults if omitted. Layer
+priorities, defaults, and use cases:
+
+| Layer | Priority | Default backdrop | Default cursor | Use for |
+|---|---:|---|---|---|
+| `"main"` | 0 | None | Inherit | Reserved (base tree) |
+| `"overlay-modal"` | 100 | Block | Free | Modal dialogs, escape menu |
+| `"popover"` | 200 | None | Free | Dropdown menus, comboboxes |
+| `"tooltip"` | 300 | None | Inherit | Hover tooltips |
+| `"toast"` | 400 | None | Inherit | Transient notifications |
+| `"cursor-attached"` | 500 | None | Inherit | Drag previews; positioned at cursor |
+
+`PortalEntry` coordinates are viewport-absolute (closing the
+Phase 2 known limitation around nested-portal positioning).
+Hit-testing walks open layers high-priority-to-low *before*
+the base tree.
+
+Two new `Ogham`-side coordination signals shipped with the
+layer work:
+
+- `Ogham::wants_cursor_free()` — `true` if any active Portal
+  in the `overlay-modal` / `popover` layers, or the focused
+  widget, declares `cursor: "free"`.
+- `Ogham::consumes_character_key()` — `true` if the focused
+  widget consumes `Key::Character(_)` events (`TextInput`).
+  Used by hosts to gate game hotkeys while the user is typing.
+
+Hot-reload now calls `UI::clear_lifecycle_state()` on the
+old UI before swapping it (resolves open implementation
+question #6).
+
+The compiler / VM gained `Value::WidgetRef(u64)` — an opaque
+widget identity returned by the `focused_widget()` built-in
+and consumed by `focus(ref)`. (Built-ins are sketched but not
+yet wired through; the `Value` variant is in place for the
+follow-up.)
+
+**Phase 3 — Drag events + contextmenu + true drain-time
+unmount.** The original design called for drain-time unmount
+in §"Drain-time unmount, not reconcile-time"; M1 shipped a
+simpler path-disappear approximation, and Phase 3 M3 replaced
+it with the full mechanism. Each `Widget::tick_animations`
+now takes a `TickContext` (`src/widget/event.rs`) carrying
+`dt` plus two side-channels: `drained_path_prefixes`
+(populated by `drain_exited_children` when a widget settles
+its exit) and `cancelled_unmount_prefixes` (populated by
+`cancel_exit` cascades). `UI::tick_animations` drains the
+context into per-frame pending vecs, and
+`Runtime::process_drain_queues` (called by `Ogham::update`
+after reconcile) promotes drained paths from
+`candidate_unmounts` to fired hooks while removing cancelled
+prefixes from the candidate set. `Ogham::process_drain_queues`
+is also exposed for hosts that want to flush hooks
+explicitly.
+
+Drag dispatch follows a parallel path to `UI::call_event` so
+it can walk portal layers high-priority-to-low for drop-target
+resolution:
+
+- `drag_payload`, `drag_dead_zone`, `drag_preview`,
+  `accepts_drop` properties on `Flex` (and listener
+  registration for `drag_start` / `drag_move` / `drag_end`).
+- `Event.payload: Option<Value>` carries the drag payload
+  through the gesture; `EventContext.drag_state` stashes the
+  per-frame `DragState` for widgets to read during dispatch.
+- `Ogham::dispatch_drag_start` / `dispatch_drag_move` /
+  `dispatch_drag_end` / `hit_test_drop_target` — the host's
+  input pump owns the dead-zone state machine; Ogham owns the
+  hit-test and event emission.
+- `drag_preview` widgets render via a synthesized
+  `cursor-attached` portal entry — no manual Portal needed.
+
+`Ogham::dispatch_contextmenu(point) -> bool` fires the
+`contextmenu` event on the deepest widget at the cursor (no
+auto-bubble) so right-click and left-click route
+independently.
+
+For the live-contract details, the orientation tier docs are
+authoritative:
+
+- [`SUBSYSTEMS.md → Portal widget and layers`](SUBSYSTEMS.md#portal-widget-and-layers)
+- [`SUBSYSTEMS.md → Drag and contextmenu dispatch`](SUBSYSTEMS.md#drag-and-contextmenu-dispatch)
+- [`SUBSYSTEMS.md → Drain-time unmount`](SUBSYSTEMS.md#drain-time-unmount)
+- [`SURFACE.md`](SURFACE.md) for the two-pass rendering walker
+- [`EVENTS.md`](EVENTS.md) for drag listeners, `Event.payload`,
+  `TickContext`, `DragState`
+- [`RUNTIME.md → Lifecycle hooks and drain queues`](RUNTIME.md#lifecycle-hooks-and-drain-queues-phase-2--phase-3)
+- [`RUNTIME.md → Cursor, key, and drag signals`](RUNTIME.md#cursor-key-and-drag-signals)
+
+The remainder of this document is the original Phase 2 design
+contract, with inline refresh notes at the points where
+implementation diverged.
 
 ---
 
@@ -419,6 +539,20 @@ scroll-to-element patterns. `on_unmount` fires *before*
 layout so the unmounting subtree's last layout is still
 valid when the callback runs.
 
+> **Refresh note (M1 deviation, still in effect 2026-05-09):**
+> The shipped implementation flushes both `pending_mounts`
+> and `pending_unmounts` *inside* `Runtime::rerender` —
+> specifically `pre_layout_drain` and `post_layout_drain`,
+> which both run before the host's `ui.layout(w, h)` call.
+> Mount bodies therefore *cannot* read post-layout sizes
+> from the just-rendered tree. The post-layout mount timing
+> described in step 6 is the design intent and is on the
+> backlog (it'll land when Portal positioning forces it).
+> See `LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md` "What
+> shipped" trailer for M1 and the consistent treatment in
+> [`AGENTS.md`](../../AGENTS.md), [`RUNTIME.md`](RUNTIME.md),
+> and [`SUBSYSTEMS.md`](SUBSYSTEMS.md).
+
 ### Drain-time unmount, not reconcile-time
 
 When a widget begins exiting (ghost state, exit animation in
@@ -432,13 +566,35 @@ mid-exit) cancels the pending unmount — it never fires.
 This avoids a fragile "is it gone yet" check at the cost of
 `on_unmount` being delayed by the exit-animation duration.
 
-The mechanism: each widget records its `owned_path_prefix`
-at construction. When a widget drains, the runtime walks
-`unmount_hooks` and `effects` for any entries whose path
-starts with that prefix and queues them for the *next*
-frame's pre-layout slot. When a widget cancels exit, the
-same prefix walk re-arms by re-inserting the affected
-paths into the next active set's seed.
+The mechanism (Phase 3 M3 final form): each `FlexWidget` /
+`PortalWidget` records its `owned_path_prefix` at
+construction. `Widget::tick_animations` takes a
+`TickContext` (`src/widget/event.rs`) carrying `dt` plus two
+side-channel `Vec<String>`s — `drained_path_prefixes` and
+`cancelled_unmount_prefixes`. When `drain_exited_children`
+removes a widget that just settled, it pushes the widget's
+prefix into `drained_path_prefixes`. When `cancel_exit`
+revives a ghost (and cascades to its descendants), each
+cancelled widget's prefix goes into
+`cancelled_unmount_prefixes`. `UI::tick_animations` moves the
+two vecs onto `UI.pending_drained_prefixes` /
+`UI.pending_cancelled_prefixes`. The next render's
+`Runtime::process_drain_queues` (called from
+`Ogham::update` after reconcile) consumes them: cancelled
+prefixes drop matching entries from `candidate_unmounts`
+first, then drained prefixes promote any remaining matches
+to fired hooks. `Runtime::flush_remaining_unmount_candidates`
+provides a synchronous fallback for tests and for hosts that
+drive the runtime without a `UI`.
+
+> **Refresh note (Phase 2 → Phase 3):** the original Phase 2
+> M1 implementation approximated this with path-disappear
+> semantics (firing unmount when the path stopped being
+> visited, regardless of exit-animation state). Phase 3 M3
+> replaced that approximation with the `TickContext`-based
+> machinery described above. The path-disappear edge case
+> (cancel-mid-exit causing spurious unmount sequences) is
+> now closed.
 
 ### Effect cleanup ordering
 
@@ -710,16 +866,23 @@ mostly be calling host events, not tree-building functions.
 Portal {
   open: state.open,
   focus_trap: true,
+  layer: "overlay-modal",  // optional; Phase 2.5
+  cursor: "free",          // optional; Phase 2.5
   children: [ ... ],
 }
 ```
 
-Three properties. That's the entire API.
+Five properties. The two optional ones (`layer` and `cursor`)
+default to the layer's declared defaults, so existing Phase 2
+Portals without them continue to work — they land on the
+`overlay-modal` layer with a `Block` backdrop.
 
 | Property | Type | Default | Meaning |
 |---|---|---|---|
 | `open` | `bool` | `false` | When `true`, children are mounted into the portal layer. When `false`, children are reconciled out (entry/exit animations apply normally). |
 | `focus_trap` | `bool` | `false` | When `true`, focus cannot leave this portal's subtree while it is open. Push/pop on the focus stack is bound to this portal's mount/unmount. |
+| `layer` | `string` | `"overlay-modal"` | Which named layer to paint into. One of `"main"`, `"overlay-modal"`, `"popover"`, `"tooltip"`, `"toast"`, `"cursor-attached"` (Phase 2.5). The layer determines paint priority, default backdrop policy, and default cursor preference. |
+| `cursor` | `string` | layer default | `"free"` requests a visible system cursor; `"inherit"` defers to the host. Aggregated by `Ogham::wants_cursor_free()`. |
 | `children` | `array<widget>` | `[]` | The widgets to render in the portal layer. Layout starts at the parent's slot rect; transforms apply normally. |
 
 ### What's deliberately not in the API
@@ -728,8 +891,11 @@ Everything that *was* bundled into Portal in the first
 draft becomes ordinary composition with the existing
 primitives:
 
-- **Backdrop** → first child in `children` is a
+- **Backdrop styling** → first child in `children` is a
   full-viewport `Flex` with `background_color: backdrop`.
+  (The layer's `BackdropPolicy` paints a runtime backdrop
+  separately for `Block`-policy layers; consumers can layer
+  styled chrome on top.)
 - **Dismiss-on-outside** → `on_click` on the backdrop child
   toggles the consumer's `open` state.
 - **Anchor positioning** → the second child uses
@@ -742,21 +908,24 @@ primitives:
 This is the
 [composition section](#composition-patterns) in detail.
 
-### Why three properties
+### Why this property set
 
-The walkthrough collapsed several initially-considered
-properties:
+The original Phase 2 walkthrough collapsed several
+initially-considered properties; Phase 2.5 reintroduced two
+(`layer` and `cursor`) as a fixed declarative escape hatch
+when the UL audit showed that overlay-modal / popover /
+tooltip / toast had genuinely different paint priority and
+input-blocking needs.
 
 | Originally proposed | Resolution |
 |---|---|
-| `backdrop: bool` | Authors compose with a full-viewport Flex child — gives full control over color, opacity, dismiss behavior, animation. |
+| `backdrop: bool` | Authors compose with a full-viewport Flex child — gives full control over color, opacity, dismiss behavior, animation. The layer's `BackdropPolicy` (Phase 2.5) handles the input-blocking *behaviour* separately from the styled chrome. |
 | `dismiss_on_outside: bool` | An `on_click` on the backdrop child does this exactly. |
 | `dismiss_on_escape: bool` | A consumer-level key handler does this — and is needed for non-Portal dismissable UIs anyway. |
-| `anchor: WidgetRef` | Anchor positioning is one transform call. Wiring it through portal would require widget refs as first-class values, which is its own large project. |
-| `z_index: int` | Multiple portals stack last-opened-on-top; explicit z is YAGNI for our concrete use cases (tooltip / modal / dropdown / context menu). |
-
-What remains (`open`, `focus_trap`, `children`) is the
-minimum surface that doesn't decompose further.
+| `anchor: WidgetRef` | Anchor positioning is one transform call. Wiring it through portal would require widget refs as first-class values, which is its own large project. (Phase 2.5 introduced `Value::WidgetRef(u64)` to begin closing that gap.) |
+| `z_index: int` | Phase 2 said multiple portals stack last-opened-on-top; Phase 2.5 made the priority explicit via the named-layer set. Six layers cover every use case the UL audit found, with a fixed enum keeping the priority math obvious. |
+| `layer: string` (Phase 2.5) | Added. The audit showed tooltip / popover / overlay-modal / toast / cursor-attached have genuinely different priorities and backdrop policies; encoding them in a fixed-set enum is simpler than a free-form `z_index`. |
+| `cursor: string` (Phase 2.5) | Added. Modal-style overlays need to release a host's pointer lock; per-Portal declaration aggregates through `Ogham::wants_cursor_free()`. |
 
 ---
 
@@ -767,29 +936,47 @@ The render pipeline becomes:
 1. **Pass A — main tree.** Walk the descriptor tree,
    paint normally. When a `Portal` node is encountered
    with `open: true`, **do not paint its children**;
-   instead push a `(WidgetRef, parent_rect)` pair onto a
-   per-frame `portal_layer: Vec<...>`. The portal node
-   itself paints as a no-op (it's a layout zero, not a
-   visual marker).
-2. **Pass B — portal layer.** After Pass A completes,
-   walk `portal_layer` in mount order. Each entry paints
-   with its own clip rect (the viewport, not the parent's)
-   and its own layout origin (`parent_rect.top_left`). A
-   portal child with no transform appears exactly where
-   the portal node would have appeared if it hadn't been
-   a portal.
+   instead register a `PortalEntry` (children +
+   viewport-absolute origin + open + focus_trap + layer)
+   into the entry's declared layer on
+   `UI::portal_layers`. The portal node itself paints as
+   a no-op (it's a layout zero, not a visual marker).
+2. **Pass B — portal layers.** After Pass A completes,
+   iterate the layer set in priority order
+   (`overlay-modal` (100) → `popover` (200) → `tooltip`
+   (300) → `toast` (400) → `cursor-attached` (500)). For
+   each layer with at least one open entry, apply the
+   layer's `BackdropPolicy` (paint a runtime backdrop and
+   block click fall-through if `Block`; do nothing if
+   `None`). Then paint each entry's children with the
+   viewport as the clip rect and the entry's
+   viewport-absolute origin. While a drag is in flight,
+   the surface synthesizes a `cursor-attached` entry from
+   `UI::active_drag_preview` and the cursor position.
 
-This is intentionally a small change relative to
-multi-surface compositing. No new Skia surface, no z-index
-sort, no per-widget z value. Just a "this widget defers
-its own paint" branch in the recursive walker.
+> **Refresh note (Phase 2 → Phase 2.5):** the original
+> Phase 2 design used a single per-frame `portal_layer:
+> Vec<PortalEntry>` walked in mount order. Phase 2.5 M0
+> replaced it with the named-layer system above. Coordinates
+> are now viewport-absolute (Phase 2 used parent-rect-
+> relative, which broke for nested portals inside
+> transformed/scrolled subtrees — the M3-deferred fix).
+
+This is still a small change relative to multi-surface
+compositing. No new Skia surface, no per-widget z value.
+Just a "this widget defers its own paint" branch in the
+recursive walker, plus a fixed-cardinality layer iteration
+afterward.
 
 ### Hit-testing
 
-Mirrors paint: walk `portal_layer` first
-(top-most-portal first), fall through to the base tree
-only if no portal claims the click. Within a portal,
-hit-testing is normal recursive depth-first.
+Mirrors paint: iterate the layer set high-priority-to-low,
+walking entries within each layer; fall through to the
+base tree only if no layer claims the click. Within a
+single entry, hit-testing is normal recursive depth-first.
+A `Block`-policy layer with at least one open entry stops
+the hit-test there — clicks in the runtime backdrop don't
+reach lower layers or the base tree.
 
 A portal's children whose layout covers the full viewport
 (a backdrop child) will swallow clicks naturally — no
@@ -797,14 +984,14 @@ Portal-level `dismiss_on_outside` flag needed.
 
 ### What this does NOT support
 
-- **True z-index** — portals can render in front of the
-  base tree but cannot interleave with arbitrary siblings
-  ("render this widget on top of *just* its parent's
-  siblings, but below other portals"). For our concrete
-  use cases (tooltips / modals / dropdowns / context
-  menus) this isn't needed. If we later need true z-index,
-  the portal layer becomes the first layer of a multi-
-  layer stack — additive, not breaking.
+- **Free z-index** — Portals stack within the fixed
+  six-layer set. Authors cannot register new layers at
+  runtime, and within a single layer, entries paint in
+  mount order. For the use cases the UL audit found
+  (tooltips / modals / dropdowns / context menus / toasts /
+  drag previews), the fixed set is sufficient; if we later
+  need free z, the layer set becomes the first tier of a
+  multi-tier stack — additive, not breaking.
 - **Cross-portal layout dependencies** — Portal A's
   layout cannot depend on Portal B's measurements. If you
   need that, both should live in the base tree or share a
@@ -945,11 +1132,14 @@ first two as `examples/` library `fn`s for reference.
 ### Tooltip
 
 No backdrop, positioned relative to the trigger via
-transform.
+transform. Uses the dedicated `tooltip` layer (priority 300,
+`None` backdrop, cursor `Inherit`) so it paints over modals
+and popovers without trapping input.
 
 ```ogh
 Portal {
   open: state.hover,
+  layer: "tooltip",
   children: [
     Flex {
       style: {
@@ -969,14 +1159,20 @@ keyboard focus.
 
 ### Modal
 
-Backdrop + center-aligned dialog + dismiss-on-outside.
+Backdrop + center-aligned dialog + dismiss-on-outside. The
+`overlay-modal` layer's `Block` policy paints the runtime
+backdrop and stops click fall-through; the consumer's own
+backdrop child layers styled chrome (color/opacity/animation)
+on top and handles dismiss.
 
 ```ogh
 Portal {
   open: state.modal_open,
   focus_trap: true,
+  layer: "overlay-modal",  // default; shown for clarity
   children: [
-    // First child: backdrop. Click anywhere dismisses.
+    // First child: styled backdrop. Click anywhere dismisses.
+    // (The layer's runtime Block backdrop sits behind this one.)
     Flex {
       style: { w: "100%", h: "100%", background_color: colors.backdrop },
       on_click: fn () { state.modal_open = false; },
@@ -1001,7 +1197,10 @@ already has this infrastructure at `update.rs:1469`).
 ### Dropdown
 
 Trigger + portal that opens below the trigger via
-transform. Backdrop dismisses on outside-click.
+transform. Uses the `popover` layer (priority 200, `None`
+backdrop, cursor `Free`) so the dropdown paints above modal
+backdrops without itself being modal. Backdrop child
+dismisses on outside-click.
 
 ```ogh
 let dropdown = fn (label, items, open) {
@@ -1013,6 +1212,7 @@ let dropdown = fn (label, items, open) {
       },
       Portal {
         open: open,
+        layer: "popover",
         children: [
           Flex {
             style: {
@@ -1038,12 +1238,22 @@ let dropdown = fn (label, items, open) {
 
 ### Context menu
 
-Trigger via right-click, position by the click's
-coordinates.
+Trigger via the dedicated `contextmenu` event (Phase 3,
+fired by `Ogham::dispatch_contextmenu(point)` from the
+host's right-click handler), position by the click's
+coordinates. Uses the `popover` layer.
 
 ```ogh
+Flex {
+  contextmenu: fn () {
+    state.menu = { open: true, x: cursor.x, y: cursor.y };
+  },
+  children: [ /* trigger content */ ],
+}
+
 Portal {
   open: state.menu.open,
+  layer: "popover",
   children: [
     Flex {
       style: {
@@ -1059,6 +1269,14 @@ Portal {
 }
 ```
 
+> **Refresh note (Phase 3):** Phase 2 expected authors to
+> overload `mouse_down` with right-click detection. Phase 3
+> M2 split `contextmenu` into a dedicated event so left- and
+> right-click route independently with no host-side
+> reinterpretation needed. `Ogham::dispatch_contextmenu` is
+> the host-facing entry point; the deepest widget at the
+> cursor receives the event with no automatic bubble.
+
 ### What ships in `examples/`
 
 M5 ships `Modal()`, `Tooltip()`, and `Dropdown()` `fn`
@@ -1073,10 +1291,10 @@ the bare Portal primitive.)
 
 ## Runtime API additions
 
-Phase 2 adds one Rust-facing API on `Runtime`:
+Phase 2 adds one Rust-facing API on `Ogham`:
 
 ```rust
-impl Runtime {
+impl Ogham {
     /// Returns true if any active portal in the tree has
     /// `focus_trap: true`. Used by hosts to derive their
     /// own input-gating booleans.
@@ -1084,12 +1302,56 @@ impl Runtime {
 }
 ```
 
-That's it. The rest of Phase 2's runtime work is internal
-plumbing.
+Phase 2.5 and Phase 3 added six more, all on the same `Ogham`
+facade. The full surface as it ships today:
+
+```rust
+impl Ogham {
+    // Phase 2 — focus trap signal.
+    pub fn has_input_blocking_portal(&self) -> bool;
+
+    // Phase 2.5 — cursor + key coordination.
+    pub fn wants_cursor_free(&self) -> bool;
+    pub fn consumes_character_key(&self) -> bool;
+
+    // Phase 3 — drag dispatch (host owns the dead-zone
+    // state machine; Ogham owns hit-test + event emission).
+    pub fn dispatch_drag_start(
+        &mut self,
+        origin: WidgetRef,
+        payload: Value,
+        point: Point,
+    ) -> DragState;
+    pub fn dispatch_drag_move(
+        &mut self,
+        state: &mut DragState,
+        point: Point,
+    ) -> Option<WidgetRef>;
+    pub fn dispatch_drag_end(
+        &mut self,
+        state: &mut DragState,
+        point: Point,
+    ) -> Option<WidgetRef>;
+    pub fn hit_test_drop_target(
+        &self,
+        payload: &Value,
+        point: &Point,
+    ) -> Option<WidgetRef>;
+
+    // Phase 3 — contextmenu dispatch (right-click).
+    pub fn dispatch_contextmenu(&mut self, point: Point) -> bool;
+
+    // Phase 3 — explicit drain queue flush.
+    // (Ogham::update calls this automatically after reconcile;
+    // hosts may call it directly after tick_animations to
+    // drain hooks before the next render boundary.)
+    pub fn process_drain_queues(&mut self);
+}
+```
 
 ### Why this API and not more
 
-Two natural alternatives were considered:
+The Phase 2 trade-offs still apply for `has_input_blocking_portal`:
 
 - **`active_portals()`** returning a list of all open
   portals: not needed by any concrete UL use case; would
@@ -1100,14 +1362,21 @@ Two natural alternatives were considered:
   the actual question consumers have ("should I gate
   input?"). Skip.
 
-`has_input_blocking_portal` is the smallest API that
-answers the actual UL use case (collapsing
-`overlay_active`).
+The Phase 2.5 / Phase 3 additions follow the same minimum-
+surface principle: each method answers a single concrete
+question UL had. `wants_cursor_free` collapses "should the
+host release pointer lock?" into one derivation;
+`consumes_character_key` collapses "is the user typing into
+a focused TextInput?" into one derivation; the
+`dispatch_drag_*` methods collapse the dead-zone vs.
+hit-test split between host and runtime; `process_drain_queues`
+is the explicit-flush escape hatch hosts need when they
+drive `tick_animations` between renders.
 
 ### Renaming the existing `set_host_state`
 
-Out of scope. Phase 2 does not touch any existing public
-API.
+Out of scope. None of Phase 2 / 2.5 / 3 touches existing
+public API names.
 
 ---
 
@@ -1380,77 +1649,84 @@ unlikely in practice.
 
 ## Renderer changes
 
-### `portal_layer` per-frame stack
+### `portal_layers` per-frame layer set
 
-The render pipeline gains one struct field on the renderer:
+The render pipeline gains one struct field on `UI` (not the
+renderer — the layer set is owned by the UI so reconciliation
+can clear it on hot reload):
 
 ```rust
-pub struct Renderer {
+pub struct UI {
     // ... existing
-    portal_layer: Vec<PortalEntry>,
+    pub portal_layers: PortalLayers,
+    pub active_drag_preview: Option<DragPreviewState>,
+    pub pending_drained_prefixes: Vec<String>,
+    pub pending_cancelled_prefixes: Vec<String>,
+}
+
+pub struct PortalLayers {
+    // Fixed iteration order: Main → OverlayModal → Popover →
+    // Tooltip → Toast → CursorAttached.
+    pub entries: HashMap<Layer, Vec<PortalEntry>>,
+    pub policies: HashMap<Layer, LayerPolicy>,
 }
 
 pub struct PortalEntry {
-    widget: WidgetRef,
-    parent_rect: Rect,
-    focus_traps: bool,
+    children: Vec<WidgetRef>,
+    viewport_origin: Point,    // viewport-absolute, not parent-relative
+    open: bool,
+    focus_trap: bool,
+    layer: Layer,
 }
 ```
 
-`portal_layer` is cleared at the start of each frame. The
-existing recursive painter (`draw_widget_recursive` in the
-renderer module) gains a branch:
+`portal_layers.entries` are cleared at the start of each
+reconcile and refilled during Pass A (`Portal` widgets call
+`collect_into_layer` instead of recursing into their
+children). Pass B then iterates layers in priority order;
+within each layer, mount-order entries paint at their
+viewport-absolute origin.
 
-```rust
-fn draw_widget_recursive(&mut self, widget: &WidgetRef, ...) {
-    if let Some(portal) = widget.as_portal() {
-        if portal.is_open() {
-            self.portal_layer.push(PortalEntry {
-                widget: widget.clone(),
-                parent_rect: current_layout_rect(),
-                focus_traps: portal.focus_trap(),
-            });
-        }
-        // Portal node itself paints nothing.
-        return;
-    }
-    // ... existing recursion
-}
-```
-
-After the main pass:
-
-```rust
-fn paint_frame(&mut self, ...) {
-    self.portal_layer.clear();
-    self.draw_widget_recursive(root, ...);
-    // Pass B
-    for entry in &self.portal_layer {
-        self.paint_portal_layer(entry);
-    }
-}
-```
-
-`paint_portal_layer` paints each portal's children with
-the viewport as the clip rect and the portal's
-`parent_rect.top_left` as the layout origin.
+> **Refresh note (Phase 2 → Phase 2.5):** the original Phase 2
+> design used a single `portal_layer: Vec<PortalEntry>`
+> walked LIFO. Phase 2.5 M0 expanded this into the named-
+> layer struct above and moved coordinates from
+> parent-relative to viewport-absolute. The drag preview is
+> a synthetic `cursor-attached` entry the surface backend
+> builds from `UI::active_drag_preview` while a drag is in
+> flight (Phase 3 M2).
 
 ### Hit-test path
 
-Symmetric:
+Iterate the layer set high-priority-to-low, walking entries
+within each layer. A `Block`-policy layer with at least one
+open entry stops the walk there; only `None`-policy layers
+fall through. If no layer claims the click, fall through to
+the base tree.
 
 ```rust
 fn hit_test(&self, point: Point) -> Option<WidgetRef> {
-    // Try portals first, top-most-portal first (LIFO).
-    for entry in self.portal_layer.iter().rev() {
-        if let Some(hit) = hit_test_portal(entry, point) {
-            return Some(hit);
+    for layer in Layer::priority_descending() {
+        let entries = self.portal_layers.entries.get(&layer);
+        if entries.is_empty() { continue; }
+        for entry in entries.iter().rev() {
+            if let Some(hit) = hit_test_entry(entry, point) {
+                return Some(hit);
+            }
+        }
+        if self.portal_layers.policies[&layer].backdrop == Block {
+            // Block-policy layer with at least one open entry
+            // stops fall-through.
+            return None;
         }
     }
-    // Fall through to base tree.
     hit_test_recursive(root, point)
 }
 ```
+
+`Ogham::dispatch_drag_end` and `hit_test_drop_target` use
+the same layer-walk to find the deepest accepting drop
+target.
 
 ### Focus stack on `UI`
 
@@ -1795,77 +2071,105 @@ walkthrough:
 
 ## Out of scope (explicitly deferred)
 
-- **Scenes / routing (Shift B)** — lifecycle hooks are
+The Phase 2 design listed several items as deferred. Phase
+2.5 / Phase 3 / Phase 1-typed-bindings shipped some of them;
+the rest are still deferred. Status updated 2026-05-09.
+
+- ✅ **Drag-and-drop primitive.** Phase 3 shipped
+  `drag_payload` / `drag_dead_zone` / `accepts_drop` /
+  `drag_preview` on `Flex`, the `drag_start` / `drag_move` /
+  `drag_end` listeners, and the host-facing
+  `Ogham::dispatch_drag_*` surface. See
+  [`PHASE_3_IMPLEMENTATION.md`](PHASE_3_IMPLEMENTATION.md).
+- ✅ **Right-click / contextmenu primitive.** Phase 3 added
+  the dedicated `contextmenu` event and
+  `Ogham::dispatch_contextmenu`.
+- ✅ **Cursor + key coordination signals.** Phase 2.5 added
+  `Ogham::wants_cursor_free()` and
+  `Ogham::consumes_character_key()`.
+- ⏳ **Scenes / routing (Shift B)** — lifecycle hooks are
   the prerequisite, but the routing layer itself
   (lazy-mounted scenes, scene-scoped state, scene-level
-  transitions) is Phase 3+. The 17 Ogham instances in UL
-  stay 17 instances through Phase 2.
-- **Signals / fine-grained reactivity (Shift C)** —
-  effects in Phase 2 use coarse path-based identity, not
+  transitions) is Phase 4+. The 17 Ogham instances in UL
+  stay 17 instances for now.
+- ⏳ **Signals / fine-grained reactivity (Shift C)** —
+  effects today use coarse path-based identity, not
   per-cell subscriptions. A signal-based effect would be
   cheaper but is much more invasive.
-- **True z-index** — portals can render in front of the
-  base tree but cannot interleave with arbitrary siblings.
-  Sufficient for tooltips / modals / dropdowns;
-  insufficient for "render this card in front of just one
-  of its peers." Additive change later if needed.
-- **Animation completion callbacks** (#2 from the priority
-  list) — separate, smaller piece of work. Worth doing in
-  parallel; not bundled here because it doesn't share
-  infrastructure with lifecycle/portal.
-- **Slot-based composition** (#4) — also separate. Could
+- ⏳ **True z-index** — Phase 2.5's named-layer set
+  replaced the original "single Portal layer" with six
+  fixed layers, each with its own priority. Authors still
+  cannot register new layers at runtime or interleave
+  arbitrary widgets with portals. The fixed set covers
+  every UL use case the audit found; if a real consumer
+  needs more, the layer set becomes the first tier of a
+  multi-tier stack — additive, not breaking.
+- ⏳ **Animation completion callbacks** (#2 from the
+  priority list) — separate, smaller piece of work.
+  Doable when needed; not currently scheduled.
+- ⏳ **Slot-based composition** (#4) — also separate. Could
   be bundled if there's appetite (it would let the
   user-defined `Modal`/`Tooltip` wrappers take styled slot
   children), but it expands scope by ~50% and isn't a hard
   prereq.
-- **Async hook bodies** — `await` in hooks. Defer to a
-  future async pass; sync-only in v1.
-- **`on_visible` / `on_hidden`** — different semantic
+- ⏳ **Async hook bodies** — `await` in hooks. Defer to a
+  future async pass; sync-only today.
+- ⏳ **`on_visible` / `on_hidden`** — different semantic
   (visibility-via-scroll-or-occlusion, not lifecycle); can
   add later if demand.
-- **Lifecycle hooks at module top-level** — hooks must
+- ⏳ **Lifecycle hooks at module top-level** — hooks must
   appear inside an `fn` body. Module-top-level hooks
   would need a separate "module lifecycle" concept that
   isn't motivated by current use cases.
-- **Hook composition / "useX" helpers** — no first-class
+- ⏳ **Hook composition / "useX" helpers** — no first-class
   way to write a function that returns hooks (`fn useTimer()
   { state ...; on_mount ...; }` doesn't compose because
   hooks are statements, not expressions). React's hooks
   composition is enabled by their call-order indexing,
   which we explicitly don't have. Workaround: wrap the
   shared logic in a function and call it from inside the
-  hook body. Acceptable for v1.
+  hook body. Acceptable for now.
+- ⏳ **Timer primitive.** Phase 2.5 M4 audited UL's needs
+  and concluded no script-callable timer was urgent;
+  design sketched in
+  [`PHASE_2_5_M4_TIMER_AUDIT.md`](PHASE_2_5_M4_TIMER_AUDIT.md)
+  and deferred until a consumer materializes.
 
 ---
 
 ## Open implementation questions
 
-Items still loose at design-doc time. Each will be
-resolved during the corresponding merge or kicked to a
-follow-up explicitly.
+Items loose at design-doc time. Most resolved during the
+M0–M5 merges or in the Phase 2.5 / Phase 3 follow-ups —
+status noted inline.
 
 1. **Diagnostic surface for hook body errors.** §18 says
    log-and-continue, with a `Runtime::lifecycle_error_count()`
    API. What does the per-frame error log buffer look
    like — `Vec<String>`, `Vec<RuntimeError>`, ring
-   buffer? Decide during M1.
+   buffer? Decide during M1. ✅ **Resolved (M1):** flat
+   `Vec<String>` cleared every render; size bounded by
+   the number of hook firings per frame.
 2. **`on_unmount` re-registration cost.** Re-registering
    the closure every frame allocates one `Rc<VMClosure>`
    per hook per render. For a UL frame with ~50 hooks,
    that's ~50 small allocations. Probably fine; revisit
-   if profiling shows it.
+   if profiling shows it. ⏳ **Open (low priority):** no
+   profiling evidence yet; leave as is.
 3. **Effect dep capture timing.** Deps are evaluated at
    `RegisterEffect` opcode time. If a dep expression has
    side effects (e.g. calls a function that mutates state),
    the side effect runs every render even when the deps
    compare equal. Document as: "dep expressions should be
-   pure reads."
+   pure reads." ✅ **Resolved (M2):** documented in
+   AGENTS.md and the inline LSP hover for `effect`.
 4. **Multiple portals at the same path.** If a function
    declares two `Portal { ... }` widgets in its return
    tree, both register at the same path with different
    slot positions. Should focus stacking respect declaration
    order or mount order? Mount order is the proposal;
-   confirm during M3.
+   confirm during M3. ✅ **Resolved (M3):** mount order
+   wins for focus trap stacking; tested in `focus_trap.rs`.
 5. **Portal inside a `Presence` container.** `Presence`
    sequences generations; a portal inside a generation
    that's exiting needs to either stay open through the
@@ -1873,32 +2177,53 @@ follow-up explicitly.
    animations on children" handles the close case; the
    stay-open case is whatever the parent decides via
    `open:`. Should be consistent; add to M3 test plan.
+   ✅ **Resolved (M3):** parent-controlled via `open:`,
+   per-generation behaviour follows from normal
+   reconciliation.
 6. **`focus_stack` cleanup on runtime reset.** Hot-reload
    resets the runtime; what happens to the focus stack?
    Probably: clear it, restore `UI.focused = None`. Add
-   to M4 test.
+   to M4 test. ✅ **Resolved (Phase 2.5 M3):**
+   `UI::clear_lifecycle_state()` clears the focus stack
+   and the portal layer entries before the new runtime
+   swaps in. Tested in `hot_reload_lifecycle.rs`.
 7. **Drain-time unmount and module reload.** When the
    `.ogh` file changes mid-frame and the module reloads,
    pending unmounts are tied to the OLD module's
    compiled artifact. Likely they should fire-and-flush
    before the reload swaps in, but the timing is
-   delicate. Add to M5 hot-reload test plan.
+   delicate. Add to M5 hot-reload test plan. ✅ **Resolved
+   (Phase 2.5 M3):** `clear_lifecycle_state` drops pending
+   drain queues on the old UI; the new runtime starts with
+   empty lifecycle registries. The trade-off — old hooks
+   never fire — is documented in `INTENT.md` §7.
 8. **Hover hint for state cells preserved across remounts.**
    §20 mentions this. Concrete UX is open: do we say
    "state preserved" only when path identity is stable
    across animation cycles, or always? Defer to M3 LSP
-   work; default to always-show for safety.
+   work; default to always-show for safety. ⏳ **Open
+   (deferred):** not implemented; would need richer LSP
+   path-tracking. Low priority.
 9. **Owned-path-prefix cost on widget tree.** Every
    widget gains an `owned_path_prefix: String` field,
    even widgets that don't host any state/hooks. For a
    tree of ~5,000 widgets this is ~5,000 small string
    allocations. Could be `Option<String>` or `Cow<'static,
    str>` to make the empty case free. Decide during M0.
+   ✅ **Resolved (M0):** kept as plain `String`, defaulting
+   to empty. Only `FlexWidget` and `PortalWidget` carry the
+   field today (other widget types don't own paths). No
+   profiling evidence the empty-string allocations matter.
 10. **Mount fires before paint, not before layout.** §7
     has mount firing post-layout but pre-paint. If a
     mount body calls `request_rerender` synchronously,
     paint of the current frame still proceeds with the
-    pre-rerender layout. Document explicitly.
+    pre-rerender layout. Document explicitly. ⏳ **Open —
+    superseded by M1 deviation:** mount actually fires
+    inside `rerender` *before* layout (see refresh note
+    on §"Hook firing timing"). Refining to post-layout
+    mount timing is on the backlog when Portal positioning
+    forces it.
 
 ---
 
@@ -1929,15 +2254,42 @@ The detailed per-merge breakdown lives in
   appropriately; the strict-mode resolver type-checks
   effect deps.
 - `Portal` is a built-in widget; tooltips and modals are
-  expressible in `.ogh`; the escape menu in UL has been
-  migrated as the validation gate.
-- `Runtime::has_input_blocking_portal()` is documented
-  and used by UL to derive its overlay-active boolean.
+  expressible in `.ogh`.
+- `Ogham::has_input_blocking_portal()` is documented
+  and ready for UL to derive its overlay-active boolean
+  during UL Pass 2.
 - `examples/portals/components.ogh` ships with `Modal()`,
   `Tooltip()`, and `Dropdown()` reference wrappers.
 - All Phase 1 functionality continues to work unchanged.
-- Hot reload preserves lifecycle state across reloads (or
-  flushes deterministically — see open question #7).
+- Hot reload flushes lifecycle state deterministically
+  (open question #7 resolved by Phase 2.5 M3's
+  `clear_lifecycle_state`).
+
+### What Phase 2.5 + Phase 3 added on top
+
+- 6-layer Portal system (`main`, `overlay-modal`, `popover`,
+  `tooltip`, `toast`, `cursor-attached`) with per-layer
+  `BackdropPolicy` + cursor preference. Two new optional
+  Portal properties: `layer` and `cursor`.
+- Viewport-absolute `PortalEntry` coordinates (closes the
+  Phase 2 nested-portal positioning gap).
+- `Ogham::wants_cursor_free()`, `Ogham::consumes_character_key()`
+  cursor / key coordination signals.
+- `UI::clear_lifecycle_state()` on hot reload (resolves
+  open questions #6 and #7).
+- `Value::WidgetRef(u64)` opaque widget identity for the
+  `focused_widget()` / `focus(ref)` built-ins (variant
+  shipped; built-ins are sketched and on the follow-up
+  list).
+- True drain-time unmount via `TickContext` side channels
+  (Phase 3 M3, replaces the M1 path-disappear approximation).
+- Drag events: `drag_payload`, `drag_dead_zone`,
+  `accepts_drop`, `drag_preview` properties; `drag_start` /
+  `drag_move` / `drag_end` listeners; `Event.payload`
+  field; `Ogham::dispatch_drag_*` and `hit_test_drop_target`
+  on the host facade.
+- `contextmenu` event + `Ogham::dispatch_contextmenu`.
+- `Ogham::process_drain_queues` host-facing flush.
 
 ---
 
@@ -1947,11 +2299,14 @@ The detailed per-merge breakdown lives in
   doable in parallel.
 - **Slot-based composition** — separate item; bundling
   with Phase 2 is possible but not currently in scope.
-- **True z-index for non-portal widgets** — only portals
-  escape the strict-tree paint order.
+- **True z-index for non-portal widgets** — Phase 2.5's
+  6-layer system replaced the original "single Portal layer"
+  with a fixed priority-ordered set, but only portals still
+  escape the strict-tree paint order; non-portal widgets
+  paint in declaration order with no z control.
 - **Per-component lazy loading / scenes** — needs a
   routing layer.
-- **First-class async / cancellation** — sync-only in v1.
+- **First-class async / cancellation** — sync-only today.
 - **Hook composition** — no first-class way to package
   hooks into reusable units; wrap shared logic in
   ordinary functions instead.
@@ -1960,9 +2315,9 @@ The detailed per-merge breakdown lives in
 - **`on_visible` / `on_hidden`** — visibility is a
   separate axis from path-lifetime.
 
-These remain valid Phase 3+ topics. Phase 2's design
-intentionally leaves room for each — none of them require
-breaking changes to the surfaces shipped here.
+These remain valid future topics. The Phase 2 / 2.5 / 3
+design intentionally leaves room for each — none of them
+requires breaking changes to the surfaces shipped here.
 
 ---
 
@@ -2130,10 +2485,21 @@ generation switches mount/unmount the appropriate paths.
 That's the design. The implementation contract for each
 piece — opcode emission rules, exact field types, test
 matrices, per-merge dependencies — lives in
-[`LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md`](LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md).
-The UL-specific impact analysis lives in
-[`LIFECYCLE_AND_PORTAL_UL_AUDIT.md`](LIFECYCLE_AND_PORTAL_UL_AUDIT.md).
+[`LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md`](LIFECYCLE_AND_PORTAL_IMPLEMENTATION.md)
+(Phase 2),
+[`PHASE_2_5_IMPLEMENTATION.md`](PHASE_2_5_IMPLEMENTATION.md)
+(Phase 2.5), and
+[`PHASE_3_IMPLEMENTATION.md`](PHASE_3_IMPLEMENTATION.md)
+(Phase 3). The UL-specific impact analysis lives in
+[`LIFECYCLE_AND_PORTAL_UL_AUDIT.md`](LIFECYCLE_AND_PORTAL_UL_AUDIT.md);
+the readiness summary in
+[`UL_ADOPTION_READINESS.md`](UL_ADOPTION_READINESS.md).
 
-This document graduates from "Live design contract" to
-"Live contract" at M5, when the implementation has shipped
-and the UL escape-menu validation gate has passed.
+This document was a "Live design contract" through M0–M5,
+graduated to "Live contract" at M5 (Phase 2 ship), and was
+folded forward to cover Phase 2.5 + Phase 3 in the
+2026-05-09 docs revision. For day-to-day reference the
+orientation tier (`SUBSYSTEMS.md`, `RUNTIME.md`,
+`SURFACE.md`, `EVENTS.md`, `WIDGET_TREE.md`) is the
+authoritative live contract; this doc is the design history
+that explains *why* the surfaces took the shapes they did.

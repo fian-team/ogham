@@ -1,11 +1,20 @@
 # Ogham — Schema-Diagnostic Surface
 
-> **Status: Approved design — not yet implemented.**
+> **Status: Phase 0 Ogham-side shipped 2026-05-05; UL adoption +
+> Phase 1 LSP integration pending.** See
+> [`SCHEMA_DIAGNOSTICS_IMPLEMENTATION.md`](SCHEMA_DIAGNOSTICS_IMPLEMENTATION.md)
+> for the per-merge status (P0-M1..M5 ✅; P0-M6 UL gate and
+> P1-M1..M6 LSP wiring ⏳).
 >
 > A cross-side diagnostic layer that catches drift between a `.ogh`
 > module and the Rust types declared to bind to it
 > (`#[derive(OghamState)]` / `#[derive(OghamMsg)]`) at edit time, in
-> any tool that consumes Ogham — editors, agents, hooks, CI.
+> any tool that consumes Ogham — editors, agents, hooks, CI. Phase 0
+> ships the engine in `src/diagnostics/` and the `ogham check` CLI
+> consumer; Phase 1 will wire the same engine through `ogham-lsp` so
+> diagnostics surface in editors as the user types (today the LSP
+> emits scanner / parser / typed-bindings AST validation /
+> lifecycle-warning diagnostics, but not schema-drift errors).
 >
 > Builds on [`TYPED_BINDINGS.md`](TYPED_BINDINGS.md) (the boundary
 > contract this checks) and [`LSP.md`](LSP.md) (the diagnostic pipeline

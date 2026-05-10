@@ -28,11 +28,20 @@
 Author writes:     style: { transition: { background_color: "spring", ... } }
 Builder parses:    TransitionSet (per-property TransitionConfig)
 Reconcile:         FlexWidget::update → animations.retarget(old, target)
-Per-frame:         UI::tick_animations(dt)
-                     → FlexWidget::tick_animations
-                       → tick_own_animations
-                         → AnimationState::tick(dt)
-                         → AnimationState::render_onto(target) → self.style
+Per-frame:         UI::tick_animations(dt)              ── host-facing API
+                     │  builds TickContext { dt, drained_path_prefixes,
+                     │                       cancelled_unmount_prefixes }
+                     ▼
+                   FlexWidget::tick_animations(&mut ctx)  ── Widget trait
+                     → tick_own_animations(ctx.dt)
+                       → AnimationState::tick(dt)
+                       → AnimationState::render_onto(target) → self.style
+                     → tick_smooth_scroll(ctx.dt)
+                     → recurse into children with same `ctx`
+                     → drain_exited_children(ctx)         ── pushes drained
+                                                            owned_path_prefix
+                                                            into ctx for the
+                                                            UI to flush
 Render:            uses self.style (= effective_style)
 ```
 
@@ -252,10 +261,17 @@ fn tick_own_animations(&mut self, dt: f32) -> TickResult {
   some spring is still moving — once everything settles, the
   caller stops being asked to relayout.
 
-`tick_own_animations` is called from `FlexWidget::tick_animations`,
-which also ticks smooth scroll and recurses into children. The
-top-level `UI::tick_animations(dt)` is the only entry point the
-host calls; everything else is internal.
+`tick_own_animations` takes a bare `dt: f32` because it doesn't
+need the rest of `TickContext`. Its caller —
+`FlexWidget::tick_animations(&mut TickContext)` (the Widget
+trait method, see [WIDGET_TREE.md](WIDGET_TREE.md)) — extracts
+`ctx.dt` and threads `ctx` *itself* into smooth scroll, the
+child recursion, and `drain_exited_children` (which pushes any
+drained widget's `owned_path_prefix` into
+`ctx.drained_path_prefixes` for the UI to flush). The
+host-facing `UI::tick_animations(dt)` builds the `TickContext`
+internally; nothing outside `widget/` calls into the trait
+method directly.
 
 ### Tenets — per-frame
 
@@ -328,6 +344,12 @@ the *paint-related* and *animatable* fields.)
 - **`transform: Transform`** — affine: `translate_x/y`,
   `scale_x/y`, `rotate` (degrees, clockwise). Pivots around the
   widget's layout center.
+- **`backdrop_filter: Option<BackdropFilter>`** — paint-time
+  blur of the canvas content already painted *under* the
+  widget's border box. Triggers a `push_backdrop_blur` /
+  `pop_backdrop_blur` scope on the surface so the widget's own
+  background and descendants composite on top of the captured
+  blur. Not animatable (sigma snaps); paint-only.
 
 ### Tenets — style semantics
 
