@@ -47,7 +47,7 @@ pub struct FlexStyle {
     pub padding: Padding,
     pub margin: Margin,
     pub border: Border,
-    pub corner_radii: CornerRadii,
+    pub corners: Corners,
     pub background_color: Option<Color>,
     pub background_image: Option<String>,
     pub text_size: Option<f32>,
@@ -67,6 +67,10 @@ pub struct FlexStyle {
     /// when this widget paints its own background; descendants
     /// render normally on top of the blurred composite.
     pub backdrop_filter: Option<BackdropFilter>,
+    /// Paint-time inset glow drawn inside the border box. `None` is a
+    /// no-op. Renders after the background fill and before children so
+    /// it sits beneath descendant content (matches CSS `box-shadow: inset`).
+    pub inner_glow: Option<InnerGlow>,
     /// Spring-driven transitions declared for specific style properties.
     /// Empty by default — properties snap to new values unless opted in.
     pub transitions: TransitionSet,
@@ -165,7 +169,7 @@ impl Default for FlexStyle {
             padding: Padding::identity(),
             margin: Margin::identity(),
             border: Border::identity(),
-            corner_radii: CornerRadii::identity(),
+            corners: Corners::identity(),
             background_color: None,
             background_image: None,
             text_size: None,
@@ -174,6 +178,7 @@ impl Default for FlexStyle {
             opacity: Opacity::OPAQUE,
             transform: Transform::IDENTITY,
             backdrop_filter: None,
+            inner_glow: None,
             transitions: TransitionSet::default(),
         }
     }
@@ -216,10 +221,11 @@ impl FlexStyle {
     }
 
     /// Compare only the fields that affect layout — skipping paint-only
-    /// fields (`opacity`, `transform`, `*_color`, `background_image`),
-    /// `corner_radii` (visual rounding doesn't change box dimensions), and
-    /// `transitions` (which doesn't impl `PartialEq` and gates how
-    /// animations interpolate, not what the layout pass produces).
+    /// fields (`opacity`, `transform`, `*_color`, `background_image`,
+    /// `inner_glow`), `corners` (visual corner shape doesn't change
+    /// box dimensions), and `transitions` (which doesn't impl `PartialEq`
+    /// and gates how animations interpolate, not what the layout pass
+    /// produces).
     ///
     /// Used by [`FlexWidget::update`] to decide whether to bubble a
     /// `needs_layout` signal up the tree on reconcile.
@@ -317,8 +323,8 @@ impl FlexStyleBuilder {
         self
     }
 
-    pub fn corner_radii(mut self, corner_radii: CornerRadii) -> Self {
-        self.style.corner_radii = corner_radii;
+    pub fn corners(mut self, corners: Corners) -> Self {
+        self.style.corners = corners;
         self
     }
 
@@ -843,49 +849,140 @@ impl BorderSide {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct CornerRadii {
-    pub top_left: f32,
-    pub top_right: f32,
-    pub bottom_left: f32,
-    pub bottom_right: f32,
+/// Shape of a single corner of a box. Each corner is independently
+/// `Sharp` (90° vertex), `Round(r)` (quarter-circle of radius `r`), or
+/// `Chamfer(c)` (diagonal cut taking `c` px off each adjacent side).
+///
+/// `Sharp` and `Round(0.0)` / `Chamfer(0.0)` are semantically equivalent;
+/// constructors normalise zero-sized rounds/chamfers to `Sharp` so
+/// downstream fast-path checks (e.g. `Corners::is_pure_round`) don't
+/// have to special-case them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CornerShape {
+    Sharp,
+    Round(f32),
+    Chamfer(f32),
 }
 
-impl CornerRadii {
+impl Default for CornerShape {
+    fn default() -> Self {
+        Self::Sharp
+    }
+}
+
+impl CornerShape {
+    /// Build a `Round(n)`, normalising `n <= 0` to `Sharp`.
+    pub fn round(n: f32) -> Self {
+        if n > 0.0 { Self::Round(n) } else { Self::Sharp }
+    }
+
+    /// Build a `Chamfer(n)`, normalising `n <= 0` to `Sharp`.
+    pub fn chamfer(n: f32) -> Self {
+        if n > 0.0 { Self::Chamfer(n) } else { Self::Sharp }
+    }
+
+    /// Scalar size of this corner (radius for `Round`, chamfer depth for
+    /// `Chamfer`, 0 for `Sharp`).
+    pub fn size(self) -> f32 {
+        match self {
+            Self::Sharp => 0.0,
+            Self::Round(r) => r,
+            Self::Chamfer(c) => c,
+        }
+    }
+
+    pub fn is_sharp(self) -> bool {
+        matches!(self, Self::Sharp)
+    }
+
+    pub fn is_round(self) -> bool {
+        matches!(self, Self::Round(_))
+    }
+
+    pub fn is_chamfer(self) -> bool {
+        matches!(self, Self::Chamfer(_))
+    }
+}
+
+/// Per-corner shape for a box. Each corner can independently be sharp,
+/// rounded, or chamfered. The `corner_radius:` and `corner_chamfer:`
+/// Ogham style keys both write into this field — when both target the
+/// same corner the later property in the style map wins (matches the
+/// generic style-map duplicate-key rule).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Corners {
+    pub top_left: CornerShape,
+    pub top_right: CornerShape,
+    pub bottom_left: CornerShape,
+    pub bottom_right: CornerShape,
+}
+
+impl Corners {
     pub fn identity() -> Self {
         Self {
-            top_left: 0.0,
-            top_right: 0.0,
-            bottom_left: 0.0,
-            bottom_right: 0.0,
+            top_left: CornerShape::Sharp,
+            top_right: CornerShape::Sharp,
+            bottom_left: CornerShape::Sharp,
+            bottom_right: CornerShape::Sharp,
         }
     }
 
-    pub fn all(radius: f32) -> Self {
-        Self {
-            top_left: radius,
-            top_right: radius,
-            bottom_left: radius,
-            bottom_right: radius,
-        }
+    pub fn new(
+        top_left: CornerShape,
+        top_right: CornerShape,
+        bottom_left: CornerShape,
+        bottom_right: CornerShape,
+    ) -> Self {
+        Self { top_left, top_right, bottom_left, bottom_right }
     }
 
-    pub fn new(top_left: f32, top_right: f32, bottom_left: f32, bottom_right: f32) -> Self {
-        Self {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        }
+    /// All four corners rounded with the same radius (normalises to
+    /// `Sharp` when `radius <= 0`).
+    pub fn all_round(radius: f32) -> Self {
+        let s = CornerShape::round(radius);
+        Self { top_left: s, top_right: s, bottom_left: s, bottom_right: s }
     }
 
-    pub fn symmetric(horizontal: f32, vertical: f32) -> Self {
-        Self {
-            top_left: vertical,
-            top_right: horizontal,
-            bottom_left: horizontal,
-            bottom_right: vertical,
-        }
+    /// All four corners chamfered with the same size.
+    pub fn all_chamfer(size: f32) -> Self {
+        let s = CornerShape::chamfer(size);
+        Self { top_left: s, top_right: s, bottom_left: s, bottom_right: s }
+    }
+
+    /// True when every corner is `Sharp`. Lets render backends skip
+    /// path construction and just `fill_rect` / `draw_border` straight.
+    pub fn is_all_sharp(&self) -> bool {
+        self.top_left.is_sharp()
+            && self.top_right.is_sharp()
+            && self.bottom_left.is_sharp()
+            && self.bottom_right.is_sharp()
+    }
+
+    /// True when every non-sharp corner is `Round`. Backends use this
+    /// to stay on the existing rounded-rect fast path; mixed shapes
+    /// or any `Chamfer` fall through to the general path builder.
+    pub fn is_pure_round(&self) -> bool {
+        let ok = |c: CornerShape| c.is_sharp() || c.is_round();
+        ok(self.top_left) && ok(self.top_right) && ok(self.bottom_left) && ok(self.bottom_right)
+    }
+}
+
+/// Paint-time inner glow drawn inside the border box. Modeled on
+/// CSS `box-shadow: inset` — `blur` is the Gaussian sigma in unscaled
+/// pixels; `spread` insets the stroke that many pixels from the border
+/// edge so the glow appears to sit just inside the border. Skia
+/// renders this as a stroked path with a blur mask filter, clipped to
+/// the border-box interior so the glow can only spread inward.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct InnerGlow {
+    pub color: Color,
+    pub blur: f32,
+    pub spread: f32,
+}
+
+impl InnerGlow {
+    pub fn is_active(&self) -> bool {
+        self.blur > 0.0 && self.color.a > 0
     }
 }
 

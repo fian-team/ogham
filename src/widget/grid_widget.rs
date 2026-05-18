@@ -6,7 +6,7 @@ use super::rect::*;
 use super::Widget;
 use crate::widget::event::EventContext;
 use crate::widget::image::ImageCache;
-use crate::widget::style::{Color, CornerRadii, Direction, Spacing};
+use crate::widget::style::{Color, Corners, Direction, Spacing};
 use crate::widget::{LayoutContext, RenderContext, UpdateResult, WidgetRef};
 
 /// Grid placement metadata for a child within a GridWidget.
@@ -41,7 +41,7 @@ pub struct GridStyle {
     pub margin: Spacing,
     pub background_color: Option<Color>,
     pub cell_color: Option<Color>,
-    pub corner_radii: CornerRadii,
+    pub corners: Corners,
 }
 
 impl Default for GridStyle {
@@ -56,7 +56,7 @@ impl Default for GridStyle {
             margin: Spacing::identity(),
             background_color: None,
             cell_color: None,
-            corner_radii: CornerRadii::identity(),
+            corners: Corners::identity(),
         }
     }
 }
@@ -309,17 +309,13 @@ impl Widget for GridWidget {
 
         // Draw grid background (shows through gaps as "grid lines")
         if let Some(ref bg) = self.style.background_color {
-            if self.style.corner_radii.top_left > 0.0
-                || self.style.corner_radii.top_right > 0.0
-                || self.style.corner_radii.bottom_left > 0.0
-                || self.style.corner_radii.bottom_right > 0.0
-            {
-                ctx.fill_rounded_rect(
-                    content_x, content_y, content_w, content_h,
-                    &self.style.corner_radii, bg,
-                );
-            } else {
+            if self.style.corners.is_all_sharp() {
                 ctx.fill_rect(content_x, content_y, content_w, content_h, bg);
+            } else {
+                ctx.fill_corners_rect(
+                    content_x, content_y, content_w, content_h,
+                    &self.style.corners, bg,
+                );
             }
         }
 

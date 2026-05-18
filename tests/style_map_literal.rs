@@ -203,3 +203,149 @@ fn pipeline_parse_evaluate_bridge_flex_style_maps() {
     assert_eq!(flex.style.margin.get_bottom(), 0.0);
     assert_eq!(flex.style.margin.get_left(), 0.0);
 }
+
+// ---- Corner shape + inner glow parser coverage -----------------------------
+//
+// `corner_radius` and `corner_chamfer` both write into the unified
+// `corners: Corners` field. The merge rules are documented on
+// `merge_round_corners` / `merge_chamfer_corners` in `builder.rs`:
+// chamfer wins on conflict, sharp inputs are no-ops, so mixing the
+// two in any source order yields the same result. These tests pin
+// that behaviour through the full parse → bridge pipeline.
+
+fn build_flex_style(source: &str) -> ogham::widget::style::FlexStyle {
+    let mut runtime = ogham::runtime::Runtime::from_source(source, None).unwrap();
+    let module = runtime.get_module().unwrap().clone();
+    let widget_value = runtime.execute_module(&module).unwrap();
+    let runtime_ref = std::sync::Arc::new(std::sync::Mutex::new(runtime));
+    let registry = ogham::widget::builder::WidgetRegistry::with_defaults();
+    let widget_ref = ogham::widget::builder::widget_value_to_widget_ref(
+        &registry,
+        &runtime_ref,
+        &widget_value,
+    )
+    .unwrap();
+    let guard = widget_ref.lock().unwrap();
+    guard
+        .downcast_ref::<ogham::widget::flex_widget::FlexWidget>()
+        .unwrap()
+        .style
+        .clone()
+}
+
+#[test]
+fn corner_radius_shorthand_applies_round_to_all_four() {
+    use ogham::widget::style::CornerShape;
+    let style = build_flex_style(
+        r#"let main = fn () { Flex { style: { corner_radius: 8 } } };"#,
+    );
+    assert_eq!(style.corners.top_left, CornerShape::Round(8.0));
+    assert_eq!(style.corners.top_right, CornerShape::Round(8.0));
+    assert_eq!(style.corners.bottom_left, CornerShape::Round(8.0));
+    assert_eq!(style.corners.bottom_right, CornerShape::Round(8.0));
+}
+
+#[test]
+fn corner_radius_zero_normalises_to_sharp() {
+    use ogham::widget::style::CornerShape;
+    let style = build_flex_style(
+        r#"let main = fn () {
+              Flex { style: {
+                corner_radius: { top_left: 4, top_right: 0, bottom_left: 0, bottom_right: 4 }
+              } }
+           };"#,
+    );
+    assert_eq!(style.corners.top_left, CornerShape::Round(4.0));
+    assert_eq!(style.corners.top_right, CornerShape::Sharp);
+    assert_eq!(style.corners.bottom_left, CornerShape::Sharp);
+    assert_eq!(style.corners.bottom_right, CornerShape::Round(4.0));
+}
+
+#[test]
+fn corner_chamfer_shorthand_applies_chamfer_to_all_four() {
+    use ogham::widget::style::CornerShape;
+    let style = build_flex_style(
+        r#"let main = fn () { Flex { style: { corner_chamfer: 6 } } };"#,
+    );
+    assert_eq!(style.corners.top_left, CornerShape::Chamfer(6.0));
+    assert_eq!(style.corners.top_right, CornerShape::Chamfer(6.0));
+    assert_eq!(style.corners.bottom_left, CornerShape::Chamfer(6.0));
+    assert_eq!(style.corners.bottom_right, CornerShape::Chamfer(6.0));
+}
+
+#[test]
+fn corner_radius_and_chamfer_merge_per_corner() {
+    // The mix-and-match pattern: TL+BR rounded, TR+BL chamfered.
+    // Source-order should not matter because the merge is
+    // commutative — chamfer wins on conflict, sharp inputs are
+    // no-ops.
+    use ogham::widget::style::CornerShape;
+    let style = build_flex_style(
+        r#"let main = fn () {
+              Flex { style: {
+                corner_radius:  { top_left: 8, top_right: 0, bottom_left: 0, bottom_right: 8 },
+                corner_chamfer: { top_left: 0, top_right: 6, bottom_left: 6, bottom_right: 0 }
+              } }
+           };"#,
+    );
+    assert_eq!(style.corners.top_left, CornerShape::Round(8.0));
+    assert_eq!(style.corners.top_right, CornerShape::Chamfer(6.0));
+    assert_eq!(style.corners.bottom_left, CornerShape::Chamfer(6.0));
+    assert_eq!(style.corners.bottom_right, CornerShape::Round(8.0));
+}
+
+#[test]
+fn corner_chamfer_wins_when_both_specify_the_same_corner() {
+    // If both parsers target the same corner with non-zero sizes,
+    // chamfer must win regardless of which key was iterated first.
+    use ogham::widget::style::CornerShape;
+    let style = build_flex_style(
+        r#"let main = fn () {
+              Flex { style: {
+                corner_radius:  { top_left: 8, top_right: 8, bottom_left: 8, bottom_right: 8 },
+                corner_chamfer: { top_left: 4, top_right: 0, bottom_left: 0, bottom_right: 0 }
+              } }
+           };"#,
+    );
+    assert_eq!(style.corners.top_left, CornerShape::Chamfer(4.0));
+    assert_eq!(style.corners.top_right, CornerShape::Round(8.0));
+    assert_eq!(style.corners.bottom_left, CornerShape::Round(8.0));
+    assert_eq!(style.corners.bottom_right, CornerShape::Round(8.0));
+}
+
+#[test]
+fn inner_glow_parses_color_blur_and_spread() {
+    let style = build_flex_style(
+        r#"let main = fn () {
+              Flex { style: {
+                inner_glow: {
+                  color: { r: 110, g: 220, b: 240, a: 200 },
+                  blur: 8,
+                  spread: 1
+                }
+              } }
+           };"#,
+    );
+    let glow = style.inner_glow.expect("inner_glow should be Some");
+    assert_eq!(glow.color.r, 110);
+    assert_eq!(glow.color.g, 220);
+    assert_eq!(glow.color.b, 240);
+    assert_eq!(glow.color.a, 200);
+    assert_eq!(glow.blur, 8.0);
+    assert_eq!(glow.spread, 1.0);
+    assert!(glow.is_active());
+}
+
+#[test]
+fn inner_glow_spread_defaults_to_zero_when_omitted() {
+    let style = build_flex_style(
+        r#"let main = fn () {
+              Flex { style: {
+                inner_glow: { color: { r: 0, g: 0, b: 0, a: 255 }, blur: 4 }
+              } }
+           };"#,
+    );
+    let glow = style.inner_glow.unwrap();
+    assert_eq!(glow.blur, 4.0);
+    assert_eq!(glow.spread, 0.0);
+}

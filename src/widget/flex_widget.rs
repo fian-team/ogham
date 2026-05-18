@@ -1653,6 +1653,31 @@ impl Widget for FlexWidget {
         true
     }
 
+    fn restart_entry_animation(&mut self) {
+        // Drop any in-flight exit state so the widget treats this as a
+        // fresh mount. Without this, calling restart on a still-exiting
+        // tree would leave `exiting = true` and the next reconcile would
+        // treat the widget as a ghost.
+        self.exiting = false;
+        // Clear in-flight springs. `apply_entry_transition` below calls
+        // `animations.retarget`, which only updates *targets* on existing
+        // springs and keeps their `current` values — meaning a widget
+        // mid-exit would have its spring snap targets back to declared
+        // but render at the mid-exit position on the next tick. We want
+        // a true reset: springs that start at `initial` and ease to
+        // declared.
+        self.animations = AnimationState::default();
+        // Re-seed style ↔ initial and arm the spring toward declared.
+        // No-op if this widget has no initial_style or transitions.
+        self.apply_entry_transition();
+        // Cascade so every descendant with its own `initial:` plays again.
+        let children = self.children.clone();
+        for child in &children {
+            let mut g = child.lock().expect("widget lock poisoned");
+            g.restart_entry_animation();
+        }
+    }
+
     fn is_hovered(&self) -> bool {
         self.hovered
     }
@@ -1708,7 +1733,7 @@ impl Widget for FlexWidget {
                     border_box_y,
                     border_box_width,
                     border_box_height,
-                    &style.corner_radii,
+                    &style.corners,
                     sigma,
                 );
             }
@@ -1725,25 +1750,21 @@ impl Widget for FlexWidget {
             }
 
             if let Some(background_color) = &style.background_color {
-                if style.corner_radii.top_left > 0.0
-                    || style.corner_radii.top_right > 0.0
-                    || style.corner_radii.bottom_left > 0.0
-                    || style.corner_radii.bottom_right > 0.0
-                {
-                    ctx.fill_rounded_rect(
-                        border_box_x,
-                        border_box_y,
-                        border_box_width,
-                        border_box_height,
-                        &style.corner_radii,
-                        background_color,
-                    );
-                } else {
+                if style.corners.is_all_sharp() {
                     ctx.fill_rect(
                         border_box_x,
                         border_box_y,
                         border_box_width,
                         border_box_height,
+                        background_color,
+                    );
+                } else {
+                    ctx.fill_corners_rect(
+                        border_box_x,
+                        border_box_y,
+                        border_box_width,
+                        border_box_height,
+                        &style.corners,
                         background_color,
                     );
                 }
@@ -1753,13 +1774,28 @@ impl Widget for FlexWidget {
                 ctx.pop_backdrop_blur();
             }
 
+            // Inner glow paints after the background fill, before the
+            // border and children. CSS `box-shadow: inset` semantics —
+            // the glow sits beneath descendants but on top of the panel
+            // fill, then the border draws over it sharp.
+            if let Some(glow) = style.inner_glow.as_ref() {
+                ctx.draw_inner_glow(
+                    border_box_x,
+                    border_box_y,
+                    border_box_width,
+                    border_box_height,
+                    &style.corners,
+                    glow,
+                );
+            }
+
             ctx.draw_border(
                 &style.border,
                 border_box_x,
                 border_box_y,
                 border_box_width,
                 border_box_height,
-                &style.corner_radii,
+                &style.corners,
             );
 
             // For scrollable/hidden overflow, clip children to the border box
@@ -2708,6 +2744,155 @@ mod tests {
         assert!(
             w.animations.background_color.is_some(),
             "entry animation should be armed"
+        );
+    }
+
+    #[test]
+    fn restart_entry_animation_reseeds_style_from_initial() {
+        // After a widget has settled at declared_style, restart_entry_animation
+        // should push self.style back to initial_style and arm springs to
+        // re-target declared.
+        let mut w = FlexWidget::new();
+        w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+        w.initial_style = Some(make_transition_style(Color::new(0, 0, 0, 255)));
+        w.style = w.declared_style.clone();
+        // Simulate "settled at declared": no animations, style == declared.
+        assert!(w.animations.is_empty());
+
+        w.restart_entry_animation();
+
+        assert_eq!(
+            w.style.background_color,
+            Some(Color::new(0, 0, 0, 255)),
+            "restart should reseed style from initial_style"
+        );
+        assert!(
+            w.animations.background_color.is_some(),
+            "restart should arm the spring back toward declared"
+        );
+    }
+
+    #[test]
+    fn restart_entry_animation_no_op_without_initial_style() {
+        // A widget without `initial_style` has no entry to restart;
+        // restart_entry_animation should leave its style untouched and
+        // not invent springs out of nowhere.
+        let mut w = FlexWidget::new();
+        w.declared_style = make_transition_style(Color::new(200, 200, 200, 255));
+        w.style = w.declared_style.clone();
+        let before = w.style.background_color;
+
+        w.restart_entry_animation();
+
+        assert_eq!(w.style.background_color, before);
+        assert!(
+            w.animations.is_empty(),
+            "no springs should be armed when there's no initial_style"
+        );
+    }
+
+    #[test]
+    fn restart_entry_animation_cascades_to_children() {
+        // Calling restart on a parent should drive every descendant's
+        // initial-style reset so the whole subtree re-plays entry
+        // together — this is what makes a route swap feel coherent.
+        let child: WidgetRef = {
+            let mut c = FlexWidget::new();
+            c.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+            c.initial_style = Some(make_transition_style(Color::new(0, 0, 0, 255)));
+            c.style = c.declared_style.clone();
+            Arc::new(Mutex::new(c))
+        };
+        let mut parent = FlexWidget::new();
+        parent.declared_style = make_transition_style(Color::new(100, 100, 100, 255));
+        parent.initial_style = Some(make_transition_style(Color::new(50, 50, 50, 255)));
+        parent.style = parent.declared_style.clone();
+        parent.children = vec![child.clone()];
+
+        parent.restart_entry_animation();
+
+        // Parent reseeded.
+        assert_eq!(
+            parent.style.background_color,
+            Some(Color::new(50, 50, 50, 255)),
+        );
+        // Child reseeded.
+        let g = child.lock().expect("widget lock poisoned");
+        let c = g.downcast_ref::<FlexWidget>().expect("FlexWidget");
+        assert_eq!(
+            c.style.background_color,
+            Some(Color::new(0, 0, 0, 255)),
+            "child should be reseeded by the cascade"
+        );
+    }
+
+    #[test]
+    fn restart_entry_animation_clears_mid_exit_spring_values() {
+        // Regression: restart called on a widget mid-exit. Without
+        // clearing existing springs, `retarget` would keep the spring's
+        // current value at the mid-exit position and the next tick
+        // would paint there instead of `initial`.
+        let mut w = FlexWidget::new();
+        w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+        w.initial_style = Some(make_transition_style(Color::new(0, 0, 0, 255)));
+        w.exit_style = Some(make_transition_style(Color::new(50, 50, 50, 0)));
+        w.style = w.declared_style.clone();
+
+        // Drive several frames of exit so the spring picks up a
+        // mid-flight current value distinct from both initial and declared.
+        assert!(w.begin_exit());
+        for _ in 0..10 {
+            w.tick_own_animations(1.0 / 60.0);
+        }
+        // Sanity: bg is somewhere between declared and exit (not initial).
+        let mid = w.style.background_color.expect("bg present");
+        assert!(mid.r < 255 && mid.r > 50,
+            "test setup: spring should be mid-flight, got r={}",
+            mid.r);
+
+        w.restart_entry_animation();
+
+        // After restart, style snaps to initial.
+        assert_eq!(
+            w.style.background_color,
+            Some(Color::new(0, 0, 0, 255)),
+            "restart must seed style at initial"
+        );
+        // After ONE tick, the rendered style must still be near initial
+        // (the spring should be moving from initial toward declared, not
+        // jumping back to the mid-exit value it had before restart).
+        w.tick_own_animations(1.0 / 60.0);
+        let after = w.style.background_color.expect("bg present");
+        assert!(
+            after.r < 50,
+            "after one tick, rendered red should still be near initial (0); \
+             got r={} (would indicate spring carried its mid-exit value)",
+            after.r
+        );
+    }
+
+    #[test]
+    fn restart_entry_animation_clears_lingering_exit_state() {
+        // If the orchestrator restarts entry on a tree that was mid-exit
+        // (rare but possible during a rapid revert), the widget must not
+        // keep `exiting = true` — that would leave reconcile treating it
+        // as a ghost and the spring targeting exit_style.
+        let mut w = FlexWidget::new();
+        w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+        w.initial_style = Some(make_transition_style(Color::new(0, 0, 0, 255)));
+        w.exit_style = Some(make_transition_style(Color::new(128, 128, 128, 0)));
+        w.style = w.declared_style.clone();
+        // Force into exiting state.
+        assert!(w.begin_exit(), "widget should accept begin_exit");
+        assert!(w.exiting);
+
+        w.restart_entry_animation();
+
+        assert!(!w.exiting, "restart must drop the exiting flag");
+        assert_eq!(
+            w.style.background_color,
+            Some(Color::new(0, 0, 0, 255)),
+            "restart should reseed style from initial regardless of prior exit state"
         );
     }
 

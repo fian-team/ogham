@@ -136,6 +136,17 @@ impl Widget for PresenceWidget {
 
         let new_key = new_presence.generation_key.clone();
 
+        // Adopt the new inner styling (width/height/direction etc. — anything
+        // the author declared via `style:` on the Presence). Keeps layout
+        // responsive to authored changes without going through
+        // reconcile_children's FlexWidget::update path. The clobber of `style`
+        // (vs honoring an in-progress spring) is intentional: the Presence's
+        // inner Flex has no transitions exposed via the builder, so `style`
+        // and `declared_style` are always equal. If transitions ever get
+        // exposed on Presence, replace this with a proper retarget path.
+        self.inner.declared_style = new_presence.inner.declared_style.clone();
+        self.inner.style = self.inner.declared_style.clone();
+
         if new_key == self.generation_key {
             // Same generation — just reconcile children normally. If a
             // transition was in flight (author reverted the key mid-
@@ -363,6 +374,14 @@ impl Widget for PresenceWidget {
     fn is_exit_complete(&self) -> bool {
         self.inner.is_exit_complete()
     }
+
+    fn restart_entry_animation(&mut self) {
+        // Pending children (if any) are freshly-built and already at
+        // their initial state — no-op for them. We only restart on the
+        // live generation by delegating to inner so the cascade reaches
+        // every animated descendant.
+        self.inner.restart_entry_animation();
+    }
 }
 
 #[cfg(test)]
@@ -410,6 +429,94 @@ mod tests {
         let p = PresenceWidget::new();
         assert!(p.inner.children.is_empty());
         assert!(p.pending_children.is_none());
+    }
+
+    #[test]
+    fn restart_entry_animation_cascades_into_inner() {
+        // Presence delegates restart to inner.restart_entry_animation,
+        // which cascades to the live children. Verifies that a child
+        // with `initial:` declared replays its entry when the Presence
+        // is restarted (route promotion path).
+        use crate::widget::style::{Color, FlexStyle};
+
+        let exit_child: WidgetRef = {
+            let mut w = FlexWidget::new();
+            let mut declared = FlexStyle::default();
+            declared.background_color = Some(Color::new(255, 255, 255, 255));
+            declared.transitions.background_color = Some(TransitionConfig::DEFAULT);
+            let mut initial = declared.clone();
+            initial.background_color = Some(Color::new(0, 0, 0, 255));
+            w.declared_style = declared.clone();
+            w.initial_style = Some(initial);
+            w.style = declared;
+            Arc::new(Mutex::new(w))
+        };
+
+        let mut presence = PresenceWidget::new();
+        presence.generation_key = Some("a".to_string());
+        presence.inner.children = vec![exit_child.clone()];
+
+        presence.restart_entry_animation();
+
+        let g = exit_child.lock().expect("widget lock poisoned");
+        let c = g.downcast_ref::<FlexWidget>().expect("FlexWidget");
+        assert_eq!(
+            c.style.background_color,
+            Some(Color::new(0, 0, 0, 255)),
+            "Presence's restart must cascade into inner children"
+        );
+    }
+
+    #[test]
+    fn update_adopts_new_inner_style_on_same_key() {
+        // A Presence's `style:` overrides (parsed by the builder) need to
+        // propagate across same-key reconciles. Without this, a Presence
+        // whose author switches from Grow to Shrink (or rotates direction)
+        // never picks up the new layout.
+        use crate::widget::style::{Direction, Size};
+        let mut live = PresenceWidget::new();
+        live.generation_key = Some("a".to_string());
+        // Defaults: Grow × Grow column.
+        assert_eq!(live.inner.declared_style.width, Size::Grow(1.0));
+        assert_eq!(live.inner.declared_style.height, Size::Grow(1.0));
+
+        let new = {
+            let mut p = PresenceWidget::new();
+            p.generation_key = Some("a".to_string());
+            p.inner.declared_style.height = Size::Shrink;
+            p.inner.declared_style.direction = Direction::Row;
+            p.inner.style = p.inner.declared_style.clone();
+            Arc::new(Mutex::new(p))
+        };
+        live.update(new);
+
+        assert_eq!(live.inner.declared_style.height, Size::Shrink);
+        assert_eq!(live.inner.declared_style.direction, Direction::Row);
+        assert_eq!(live.inner.style.height, Size::Shrink);
+    }
+
+    #[test]
+    fn update_adopts_new_inner_style_on_generation_swap() {
+        // Same propagation must happen across a generation key change so
+        // a route that swaps content AND restyles the Presence (e.g.,
+        // shrink in one route, grow in another) lands at the right size.
+        use crate::widget::style::Size;
+        let mut live = PresenceWidget::new();
+        live.generation_key = Some("a".to_string());
+        live.inner.children = vec![exit_capable_child()];
+
+        let new = {
+            let mut p = PresenceWidget::new();
+            p.generation_key = Some("b".to_string());
+            p.inner.declared_style.height = Size::Shrink;
+            p.inner.style = p.inner.declared_style.clone();
+            p.inner.children = vec![exit_capable_child()];
+            Arc::new(Mutex::new(p))
+        };
+        live.update(new);
+
+        assert_eq!(live.inner.declared_style.height, Size::Shrink);
+        assert_eq!(live.inner.style.height, Size::Shrink);
     }
 
     #[test]

@@ -440,6 +440,74 @@ impl Ogham {
         rt.pre_layout_drain();
     }
 
+    /// Begin exiting the entire UI tree. Cascades [`Widget::begin_exit`]
+    /// from the root. Returns `true` if at least one widget has an exit
+    /// animation in flight (the host should keep ticking this Ogham and
+    /// poll [`Self::is_exit_complete_root`]) or `false` if there was
+    /// nothing to animate (the host can drop / replace this Ogham
+    /// immediately).
+    ///
+    /// Used by host-side orchestrators that sequence transitions
+    /// between multiple Ogham instances (route swaps, modal stacks).
+    pub fn begin_exit_root(&mut self) -> bool {
+        let root = self.ui.root.clone();
+        let mut g = root.lock().expect("widget lock poisoned");
+        g.begin_exit()
+    }
+
+    /// Cancel a previously-started exit so the tree returns to its
+    /// declared state. Cascades to descendants. Idempotent — harmless
+    /// if no exit was in flight. Used when the user reverts a
+    /// transition mid-flight (e.g., reopens an overlay before its
+    /// close animation finished).
+    pub fn cancel_exit_root(&mut self) {
+        let root = self.ui.root.clone();
+        let mut g = root.lock().expect("widget lock poisoned");
+        g.cancel_exit();
+    }
+
+    /// True once every in-flight exit animation has settled. Always
+    /// `false` before [`Self::begin_exit_root`] is called. The host
+    /// orchestrator polls this each frame and finalizes the
+    /// transition once it returns true.
+    pub fn is_exit_complete_root(&self) -> bool {
+        let root = self.ui.root.clone();
+        let g = root.lock().expect("widget lock poisoned");
+        g.is_exit_complete()
+    }
+
+    /// Re-seed every widget that declared `initial:` back to its
+    /// initial style and retarget springs toward `declared_style`.
+    /// Call when promoting a previously-mounted Ogham to active so
+    /// its entry animations replay. Widgets without `initial:` (or
+    /// without enabled transitions) are no-ops.
+    ///
+    /// Also requests a rerender so any widgets that were dropped from
+    /// the tree during the prior exit (children with no `exit:`,
+    /// drained immediately on `begin_exit`) get re-mounted from the
+    /// module's declarative tree on the host's next tick — without
+    /// this the tree would render with gaps until something else
+    /// happened to dirty host_state.
+    pub fn restart_entry_animations(&mut self) {
+        let root = self.ui.root.clone();
+        let mut g = root.lock().expect("widget lock poisoned");
+        g.restart_entry_animation();
+        drop(g);
+        self.ui.mark_needs_layout();
+        let rt = self.runtime.clone();
+        rt.lock()
+            .expect("runtime lock poisoned")
+            .request_rerender();
+    }
+
+    /// Cancel any in-flight drag preview on this Ogham. Used by the
+    /// host orchestrator before swapping the active Ogham so a drag
+    /// originated from the outgoing UI doesn't leak across the
+    /// transition. Idempotent.
+    pub fn cancel_active_drag(&mut self) {
+        self.ui.clear_active_drag();
+    }
+
     /// If the runtime has flagged a rerender, re-execute the module,
     /// bridge the resulting widget values into the widget tree, and
     /// reconcile. Returns `true` if a rerender was performed.

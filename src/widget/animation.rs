@@ -6,7 +6,9 @@
 //! of snapping. Each animating property is tracked as one or more independent
 //! scalar springs; the rendered style is recomputed on every frame tick.
 
-use super::style::{Border, Color, CornerRadii, FlexStyle, Opacity, Spacing, Transform};
+use super::style::{
+    Border, Color, CornerShape, Corners, FlexStyle, InnerGlow, Opacity, Spacing, Transform,
+};
 
 /// Displacement below which a spring is considered at its target. Values
 /// come from UI-scale coordinates (pixels for sizes, 0-255 for color
@@ -107,13 +109,17 @@ pub struct TransitionSet {
     pub background_color: Option<TransitionConfig>,
     pub text_color: Option<TransitionConfig>,
     pub border: Option<TransitionConfig>,
-    pub corner_radius: Option<TransitionConfig>,
+    /// Unified per-corner shape spring. Both `corner_radius:` and
+    /// `corner_chamfer:` transition keys in the source map write here,
+    /// since the rendered corner shape is one field internally.
+    pub corners: Option<TransitionConfig>,
     pub padding: Option<TransitionConfig>,
     pub margin: Option<TransitionConfig>,
     pub gap: Option<TransitionConfig>,
     pub text_size: Option<TransitionConfig>,
     pub opacity: Option<TransitionConfig>,
     pub transform: Option<TransitionConfig>,
+    pub inner_glow: Option<TransitionConfig>,
 }
 
 impl TransitionSet {
@@ -121,13 +127,14 @@ impl TransitionSet {
         self.background_color.is_some()
             || self.text_color.is_some()
             || self.border.is_some()
-            || self.corner_radius.is_some()
+            || self.corners.is_some()
             || self.padding.is_some()
             || self.margin.is_some()
             || self.gap.is_some()
             || self.text_size.is_some()
             || self.opacity.is_some()
             || self.transform.is_some()
+            || self.inner_glow.is_some()
     }
 }
 
@@ -230,25 +237,92 @@ impl SpacingSprings {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct CornerRadiiSprings {
-    pub top_left: Spring,
-    pub top_right: Spring,
-    pub bottom_left: Spring,
-    pub bottom_right: Spring,
+/// One corner's spring: tracks the kind (Sharp/Round/Chamfer) plus a
+/// scalar spring on the size. Same-kind transitions interpolate the
+/// scalar; kind-switches snap the kind and re-anchor the spring at
+/// the current value, so the size eases from "wherever we are now"
+/// up or down to the new target. Visible only if you tween across
+/// kinds with both sizes nonzero — a deliberate v1 simplification.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CornerKind {
+    Sharp,
+    Round,
+    Chamfer,
 }
 
-impl CornerRadiiSprings {
-    pub fn new(c: &CornerRadii, cfg: TransitionConfig) -> Self {
+impl CornerKind {
+    fn of(shape: CornerShape) -> Self {
+        match shape {
+            CornerShape::Sharp => Self::Sharp,
+            CornerShape::Round(_) => Self::Round,
+            CornerShape::Chamfer(_) => Self::Chamfer,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CornerSpring {
+    kind: CornerKind,
+    size: Spring,
+}
+
+impl CornerSpring {
+    fn new(shape: CornerShape, cfg: TransitionConfig) -> Self {
         Self {
-            top_left: Spring::new(c.top_left, cfg),
-            top_right: Spring::new(c.top_right, cfg),
-            bottom_left: Spring::new(c.bottom_left, cfg),
-            bottom_right: Spring::new(c.bottom_right, cfg),
+            kind: CornerKind::of(shape),
+            size: Spring::new(shape.size(), cfg),
         }
     }
 
-    pub fn set_target(&mut self, c: &CornerRadii) {
+    fn set_target(&mut self, shape: CornerShape) {
+        let target_kind = CornerKind::of(shape);
+        if self.kind == target_kind {
+            self.size.set_target(shape.size());
+        } else {
+            // Kind mismatch: snap kind, keep current scalar so the size
+            // eases continuously from where it is to the new target.
+            self.kind = target_kind;
+            self.size.set_target(shape.size());
+        }
+    }
+
+    fn current(&self) -> CornerShape {
+        let s = self.size.current.max(0.0);
+        match self.kind {
+            CornerKind::Sharp => CornerShape::Sharp,
+            CornerKind::Round => CornerShape::round(s),
+            CornerKind::Chamfer => CornerShape::chamfer(s),
+        }
+    }
+
+    fn tick(&mut self, dt: f32) -> bool {
+        self.size.tick(dt)
+    }
+
+    fn is_settled(&self) -> bool {
+        self.size.is_settled()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CornersSprings {
+    pub top_left: CornerSpring,
+    pub top_right: CornerSpring,
+    pub bottom_left: CornerSpring,
+    pub bottom_right: CornerSpring,
+}
+
+impl CornersSprings {
+    pub fn new(c: &Corners, cfg: TransitionConfig) -> Self {
+        Self {
+            top_left: CornerSpring::new(c.top_left, cfg),
+            top_right: CornerSpring::new(c.top_right, cfg),
+            bottom_left: CornerSpring::new(c.bottom_left, cfg),
+            bottom_right: CornerSpring::new(c.bottom_right, cfg),
+        }
+    }
+
+    pub fn set_target(&mut self, c: &Corners) {
         self.top_left.set_target(c.top_left);
         self.top_right.set_target(c.top_right);
         self.bottom_left.set_target(c.bottom_left);
@@ -263,12 +337,12 @@ impl CornerRadiiSprings {
         a || b || c || d
     }
 
-    pub fn current(&self) -> CornerRadii {
-        CornerRadii::new(
-            self.top_left.current.max(0.0),
-            self.top_right.current.max(0.0),
-            self.bottom_left.current.max(0.0),
-            self.bottom_right.current.max(0.0),
+    pub fn current(&self) -> Corners {
+        Corners::new(
+            self.top_left.current(),
+            self.top_right.current(),
+            self.bottom_left.current(),
+            self.bottom_right.current(),
         )
     }
 
@@ -277,6 +351,52 @@ impl CornerRadiiSprings {
             && self.top_right.is_settled()
             && self.bottom_left.is_settled()
             && self.bottom_right.is_settled()
+    }
+}
+
+/// Springs for the three animatable components of an inner glow: the
+/// four color channels, the blur sigma, and the spread. Width-style
+/// (`Option<InnerGlow>`) appearance/disappearance is handled at the
+/// reconcile site — these springs only interpolate Some→Some changes.
+#[derive(Debug, Clone)]
+pub struct InnerGlowSprings {
+    pub color: ColorSprings,
+    pub blur: Spring,
+    pub spread: Spring,
+}
+
+impl InnerGlowSprings {
+    pub fn new(g: &InnerGlow, cfg: TransitionConfig) -> Self {
+        Self {
+            color: ColorSprings::new(g.color, cfg),
+            blur: Spring::new(g.blur, cfg),
+            spread: Spring::new(g.spread, cfg),
+        }
+    }
+
+    pub fn set_target(&mut self, g: &InnerGlow) {
+        self.color.set_target(g.color);
+        self.blur.set_target(g.blur);
+        self.spread.set_target(g.spread);
+    }
+
+    pub fn tick(&mut self, dt: f32) -> bool {
+        let a = self.color.tick(dt);
+        let b = self.blur.tick(dt);
+        let c = self.spread.tick(dt);
+        a || b || c
+    }
+
+    pub fn current(&self) -> InnerGlow {
+        InnerGlow {
+            color: self.color.current(),
+            blur: self.blur.current.max(0.0),
+            spread: self.spread.current.max(0.0),
+        }
+    }
+
+    pub fn is_settled(&self) -> bool {
+        self.color.is_settled() && self.blur.is_settled() && self.spread.is_settled()
     }
 }
 
@@ -434,13 +554,14 @@ pub struct AnimationState {
     pub background_color: Option<ColorSprings>,
     pub text_color: Option<ColorSprings>,
     pub border: Option<BorderSprings>,
-    pub corner_radius: Option<CornerRadiiSprings>,
+    pub corners: Option<CornersSprings>,
     pub padding: Option<SpacingSprings>,
     pub margin: Option<SpacingSprings>,
     pub gap: Option<Spring>,
     pub text_size: Option<Spring>,
     pub opacity: Option<Spring>,
     pub transform: Option<TransformSprings>,
+    pub inner_glow: Option<InnerGlowSprings>,
 }
 
 impl AnimationState {
@@ -448,13 +569,14 @@ impl AnimationState {
         self.background_color.is_none()
             && self.text_color.is_none()
             && self.border.is_none()
-            && self.corner_radius.is_none()
+            && self.corners.is_none()
             && self.padding.is_none()
             && self.margin.is_none()
             && self.gap.is_none()
             && self.text_size.is_none()
             && self.opacity.is_none()
             && self.transform.is_none()
+            && self.inner_glow.is_none()
     }
 
     /// Reconcile springs against `target`'s declared transitions. For each
@@ -524,17 +646,17 @@ impl AnimationState {
             self.border = None;
         }
 
-        // corner_radius
-        if let Some(cfg) = target.transitions.corner_radius {
-            if let Some(springs) = self.corner_radius.as_mut() {
-                springs.set_target(&target.corner_radii);
-            } else if !corner_matches(&old.corner_radii, &target.corner_radii) {
-                let mut springs = CornerRadiiSprings::new(&old.corner_radii, cfg);
-                springs.set_target(&target.corner_radii);
-                self.corner_radius = Some(springs);
+        // corners
+        if let Some(cfg) = target.transitions.corners {
+            if let Some(springs) = self.corners.as_mut() {
+                springs.set_target(&target.corners);
+            } else if !corners_match(&old.corners, &target.corners) {
+                let mut springs = CornersSprings::new(&old.corners, cfg);
+                springs.set_target(&target.corners);
+                self.corners = Some(springs);
             }
         } else {
-            self.corner_radius = None;
+            self.corners = None;
         }
 
         // padding
@@ -622,6 +744,26 @@ impl AnimationState {
         } else {
             self.transform = None;
         }
+
+        // inner_glow — Some→Some interpolates; None↔Some snaps for v1
+        // (mirrors how `text_size` only animates when both old and new
+        // are Some). For fade-in on appearance, the call site can use
+        // `initial:` on the parent widget.
+        if let Some(cfg) = target.transitions.inner_glow {
+            if let (Some(new_g), Some(old_g)) = (target.inner_glow, old.inner_glow) {
+                if let Some(springs) = self.inner_glow.as_mut() {
+                    springs.set_target(&new_g);
+                } else if !inner_glow_matches(&old_g, &new_g) {
+                    let mut springs = InnerGlowSprings::new(&old_g, cfg);
+                    springs.set_target(&new_g);
+                    self.inner_glow = Some(springs);
+                }
+            } else {
+                self.inner_glow = None;
+            }
+        } else {
+            self.inner_glow = None;
+        }
     }
 
     /// Step each active spring by `dt`. Clears springs that have settled
@@ -651,11 +793,11 @@ impl AnimationState {
                 self.border = None;
             }
         }
-        if let Some(springs) = self.corner_radius.as_mut() {
+        if let Some(springs) = self.corners.as_mut() {
             if springs.tick(dt) {
                 any_moving = true;
             } else {
-                self.corner_radius = None;
+                self.corners = None;
             }
         }
         if let Some(springs) = self.padding.as_mut() {
@@ -700,6 +842,13 @@ impl AnimationState {
                 self.transform = None;
             }
         }
+        if let Some(springs) = self.inner_glow.as_mut() {
+            if springs.tick(dt) {
+                any_moving = true;
+            } else {
+                self.inner_glow = None;
+            }
+        }
 
         any_moving
     }
@@ -719,8 +868,8 @@ impl AnimationState {
         if let Some(springs) = self.border.as_ref() {
             springs.apply_to(&mut out.border);
         }
-        if let Some(springs) = self.corner_radius.as_ref() {
-            out.corner_radii = springs.current();
+        if let Some(springs) = self.corners.as_ref() {
+            out.corners = springs.current();
         }
         if let Some(springs) = self.padding.as_ref() {
             out.padding = springs.current();
@@ -739,6 +888,9 @@ impl AnimationState {
         }
         if let Some(springs) = self.transform.as_ref() {
             out.transform = springs.current();
+        }
+        if let Some(springs) = self.inner_glow.as_ref() {
+            out.inner_glow = Some(springs.current());
         }
 
         out
@@ -765,11 +917,26 @@ fn spacing_matches(a: &Spacing, b: &Spacing) -> bool {
         && (a.left - b.left).abs() < f32::EPSILON
 }
 
-fn corner_matches(a: &CornerRadii, b: &CornerRadii) -> bool {
-    (a.top_left - b.top_left).abs() < f32::EPSILON
-        && (a.top_right - b.top_right).abs() < f32::EPSILON
-        && (a.bottom_left - b.bottom_left).abs() < f32::EPSILON
-        && (a.bottom_right - b.bottom_right).abs() < f32::EPSILON
+fn corner_shape_matches(a: CornerShape, b: CornerShape) -> bool {
+    match (a, b) {
+        (CornerShape::Sharp, CornerShape::Sharp) => true,
+        (CornerShape::Round(x), CornerShape::Round(y)) => (x - y).abs() < f32::EPSILON,
+        (CornerShape::Chamfer(x), CornerShape::Chamfer(y)) => (x - y).abs() < f32::EPSILON,
+        _ => false,
+    }
+}
+
+fn corners_match(a: &Corners, b: &Corners) -> bool {
+    corner_shape_matches(a.top_left, b.top_left)
+        && corner_shape_matches(a.top_right, b.top_right)
+        && corner_shape_matches(a.bottom_left, b.bottom_left)
+        && corner_shape_matches(a.bottom_right, b.bottom_right)
+}
+
+fn inner_glow_matches(a: &InnerGlow, b: &InnerGlow) -> bool {
+    color_matches(a.color, b.color)
+        && (a.blur - b.blur).abs() < f32::EPSILON
+        && (a.spread - b.spread).abs() < f32::EPSILON
 }
 
 fn border_matches(a: &Border, b: &Border) -> bool {

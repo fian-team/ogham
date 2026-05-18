@@ -475,7 +475,7 @@ needs a substantive revision pass:
 - `ogham/AGENTS.md` (530 lines, canonical language reference)
   — needs Portal-layers, lifecycle hooks, focus API, cursor
   coord, timer, drag.
-- `untold_lore/.claude/skills/ogham/SKILL.md` (62 lines, the
+- `untold_lore/.agents/skills/ogham/SKILL.md` (62 lines, the
   pointer skill in UL's repo) — gotchas list (lines 43–57)
   needs a refresh; today it doesn't mention any Phase 2
   primitive (lifecycle, Portal) let alone the 2.5/3

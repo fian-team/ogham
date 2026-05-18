@@ -69,7 +69,7 @@ Source (.ogh)
 ## LSP Server
 
 The `ogham-lsp` binary implements the Language Server Protocol for `.ogh` files,
-enabling editor support and Claude-assisted development.
+enabling editor support and AI-assisted development.
 
 ### Building and running
 

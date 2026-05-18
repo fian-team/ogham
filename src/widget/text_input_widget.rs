@@ -478,21 +478,17 @@ impl Widget for TextInputWidget {
             let bg = style
                 .background_color
                 .unwrap_or(crate::widget::style::Color::new(255, 255, 255, 255));
-            if style.corner_radii.top_left > 0.0
-                || style.corner_radii.top_right > 0.0
-                || style.corner_radii.bottom_left > 0.0
-                || style.corner_radii.bottom_right > 0.0
-            {
-                ctx.fill_rounded_rect(
+            if style.corners.is_all_sharp() {
+                ctx.fill_rect(box_x, box_y, box_width, box_height, &bg);
+            } else {
+                ctx.fill_corners_rect(
                     box_x,
                     box_y,
                     box_width,
                     box_height,
-                    &style.corner_radii,
+                    &style.corners,
                     &bg,
                 );
-            } else {
-                ctx.fill_rect(box_x, box_y, box_width, box_height, &bg);
             }
 
             // Borders
@@ -502,7 +498,7 @@ impl Widget for TextInputWidget {
                 box_y,
                 box_width,
                 box_height,
-                &style.corner_radii,
+                &style.corners,
             );
 
             // Text

@@ -61,7 +61,7 @@ use crate::widget::{
     event::{Event, EventContext},
     image::ImageCache,
     point::Point,
-    style::{Border, Color, CornerRadii, Direction, TextStyle, Transform},
+    style::{Border, Color, Corners, Direction, InnerGlow, TextStyle, Transform},
 };
 
 /// Context passed through the layout tree during a layout pass.
@@ -344,6 +344,16 @@ impl UI {
     /// at the cursor position.
     pub fn active_drag_preview(&self) -> Option<&DragPreviewState> {
         self.active_drag_preview.as_ref()
+    }
+
+    /// Drop any in-flight drag preview. Used by hosts that need to
+    /// abort a drag without firing `drag_end` — e.g., when an
+    /// orchestrator swaps which Ogham is active mid-drag. Idempotent.
+    pub fn clear_active_drag(&mut self) {
+        if self.active_drag_preview.is_some() {
+            self.active_drag_preview = None;
+            self.mark_needs_repaint();
+        }
     }
 
     pub fn set_font_collection(&mut self, fc: FontCollection) {
@@ -1210,6 +1220,13 @@ impl UI {
     pub fn take_cancelled_unmount_prefixes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pending_cancelled_unmount_prefixes)
     }
+
+    /// Read-only length of the drain prefix queue. Useful for hosts
+    /// (and tests) that want to verify draining happened without
+    /// consuming the queue.
+    pub fn pending_drained_prefixes_len(&self) -> usize {
+        self.pending_drained_prefixes.len()
+    }
 }
 
 /// The Surface trait must be implemented for a given renderer (such as Skia) to draw the widget tree to a bitmap.
@@ -1222,13 +1239,17 @@ pub trait Surface {
 /// space; the implementation is responsible for any scaling.
 pub trait RenderContext {
     fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: &Color);
-    fn fill_rounded_rect(
+    /// Fill a rect whose corners follow `corners` — any mix of `Sharp`,
+    /// `Round`, and `Chamfer`. Backends are expected to fast-path the
+    /// all-sharp case (call `fill_rect` instead) and the pure-round
+    /// case (rounded-rect primitive) where they can.
+    fn fill_corners_rect(
         &mut self,
         x: f32,
         y: f32,
         w: f32,
         h: f32,
-        radii: &CornerRadii,
+        corners: &Corners,
         color: &Color,
     );
     fn draw_border(
@@ -1238,7 +1259,7 @@ pub trait RenderContext {
         y: f32,
         w: f32,
         h: f32,
-        radii: &CornerRadii,
+        corners: &Corners,
     );
     fn draw_image(
         &mut self,
@@ -1297,7 +1318,7 @@ pub trait RenderContext {
         _y: f32,
         _w: f32,
         _h: f32,
-        _radii: &CornerRadii,
+        _corners: &Corners,
         _sigma: f32,
     ) {
     }
@@ -1305,6 +1326,23 @@ pub trait RenderContext {
     /// Pop the most recently pushed backdrop-filter layer, compositing
     /// it back onto the underlying canvas.
     fn pop_backdrop_blur(&mut self) {}
+
+    /// Paint an inner (inset) glow inside the border box. `corners`
+    /// is the same per-corner shape that the background fill / border
+    /// already use, so the glow traces the inside of the panel
+    /// silhouette. Default impl is a no-op so non-Skia backends
+    /// compile; Skia draws a stroked path with a `MaskFilter::blur`
+    /// clipped to the border-box interior.
+    fn draw_inner_glow(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _w: f32,
+        _h: f32,
+        _corners: &Corners,
+        _glow: &InnerGlow,
+    ) {
+    }
 }
 
 use downcast_rs::{impl_downcast, Downcast};
@@ -1582,6 +1620,13 @@ pub trait Widget: Downcast {
     /// is safe for the parent to remove. Non-exiting widgets should
     /// return `false`.
     fn is_exit_complete(&self) -> bool { false }
+
+    /// Re-seed this widget at its `initial_style` and retarget springs
+    /// toward `declared_style`, then cascade to children. Used by the
+    /// host to re-play entry animations when an Ogham instance is
+    /// re-activated after an earlier exit. Widgets with no
+    /// `initial_style` (or no enabled transitions) are no-ops.
+    fn restart_entry_animation(&mut self) {}
 
     /// Advance any in-flight style transitions and recursively
     /// tick children. Returns the merged tick result so the UI

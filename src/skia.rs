@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::widget::{
     flex_widget::FlexWidget,
     image::ImageCache,
-    style::{Border, BorderSide, CornerRadii, FontWeight, TextAlign},
+    style::{Border, BorderSide, CornerShape, Corners, FontWeight, InnerGlow, TextAlign},
     RenderContext, Surface, WidgetRef, UI,
 };
 
@@ -207,29 +207,104 @@ impl SkiaEnv {
         scaled_font_size
     }
 
-    /// Constructs an `RRect` with DPI-scaled corner radii.
-    fn make_scaled_rrect(&self, rect: Rect, radii: &CornerRadii) -> RRect {
+    /// Constructs a pure-round `RRect` with DPI-scaled radii. Caller is
+    /// responsible for ensuring the corners are all `Sharp` or `Round`
+    /// (i.e. `corners.is_pure_round()`); any `Chamfer` corner is treated
+    /// as `Sharp` by this helper (drops the size). Use
+    /// `build_corners_path` for mixed shapes.
+    fn make_scaled_rrect(&self, rect: Rect, corners: &Corners) -> RRect {
+        let radius = |c: CornerShape| match c {
+            CornerShape::Round(r) => self.scale_dim(r),
+            _ => 0.0,
+        };
+        let tl = radius(corners.top_left);
+        let tr = radius(corners.top_right);
+        let br = radius(corners.bottom_right);
+        let bl = radius(corners.bottom_left);
         RRect::new_rect_radii(
             rect,
             &[
-                Point::new(
-                    self.scale_dim(radii.top_left),
-                    self.scale_dim(radii.top_left),
-                ),
-                Point::new(
-                    self.scale_dim(radii.top_right),
-                    self.scale_dim(radii.top_right),
-                ),
-                Point::new(
-                    self.scale_dim(radii.bottom_right),
-                    self.scale_dim(radii.bottom_right),
-                ),
-                Point::new(
-                    self.scale_dim(radii.bottom_left),
-                    self.scale_dim(radii.bottom_left),
-                ),
+                Point::new(tl, tl),
+                Point::new(tr, tr),
+                Point::new(br, br),
+                Point::new(bl, bl),
             ],
         )
+    }
+
+    /// Build a closed `Path` for a rect whose corners follow `corners`.
+    /// Walks clockwise from just past the top-left corner; for each
+    /// corner emits an arc (Round), a straight diagonal (Chamfer), or
+    /// a no-op vertex (Sharp). Coordinates are DPI-scaled.
+    fn build_corners_path(
+        &self,
+        sx: f32,
+        sy: f32,
+        sw: f32,
+        sh: f32,
+        corners: &Corners,
+    ) -> skia_safe::Path {
+        let tls = self.scale_dim(corners.top_left.size());
+        let trs = self.scale_dim(corners.top_right.size());
+        let brs = self.scale_dim(corners.bottom_right.size());
+        let bls = self.scale_dim(corners.bottom_left.size());
+
+        let right = sx + sw;
+        let bottom = sy + sh;
+
+        let mut pb = skia_safe::PathBuilder::new();
+        // Start at the top edge, just past the TL corner.
+        pb.move_to((sx + tls, sy));
+        // Top edge.
+        pb.line_to((right - trs, sy));
+        // TR corner.
+        match corners.top_right {
+            CornerShape::Round(_) if trs > 0.0 => {
+                let oval = Rect::from_xywh(right - 2.0 * trs, sy, 2.0 * trs, 2.0 * trs);
+                pb.arc_to(oval, 270.0, 90.0, false);
+            }
+            _ => {
+                pb.line_to((right, sy + trs));
+            }
+        }
+        // Right edge.
+        pb.line_to((right, bottom - brs));
+        // BR corner.
+        match corners.bottom_right {
+            CornerShape::Round(_) if brs > 0.0 => {
+                let oval = Rect::from_xywh(right - 2.0 * brs, bottom - 2.0 * brs, 2.0 * brs, 2.0 * brs);
+                pb.arc_to(oval, 0.0, 90.0, false);
+            }
+            _ => {
+                pb.line_to((right - brs, bottom));
+            }
+        }
+        // Bottom edge.
+        pb.line_to((sx + bls, bottom));
+        // BL corner.
+        match corners.bottom_left {
+            CornerShape::Round(_) if bls > 0.0 => {
+                let oval = Rect::from_xywh(sx, bottom - 2.0 * bls, 2.0 * bls, 2.0 * bls);
+                pb.arc_to(oval, 90.0, 90.0, false);
+            }
+            _ => {
+                pb.line_to((sx, bottom - bls));
+            }
+        }
+        // Left edge.
+        pb.line_to((sx, sy + tls));
+        // TL corner.
+        match corners.top_left {
+            CornerShape::Round(_) if tls > 0.0 => {
+                let oval = Rect::from_xywh(sx, sy, 2.0 * tls, 2.0 * tls);
+                pb.arc_to(oval, 180.0, 90.0, false);
+            }
+            _ => {
+                pb.line_to((sx + tls, sy));
+            }
+        }
+        pb.close();
+        pb.detach()
     }
 
     /// Draws a single border line if the side has a non-zero width.
@@ -310,13 +385,13 @@ impl RenderContext for SkiaEnv {
             .draw_rect(Rect::new(sx, sy, sx + sw, sy + sh), &self.paint);
     }
 
-    fn fill_rounded_rect(
+    fn fill_corners_rect(
         &mut self,
         x: f32,
         y: f32,
         w: f32,
         h: f32,
-        radii: &CornerRadii,
+        corners: &Corners,
         color: &crate::widget::style::Color,
     ) {
         let sx = self.scale_coord(x);
@@ -327,8 +402,17 @@ impl RenderContext for SkiaEnv {
         self.paint
             .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
         let rect = Rect::new(sx, sy, sx + sw, sy + sh);
-        let rrect = self.make_scaled_rrect(rect, radii);
-        self.surface.canvas().draw_rrect(rrect, &self.paint);
+
+        if corners.is_pure_round() {
+            // Fast path: identical to pre-Corners behavior — uses Skia's
+            // native RRect primitive. The 317 existing `corner_radius:`
+            // call sites land here.
+            let rrect = self.make_scaled_rrect(rect, corners);
+            self.surface.canvas().draw_rrect(rrect, &self.paint);
+        } else {
+            let path = self.build_corners_path(sx, sy, sw, sh, corners);
+            self.surface.canvas().draw_path(&path, &self.paint);
+        }
     }
 
     fn draw_border(
@@ -338,7 +422,7 @@ impl RenderContext for SkiaEnv {
         y: f32,
         w: f32,
         h: f32,
-        radii: &CornerRadii,
+        corners: &Corners,
     ) {
         let has_border = border.top.width > 0.0
             || border.right.width > 0.0
@@ -353,29 +437,40 @@ impl RenderContext for SkiaEnv {
         let sw = self.scale_dim(w);
         let sh = self.scale_dim(h);
 
-        let has_radii = radii.top_left > 0.0
-            || radii.top_right > 0.0
-            || radii.bottom_left > 0.0
-            || radii.bottom_right > 0.0;
+        if corners.is_all_sharp() {
+            self.draw_border_sides(border, sx, sy, sw, sh);
+            return;
+        }
 
-        if has_radii {
-            let border_width = border.top.width;
-            let border_color = border.top.color;
-            self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(border_width));
-            self.paint.set_color(Color::from_argb(
-                border_color.a,
-                border_color.r,
-                border_color.g,
-                border_color.b,
-            ));
-            let half = self.scale_stroke(border_width) / 2.0;
+        // Both pure-round and mixed-shape cases stroke a single outline
+        // path using the top-side's width and color. Per-side variation
+        // is only supported by the all-sharp fast path above (matches
+        // the pre-existing behavior of `draw_rrect`-based borders).
+        let border_width = border.top.width;
+        let border_color = border.top.color;
+        self.paint.set_style(PaintStyle::Stroke);
+        self.paint
+            .set_stroke_width(self.scale_stroke(border_width));
+        self.paint.set_color(Color::from_argb(
+            border_color.a,
+            border_color.r,
+            border_color.g,
+            border_color.b,
+        ));
+        let half = self.scale_stroke(border_width) / 2.0;
+
+        if corners.is_pure_round() {
             let rect = Rect::new(sx + half, sy + half, sx + sw - half, sy + sh - half);
-            let rrect = self.make_scaled_rrect(rect, radii);
+            let rrect = self.make_scaled_rrect(rect, corners);
             self.surface.canvas().draw_rrect(rrect, &self.paint);
         } else {
-            self.draw_border_sides(border, sx, sy, sw, sh);
+            // Inset the path by `half` so the stroke sits inside the
+            // border box (matches the rrect path above). Shrinking the
+            // bounding rect by `half` on each side is a fair approximation
+            // for typical 1–2px hairline borders; for thicker borders the
+            // inset is approximate at the chamfered corners.
+            let path = self.build_corners_path(sx + half, sy + half, sw - 2.0 * half, sh - 2.0 * half, corners);
+            self.surface.canvas().draw_path(&path, &self.paint);
         }
     }
 
@@ -541,7 +636,7 @@ impl RenderContext for SkiaEnv {
         y: f32,
         w: f32,
         h: f32,
-        radii: &crate::widget::style::CornerRadii,
+        corners: &Corners,
         sigma: f32,
     ) {
         let sx = self.scale_coord(x);
@@ -550,28 +645,30 @@ impl RenderContext for SkiaEnv {
         let sh = self.scale_dim(h);
         let s_sigma = self.scale_dim(sigma);
         let rect = skia_safe::Rect::from_xywh(sx, sy, sw, sh);
-        // Build a rounded-rect mask so the blurred capture is clipped to
-        // the panel shape — without this, a plain rect clip leaves
-        // blurred halos at the corners.
-        let tl = self.scale_dim(radii.top_left);
-        let tr = self.scale_dim(radii.top_right);
-        let br = self.scale_dim(radii.bottom_right);
-        let bl = self.scale_dim(radii.bottom_left);
-        let rrect = skia_safe::RRect::new_rect_radii(
-            rect,
-            &[
-                skia_safe::Point::new(tl, tl),
-                skia_safe::Point::new(tr, tr),
-                skia_safe::Point::new(br, br),
-                skia_safe::Point::new(bl, bl),
-            ],
-        );
+
+        // Build the clip shape before taking the canvas borrow — both
+        // helpers immutably borrow `self`, so we can't compute them
+        // mid-canvas-mutation.
+        let clip_rrect = if corners.is_pure_round() {
+            Some(self.make_scaled_rrect(rect, corners))
+        } else {
+            None
+        };
+        let clip_path = if clip_rrect.is_none() {
+            Some(self.build_corners_path(sx, sy, sw, sh, corners))
+        } else {
+            None
+        };
 
         let canvas = self.surface.canvas();
         // Outer save: lets pop_backdrop_blur restore() back past the
         // clip in addition to the save_layer.
         canvas.save();
-        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        if let Some(rrect) = clip_rrect {
+            canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        } else if let Some(path) = clip_path.as_ref() {
+            canvas.clip_path(path, skia_safe::ClipOp::Intersect, true);
+        }
 
         let filter = skia_safe::image_filters::blur(
             (s_sigma, s_sigma),
@@ -597,6 +694,75 @@ impl RenderContext for SkiaEnv {
         // Pop the save_layer (or the fallback save), then the outer
         // save that owns the clip.
         canvas.restore();
+        canvas.restore();
+    }
+
+    fn draw_inner_glow(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        corners: &Corners,
+        glow: &InnerGlow,
+    ) {
+        if !glow.is_active() {
+            return;
+        }
+        let sx = self.scale_coord(x);
+        let sy = self.scale_coord(y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+        let s_blur = self.scale_dim(glow.blur);
+        let s_spread = self.scale_dim(glow.spread.max(0.0));
+
+        // Build the silhouette path once: we both clip to it and stroke
+        // along it. The stroke is centered on the path, so half the
+        // stroke lies outside (clipped away) and half lies inside the
+        // border box (the visible glow). `2 * (spread + blur)` is a
+        // visually-tuned stroke width: spread widens the saturated
+        // inner band, blur is Skia's gaussian sigma. With a clip in
+        // place the outer half of the stroke is invisible, so the
+        // user perceives the inset glow extending `spread + blur` px
+        // inward from the border.
+        let path = if corners.is_all_sharp() {
+            let mut pb = skia_safe::PathBuilder::new();
+            pb.move_to((sx, sy));
+            pb.line_to((sx + sw, sy));
+            pb.line_to((sx + sw, sy + sh));
+            pb.line_to((sx, sy + sh));
+            pb.close();
+            pb.detach()
+        } else {
+            self.build_corners_path(sx, sy, sw, sh, corners)
+        };
+
+        let canvas = self.surface.canvas();
+        canvas.save();
+        canvas.clip_path(&path, skia_safe::ClipOp::Intersect, true);
+
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_stroke_width((s_blur + s_spread) * 2.0);
+        paint.set_color(Color::from_argb(
+            glow.color.a,
+            glow.color.r,
+            glow.color.g,
+            glow.color.b,
+        ));
+        if s_blur > 0.0 {
+            // Solid mask filter blurs the alpha channel along the stroke,
+            // producing the soft glow falloff.
+            if let Some(mf) = skia_safe::MaskFilter::blur(
+                skia_safe::BlurStyle::Normal,
+                s_blur,
+                false,
+            ) {
+                paint.set_mask_filter(mf);
+            }
+        }
+        canvas.draw_path(&path, &paint);
         canvas.restore();
     }
 }

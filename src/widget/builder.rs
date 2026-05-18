@@ -376,8 +376,18 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                 }
             }
             "corner_radius" => {
-                if let Some(cr) = parse_corner_radii_value(value) {
-                    style.corner_radii = cr;
+                if let Some(cr) = parse_corners_round_value(value) {
+                    merge_round_corners(&mut style.corners, &cr);
+                }
+            }
+            "corner_chamfer" => {
+                if let Some(cc) = parse_corners_chamfer_value(value) {
+                    merge_chamfer_corners(&mut style.corners, &cc);
+                }
+            }
+            "inner_glow" => {
+                if let Some(g) = parse_inner_glow_value(value) {
+                    style.inner_glow = Some(g);
                 }
             }
             "background_image" => {
@@ -503,13 +513,14 @@ fn parse_transition_value(value: &Value) -> Option<TransitionSet> {
                 background_color: Some(cfg),
                 text_color: Some(cfg),
                 border: Some(cfg),
-                corner_radius: Some(cfg),
+                corners: Some(cfg),
                 padding: Some(cfg),
                 margin: Some(cfg),
                 gap: Some(cfg),
                 text_size: Some(cfg),
                 opacity: Some(cfg),
                 transform: Some(cfg),
+                inner_glow: Some(cfg),
             })
         }
         Value::Map(map) => {
@@ -520,13 +531,18 @@ fn parse_transition_value(value: &Value) -> Option<TransitionSet> {
                     "background_color" => set.background_color = Some(cfg),
                     "text_color" => set.text_color = Some(cfg),
                     "border" => set.border = Some(cfg),
-                    "corner_radius" => set.corner_radius = Some(cfg),
+                    // `corner_radius` and `corner_chamfer` are aliases —
+                    // both spring the unified per-corner shape field.
+                    "corner_radius" | "corner_chamfer" | "corners" => {
+                        set.corners = Some(cfg)
+                    }
                     "padding" => set.padding = Some(cfg),
                     "margin" => set.margin = Some(cfg),
                     "gap" => set.gap = Some(cfg),
                     "text_size" => set.text_size = Some(cfg),
                     "opacity" => set.opacity = Some(cfg),
                     "transform" => set.transform = Some(cfg),
+                    "inner_glow" => set.inner_glow = Some(cfg),
                     _ => {}
                 }
             }
@@ -848,6 +864,10 @@ fn key_to_string(value: &Value) -> Option<String> {
 ///   is held as pending until exits settle.
 /// - `children`: the content to mount. Accepts a single Widget or an
 ///   Array of Widgets.
+/// - `style`: optional overrides applied to the inner Flex (same shape
+///   as `Flex { style: ... }`). Defaults are `Grow × Grow` column;
+///   override `width`/`height` when wrapping shrink-sized content in a
+///   shrink-sized parent.
 fn create_presence_widget(
     registry: &WidgetRegistry,
     runtime: &Arc<Mutex<Runtime>>,
@@ -857,6 +877,11 @@ fn create_presence_widget(
 
     if let Some(value) = descriptor.properties.get("key") {
         presence.generation_key = key_to_string(value);
+    }
+
+    if let Some(style_map) = optional_style_map(descriptor) {
+        apply_flex_style_from_map(&mut presence.inner.declared_style, style_map);
+        presence.inner.style = presence.inner.declared_style.clone();
     }
 
     let mut children: Vec<WidgetRef> = Vec::new();
@@ -1372,8 +1397,13 @@ fn apply_grid_style_from_map(style: &mut GridStyle, map: &HashMap<String, Value>
                 }
             }
             "corner_radius" => {
-                if let Some(cr) = parse_corner_radii_value(value) {
-                    style.corner_radii = cr;
+                if let Some(cr) = parse_corners_round_value(value) {
+                    merge_round_corners(&mut style.corners, &cr);
+                }
+            }
+            "corner_chamfer" => {
+                if let Some(cc) = parse_corners_chamfer_value(value) {
+                    merge_chamfer_corners(&mut style.corners, &cc);
                 }
             }
             _ => {}
@@ -1561,20 +1591,105 @@ pub(crate) fn parse_border_value(value: &Value) -> Option<Border> {
     }
 }
 
-pub(crate) fn parse_corner_radii_value(value: &Value) -> Option<CornerRadii> {
-    // Supported shapes:
-    // - number => all corners
-    // - { top_left, top_right, bottom_left, bottom_right }
+/// Parse a `corner_radius:` value into `Corners` with `Round` shapes.
+/// Accepts a number (applies to all four corners) or a per-corner map
+/// (all four `top_*` / `bottom_*` keys required, like the historical
+/// `corner_radius` shape). A value of 0 becomes `Sharp`.
+pub(crate) fn parse_corners_round_value(value: &Value) -> Option<Corners> {
     match value {
-        Value::Float(_) | Value::Integer(_) => Some(CornerRadii::all(value_to_f32(value)?)),
+        Value::Float(_) | Value::Integer(_) => {
+            Some(Corners::all_round(value_to_f32(value)?))
+        }
         Value::Map(map) => {
             let tl = map.get("top_left").and_then(value_to_f32)?;
             let tr = map.get("top_right").and_then(value_to_f32)?;
             let bl = map.get("bottom_left").and_then(value_to_f32)?;
             let br = map.get("bottom_right").and_then(value_to_f32)?;
-            Some(CornerRadii::new(tl, tr, bl, br))
+            Some(Corners::new(
+                CornerShape::round(tl),
+                CornerShape::round(tr),
+                CornerShape::round(bl),
+                CornerShape::round(br),
+            ))
         }
         _ => None,
+    }
+}
+
+/// Parse a `corner_chamfer:` value into `Corners` with `Chamfer`
+/// shapes. Mirrors `parse_corners_round_value` — same input shapes,
+/// values become `Chamfer(n)` instead of `Round(n)`. Zero stays
+/// `Sharp` so partial-corner specs are natural (write 0 for corners
+/// that should keep whatever shape the radius pass set).
+pub(crate) fn parse_corners_chamfer_value(value: &Value) -> Option<Corners> {
+    match value {
+        Value::Float(_) | Value::Integer(_) => {
+            Some(Corners::all_chamfer(value_to_f32(value)?))
+        }
+        Value::Map(map) => {
+            let tl = map.get("top_left").and_then(value_to_f32)?;
+            let tr = map.get("top_right").and_then(value_to_f32)?;
+            let bl = map.get("bottom_left").and_then(value_to_f32)?;
+            let br = map.get("bottom_right").and_then(value_to_f32)?;
+            Some(Corners::new(
+                CornerShape::chamfer(tl),
+                CornerShape::chamfer(tr),
+                CornerShape::chamfer(bl),
+                CornerShape::chamfer(br),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Merge the rounded corners from `src` into `dst`. Non-Sharp corners
+/// in `src` only overwrite the matching corner in `dst` when `dst`'s
+/// corner is currently `Sharp` — this preserves any prior `Chamfer`
+/// regardless of which parser ran first (HashMap iteration is
+/// non-deterministic, so the merge has to be order-independent).
+/// Sharp corners in `src` are no-ops, so the user can write
+/// `corner_radius: { tl: 4, tr: 0, bl: 0, br: 4 }` to set only the
+/// diagonals without clobbering corners set by `corner_chamfer`.
+pub(crate) fn merge_round_corners(dst: &mut Corners, src: &Corners) {
+    let pick = |d: CornerShape, s: CornerShape| match s {
+        CornerShape::Sharp => d,
+        _ => match d {
+            CornerShape::Sharp => s,
+            _ => d, // dst already non-sharp (chamfer wins) — leave alone
+        },
+    };
+    dst.top_left = pick(dst.top_left, src.top_left);
+    dst.top_right = pick(dst.top_right, src.top_right);
+    dst.bottom_left = pick(dst.bottom_left, src.bottom_left);
+    dst.bottom_right = pick(dst.bottom_right, src.bottom_right);
+}
+
+/// Merge chamfer corners into `dst`. Non-Sharp corners always
+/// overwrite (chamfer beats radius on conflict). Sharp corners are
+/// no-ops. The win-over-radius rule makes the combined behaviour
+/// order-independent — see `merge_round_corners` for context.
+pub(crate) fn merge_chamfer_corners(dst: &mut Corners, src: &Corners) {
+    let pick = |d: CornerShape, s: CornerShape| match s {
+        CornerShape::Sharp => d,
+        _ => s,
+    };
+    dst.top_left = pick(dst.top_left, src.top_left);
+    dst.top_right = pick(dst.top_right, src.top_right);
+    dst.bottom_left = pick(dst.bottom_left, src.bottom_left);
+    dst.bottom_right = pick(dst.bottom_right, src.bottom_right);
+}
+
+/// Parse an `inner_glow:` value into an `InnerGlow`. Accepts a map
+/// with `color`, `blur`, and optional `spread`. Without `blur > 0`
+/// the glow renders as a no-op (see `InnerGlow::is_active`).
+pub(crate) fn parse_inner_glow_value(value: &Value) -> Option<InnerGlow> {
+    if let Value::Map(map) = value {
+        let color = map.get("color").and_then(parse_color_value)?;
+        let blur = map.get("blur").and_then(value_to_f32).unwrap_or(0.0);
+        let spread = map.get("spread").and_then(value_to_f32).unwrap_or(0.0);
+        Some(InnerGlow { color, blur, spread })
+    } else {
+        None
     }
 }
 

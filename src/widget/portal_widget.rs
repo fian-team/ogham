@@ -322,6 +322,12 @@ impl Widget for PortalWidget {
         self.inner.is_exit_complete()
     }
 
+    fn restart_entry_animation(&mut self) {
+        // Delegate so the portal's contents re-play entry alongside the
+        // rest of the tree when the host re-promotes this Ogham.
+        self.inner.restart_entry_animation();
+    }
+
     fn key(&self) -> Option<&str> {
         self.inner.key()
     }

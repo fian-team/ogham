@@ -860,7 +860,7 @@ Once Phase 3 ships, the entire surface UL needs is in place
 - `ogham/AGENTS.md` (530 lines, the canonical language
   reference) — needs Portal-layers, lifecycle hooks, focus
   API, cursor coord, timer, drag.
-- `untold_lore/.claude/skills/ogham/SKILL.md` (62 lines, the
+- `untold_lore/.agents/skills/ogham/SKILL.md` (62 lines, the
   pointer skill in UL's repo) — currently delegates entirely
   to `AGENTS.md`; the gotchas list (lines 43–57) needs a
   refresh against the new primitives (no mention of Portal,
@@ -1092,7 +1092,7 @@ section, the resolved sequencing is:
 2. **Docs + Ogham-skill revision pass** (~2 person-days)
    - `ogham/AGENTS.md` — add Portal layers, lifecycle hooks,
      focus API, cursor coord, drag, timer.
-   - `untold_lore/.claude/skills/ogham/SKILL.md` — refresh
+   - `untold_lore/.agents/skills/ogham/SKILL.md` — refresh
      gotchas list against new primitives.
    - Triplet docs tidy-up.
 3. **UL Pass 2 — adoption** (~12 person-days per audit)
