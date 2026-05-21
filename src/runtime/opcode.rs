@@ -22,6 +22,11 @@ pub enum OpCode {
     /// Close any open upvalue pointing to the top-of-stack slot, then pop.
     /// Emitted by the compiler when a captured local goes out of scope.
     CloseUpvalue,
+    /// End an expression-block scope that has a trailing result value at the
+    /// top of the stack. Pops the result, closes any open upvalues pointing
+    /// into the N stack slots below it (which are the scope's locals), drops
+    /// those N slots, then pushes the result back. Net stack effect: -N.
+    EndExprScope(u8),
     /// Duplicate the value on top of the stack.
     Dup,
 

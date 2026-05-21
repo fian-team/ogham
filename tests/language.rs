@@ -483,6 +483,28 @@ let main = fn () {
     );
 }
 
+#[test]
+fn for_loop_expression_body_with_captured_local() {
+    // The body's `let row` is captured by the inner closure. `end_scope`
+    // used to emit `CloseUpvalue` at the top of the stack — but the result
+    // sits *above* the local, so the wrong slot got closed and the
+    // captured upvalue was left open at a soon-to-be-invalid stack index.
+    // Subsequent close_upvalues runs would then panic with an out-of-
+    // bounds index. Regression test for the map-editor "Set attachment"
+    // crash.
+    let source = r#"
+let main = fn () {
+    let items = [{id: 1}, {id: 2}, {id: 3}];
+    let cbs = for (i in 0..items.length()) {
+        let row = items[i];
+        fn () { row.id }
+    };
+    return cbs[1]();
+};
+"#;
+    assert_eq!(run(source), Value::Integer(2));
+}
+
 // ===========================================================================
 // Functions
 // ===========================================================================

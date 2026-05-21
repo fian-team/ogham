@@ -290,6 +290,17 @@ impl VM {
                     self.close_upvalues(top);
                     self.pop()?;
                 }
+                OpCode::EndExprScope(n) => {
+                    // End a scope whose locals sit below a trailing result.
+                    // Pop the result, close any upvalues into the N local
+                    // slots, drop them, then push the result back.
+                    let result = self.pop()?;
+                    let n = n as usize;
+                    let new_len = self.stack.len() - n;
+                    self.close_upvalues(new_len);
+                    self.stack.truncate(new_len);
+                    self.push(result)?;
+                }
                 OpCode::Dup => {
                     let val = self
                         .stack

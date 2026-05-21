@@ -26,6 +26,15 @@ pub struct SkiaEnv {
     pub text_style: TextStyle,
     pub dpi_scale: f32,
     pub default_font: Option<String>,
+    /// Surface snapshots stashed on each `push_effects` that opens an
+    /// offscreen alpha layer. `push_backdrop_blur` consults this stack
+    /// so that frosted-glass panels nested inside an animating subtree
+    /// (Presence entry/exit) still sample the underlying scene rather
+    /// than the empty layer Skia's `save_layer(backdrop)` would
+    /// otherwise see. Entries are `None` for `push_effects` calls that
+    /// only used a plain `save()`; that keeps the stack balanced with
+    /// `pop_effects`.
+    backdrop_snapshots: Vec<Option<skia_safe::Image>>,
 }
 
 impl SkiaEnv {
@@ -52,6 +61,7 @@ impl SkiaEnv {
             text_style,
             dpi_scale,
             default_font: None,
+            backdrop_snapshots: Vec::new(),
         }
     }
 
@@ -592,12 +602,22 @@ impl RenderContext for SkiaEnv {
         // it when actually needed. A plain save suffices for identity
         // opacity and lets us still push a matrix transform.
         if clamped < 1.0 {
+            // Capture the surface *before* opening the layer: any
+            // descendant `push_backdrop_blur` will sample from this
+            // snapshot instead of the empty layer, so frosted glass
+            // keeps working through entry/exit fades.
+            let snapshot = self.surface.image_snapshot();
+            self.backdrop_snapshots.push(Some(snapshot));
             let alpha_u8 = (clamped * 255.0).round() as u8;
             // Bounds=None lets Skia infer from subsequent draws.
             self.surface
                 .canvas()
                 .save_layer_alpha(None, alpha_u8 as u32);
         } else {
+            // No offscreen layer was opened, so the surface is still
+            // the live backdrop source — but push a placeholder to
+            // keep the stack balanced with `pop_effects`.
+            self.backdrop_snapshots.push(None);
             self.surface.canvas().save();
         }
 
@@ -628,6 +648,7 @@ impl RenderContext for SkiaEnv {
 
     fn pop_effects(&mut self) {
         self.surface.canvas().restore();
+        self.backdrop_snapshots.pop();
     }
 
     fn push_backdrop_blur(
@@ -660,6 +681,18 @@ impl RenderContext for SkiaEnv {
             None
         };
 
+        // If an ancestor `push_effects` opened an offscreen alpha
+        // layer, Skia's `save_layer(backdrop)` would sample from that
+        // empty layer rather than the surface, and the frosted-glass
+        // effect would wash out for the duration of the animation.
+        // Fall back to drawing a blurred slice of the snapshot we
+        // captured when the layer opened.
+        let backdrop_snapshot = self
+            .backdrop_snapshots
+            .iter()
+            .rev()
+            .find_map(|s| s.clone());
+
         let canvas = self.surface.canvas();
         // Outer save: lets pop_backdrop_blur restore() back past the
         // clip in addition to the save_layer.
@@ -670,16 +703,45 @@ impl RenderContext for SkiaEnv {
             canvas.clip_path(path, skia_safe::ClipOp::Intersect, true);
         }
 
-        let filter = skia_safe::image_filters::blur(
+        if let Some(image) = backdrop_snapshot {
+            // The snapshot is in device pixels. Map the panel's
+            // current-local rect through the canvas's transform to
+            // locate the corresponding slice in the snapshot, then
+            // draw that slice back at the panel's local rect — the
+            // canvas matrix re-applies any parent transform so the
+            // blurred backdrop tracks the panel as it animates in.
+            let device_matrix = canvas.local_to_device_as_3x3();
+            let (device_rect, _) = device_matrix.map_rect(rect);
+            let mut paint = Paint::default();
+            paint.set_anti_alias(true);
+            if s_sigma > 0.0 {
+                if let Some(blur) = skia_safe::image_filters::blur(
+                    (s_sigma, s_sigma),
+                    skia_safe::TileMode::Clamp,
+                    None,
+                    None,
+                ) {
+                    paint.set_image_filter(blur);
+                }
+            }
+            canvas.draw_image_rect(
+                &image,
+                Some((&device_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
+                rect,
+                &paint,
+            );
+            // Match the push count so the paired pop stays balanced
+            // (one restore for this save, one for the outer clip).
+            canvas.save();
+        } else if let Some(filter) = skia_safe::image_filters::blur(
             (s_sigma, s_sigma),
             skia_safe::TileMode::Clamp,
             None,
             None,
-        );
-        if let Some(filter) = filter.as_ref() {
+        ) {
             let rec = skia_safe::canvas::SaveLayerRec::default()
                 .bounds(&rect)
-                .backdrop(filter);
+                .backdrop(&filter);
             canvas.save_layer(&rec);
         } else {
             // Filter creation failed (zero sigma rounds to a no-op,

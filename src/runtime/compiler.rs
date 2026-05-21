@@ -394,6 +394,9 @@ impl Compiler {
             | OpCode::SpreadForExpr
             | OpCode::JumpIfFalse(_) => -1,
 
+            // Pop the trailing result + N locals, push the result back.
+            OpCode::EndExprScope(n) => -(*n as i32),
+
             // Pop 1, push 1 (net 0)
             OpCode::Negate
             | OpCode::Not
@@ -504,6 +507,27 @@ impl Compiler {
                 self.emit(OpCode::Pop);
             }
             self.locals.pop();
+        }
+    }
+
+    /// End a scope whose body left a trailing expression value at the top of
+    /// the stack. Plain `end_scope` would emit `Pop` / `CloseUpvalue` against
+    /// the top, clobbering the result and leaving captured-local upvalues
+    /// open at slots that are about to be invalidated. Instead we emit a
+    /// single `EndExprScope(n)` that closes upvalues for the N locals below
+    /// the result and drops them in one shot.
+    fn end_scope_preserving_result(&mut self) {
+        self.scope_depth -= 1;
+        let mut n: u8 = 0;
+        while let Some(local) = self.locals.last() {
+            if local.depth <= self.scope_depth {
+                break;
+            }
+            self.locals.pop();
+            n = n.checked_add(1).expect("scope local count overflowed u8");
+        }
+        if n > 0 {
+            self.emit(OpCode::EndExprScope(n));
         }
     }
 
@@ -1008,7 +1032,7 @@ impl Compiler {
             |compiler, _| {
                 compiler.begin_scope();
                 compiler.compile_expression_block(&for_loop.body)?;
-                compiler.end_scope();
+                compiler.end_scope_preserving_result();
                 compiler.emit(OpCode::AppendForExpr);
                 Ok(())
             },
@@ -1734,7 +1758,7 @@ impl Compiler {
                 self.emit(OpCode::Pop);
                 self.begin_scope();
                 self.compile_expression_block(block)?;
-                self.end_scope();
+                self.end_scope_preserving_result();
                 let end_jump = self.emit_jump(OpCode::Jump(0));
                 end_jumps.push(end_jump);
             } else {
@@ -1748,7 +1772,7 @@ impl Compiler {
                 self.emit(OpCode::Pop);
                 self.begin_scope();
                 self.compile_expression_block(block)?;
-                self.end_scope();
+                self.end_scope_preserving_result();
                 let end_jump = self.emit_jump(OpCode::Jump(0));
                 end_jumps.push(end_jump);
 
