@@ -190,12 +190,7 @@ impl Compiler {
 
     /// Build a strict-mode "unknown identifier" diagnostic, with a
     /// levenshtein-1 suggestion when one is available.
-    fn strict_unknown_identifier(
-        &self,
-        name: &str,
-        line: usize,
-        column: usize,
-    ) -> SyntaxError {
+    fn strict_unknown_identifier(&self, name: &str, line: usize, column: usize) -> SyntaxError {
         let mut err = SyntaxError::new(line, column, format!("unknown identifier `{}`", name))
             .with_length(name.len())
             .with_note(
@@ -269,8 +264,7 @@ impl Compiler {
 
         // (2) name must be declared
         let Some(sig) = schema.events.get(&event_name) else {
-            let candidates: Vec<&str> =
-                schema.events.keys().map(|s| s.as_str()).collect();
+            let candidates: Vec<&str> = schema.events.keys().map(|s| s.as_str()).collect();
             let mut err = SyntaxError::new(
                 name_span.start_line,
                 name_span.start_column,
@@ -283,10 +277,7 @@ impl Compiler {
             {
                 err = err.with_help(format!("did you mean `{}`?", suggestion));
             } else if !candidates.is_empty() {
-                err = err.with_help(format!(
-                    "declared events: {}",
-                    candidates.join(", ")
-                ));
+                err = err.with_help(format!("declared events: {}", candidates.join(", ")));
             }
             return Err(VMError::StrictMode(err));
         };
@@ -680,7 +671,9 @@ impl Compiler {
     /// top-level local name-to-slot mapping so the caller can extract exported
     /// bindings from the VM stack after execution. Imported modules also get
     /// schema resolution (so an imported file's strict-mode errors surface).
-    pub fn compile_import(module: &Function) -> Result<(FunctionProto, Vec<(String, u8)>), VMError> {
+    pub fn compile_import(
+        module: &Function,
+    ) -> Result<(FunctionProto, Vec<(String, u8)>), VMError> {
         let schema = ModuleSchema::from_module(module).map_err(VMError::StrictMode)?;
         let mut compiler = Compiler::new("<import>".to_string(), 0);
         compiler.schema = Some(Arc::new(schema));
@@ -780,9 +773,7 @@ impl Compiler {
                 // (M2 ships the literal-only check).
                 if matches!(
                     decl.get_value(),
-                    crate::parser::Expression::Literal(
-                        crate::parser::Literal::Function(_)
-                    )
+                    crate::parser::Expression::Literal(crate::parser::Literal::Function(_))
                 ) {
                     self.fn_typed_locals.insert(name.clone());
                 }
@@ -896,7 +887,10 @@ impl Compiler {
     // Import
     // -----------------------------------------------------------------------
 
-    fn compile_import_stmt(&mut self, import: &crate::parser::ImportStatement) -> Result<(), VMError> {
+    fn compile_import_stmt(
+        &mut self,
+        import: &crate::parser::ImportStatement,
+    ) -> Result<(), VMError> {
         let meta = ImportMeta {
             names: import.get_names().clone(),
             path: import.get_path().to_string(),
@@ -1174,10 +1168,10 @@ impl Compiler {
 
                     // Emit the wrapper Flex: push "children" key, compile
                     // the children expression, then pop the context.
-                    let flex_const =
-                        self.chunk().add_constant(Value::String("Flex".to_string()));
-                    let children_key =
-                        self.chunk().add_constant(Value::String("children".to_string()));
+                    let flex_const = self.chunk().add_constant(Value::String("Flex".to_string()));
+                    let children_key = self
+                        .chunk()
+                        .add_constant(Value::String("children".to_string()));
                     self.emit(OpCode::Constant(children_key));
                     self.compile_expression(children_expr)?;
                     self.emit(OpCode::PopContext);
@@ -1194,8 +1188,7 @@ impl Compiler {
 
                 // Push each property: key constant, then value.
                 for (key_ident, value_expr) in &widget.properties {
-                    let key_const =
-                        self.chunk().add_constant(Value::String(key_ident.get()));
+                    let key_const = self.chunk().add_constant(Value::String(key_ident.get()));
                     self.emit(OpCode::Constant(key_const));
                     self.compile_expression(value_expr)?;
                 }
@@ -1223,12 +1216,8 @@ impl Compiler {
                 Ok(())
             }
             Expression::Match(m) => self.compile_match(m),
-            Expression::PrefixIncrement(inc) => {
-                self.compile_increment(&inc.identifier, true)
-            }
-            Expression::PostfixIncrement(inc) => {
-                self.compile_increment(&inc.identifier, false)
-            }
+            Expression::PrefixIncrement(inc) => self.compile_increment(&inc.identifier, true),
+            Expression::PostfixIncrement(inc) => self.compile_increment(&inc.identifier, false),
         }
     }
 
@@ -1350,8 +1339,7 @@ impl Compiler {
             Literal::Map(map) => {
                 let n = map.properties.len() as u16;
                 for (key_ident, value_expr) in &map.properties {
-                    let key_const =
-                        self.chunk().add_constant(Value::String(key_ident.get()));
+                    let key_const = self.chunk().add_constant(Value::String(key_ident.get()));
                     self.emit(OpCode::Constant(key_const));
                     self.compile_expression(value_expr)?;
                 }
@@ -1414,7 +1402,11 @@ impl Compiler {
 
         // Compile the body as a parameterless child function.
         let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
-        let synthetic_name = if is_mount { "<on_mount>" } else { "<on_unmount>" };
+        let synthetic_name = if is_mount {
+            "<on_mount>"
+        } else {
+            "<on_unmount>"
+        };
         let mut child = parent.child(synthetic_name.to_string(), 0);
         // Reserve slot 0 for the callee, same as compile_function.
         child.add_param_local(String::new());
@@ -1446,10 +1438,7 @@ impl Compiler {
     /// as a sub-FunctionProto (with `in_effect_body = true` so
     /// nested cleanup statements emit RegisterEffectCleanup),
     /// then emits Closure(idx) + RegisterEffect.
-    fn compile_effect(
-        &mut self,
-        effect: &crate::parser::EffectStatement,
-    ) -> Result<(), VMError> {
+    fn compile_effect(&mut self, effect: &crate::parser::EffectStatement) -> Result<(), VMError> {
         // Allocate hook id BEFORE the dep + body compile. This
         // guarantees stable ordering even if a dep expression
         // somehow contains a nested fn that has its own effects
@@ -1457,9 +1446,7 @@ impl Compiler {
         let hook_id = self.next_effect_hook_id;
         self.next_effect_hook_id += 1;
         let dep_count: u8 = effect.deps.len().try_into().map_err(|_| {
-            VMError::InvalidOperation(
-                "effect cannot have more than 255 deps".to_string(),
-            )
+            VMError::InvalidOperation("effect cannot have more than 255 deps".to_string())
         })?;
 
         // Phase 2 design diagnostic #2: deps must be primitive
@@ -1507,11 +1494,7 @@ impl Compiler {
     /// Identifier chains and call-result deps escape detection
     /// — runtime equality on those values would be undefined
     /// but not a panic, so we accept them silently for v1.
-    fn check_dep_type(
-        &self,
-        dep: &crate::parser::Expression,
-        hook_id: u16,
-    ) -> Result<(), VMError> {
+    fn check_dep_type(&self, dep: &crate::parser::Expression, hook_id: u16) -> Result<(), VMError> {
         use crate::parser::{Expression, Literal};
         let bad_name: Option<&str> = match dep {
             Expression::Literal(Literal::Function(_)) => Some("fn"),

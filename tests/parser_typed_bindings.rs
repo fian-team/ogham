@@ -124,7 +124,10 @@ fn map_string_to_string() {
     };
     assert_eq!(
         decl.fields[0].ty,
-        TypeRef::Map(KeyType::String, Box::new(TypeRef::Primitive(PrimType::String)))
+        TypeRef::Map(
+            KeyType::String,
+            Box::new(TypeRef::Primitive(PrimType::String))
+        )
     );
 }
 
@@ -321,7 +324,10 @@ fn events_with_record_args_parse() {
         panic!()
     };
     assert_eq!(decl.events.len(), 2);
-    assert_eq!(decl.events[0].args[0], TypeRef::Record("RgbColor".to_string()));
+    assert_eq!(
+        decl.events[0].args[0],
+        TypeRef::Record("RgbColor".to_string())
+    );
     assert_eq!(decl.events[1].args[0], TypeRef::Record("Item".to_string()));
 }
 

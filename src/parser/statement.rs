@@ -51,11 +51,7 @@ impl Statement {
         })
     }
 
-    pub fn new_declare_state(
-        identifier: &Identifier,
-        value: Expression,
-        span: Span,
-    ) -> Statement {
+    pub fn new_declare_state(identifier: &Identifier, value: Expression, span: Span) -> Statement {
         Statement::DeclareState(DeclareStateStatement {
             identifier: identifier.clone(),
             value,

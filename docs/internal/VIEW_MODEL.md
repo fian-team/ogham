@@ -213,11 +213,21 @@ per-frame. (Untold Lore today passes `ruleset`, `item_registry`,
 frame purely for lack of a scope to hang them on.) Assembling the chain
 during traversal (rather than storing parent pointers) keeps the view
 tree a clean ownership tree with no cycles, no `Rc`/`RefCell`, and no
-aliasing; the borrow lives exactly as long as one render pass. This is
-INTENT §2's `GetState → GetHostState` fall-through generalized up the
-tree — the *single* place the engine's state lookup is extended.
+aliasing; the borrow lives exactly as long as one render pass. This
+generalizes INTENT §2's `GetState → GetHostState` fall-through up the
+tree — but it lands entirely in the **view layer, with zero engine
+change** (confirmed in implementation): a leaf resolves its declared
+requirements against the borrowed chain and `inject_host_state_if_changed`
+them into its runtime; the VM's `GetHostState` opcode still reads the
+runtime's own host-state map, untouched. Pull-by-reference falls out for
+free — only the keys a leaf's schema declares are ever resolved — and
+diff-aware injection means an unchanged value costs nothing downstream.
+The engine stays a single-instance black box (Tenet 2 holds *literally*).
 
 **Drift indicators:**
+- Scope-chain resolution pushed *into* the VM (a new opcode, a chain
+  threaded through `GetHostState`) instead of resolved in the view layer
+  and injected — the engine must stay untouched (Tenet 2).
 - Parent back-pointers or `Rc<RefCell<Scope>>` to make ancestor reads
   work.
 - Re-rendering every view when any scope changes (instead of only views
@@ -253,7 +263,25 @@ failure (Tenet 10), never a silent default. A requirement that is
 `none`, which the author must handle in-language — there is no third,
 silent path between "caught error" and "explicit `none`."
 
+"Verified at mount" is literal and load-bearing: resolution happens
+**before the instance's first execution**, not during it. A leaf that
+requires host_state is constructed *deferred* — its requirements are read
+off the schema (no execution needed), resolved against the chain, and
+seeded into the runtime config; only then does the module run. So a
+module that *reads* a required field can never execute against an
+unprovided scope: a missing required provider fails the leaf at mount
+*before any code runs* (it cannot crash on an unset field), and an
+optional resolves to `none` first. A leaf the host has *already* built
+(no required host_state, or values it supplied itself) mounts eagerly;
+the two paths differ only in *when* construction happens, not in the
+resolution rule. Because lifetime-nesting (Tenet 4) keeps an ancestor
+provider live for the descendant's whole life, a requirement that
+resolved at mount stays resolved — the check is needed once.
+
 **Drift indicators:**
+- A required-host_state leaf executed *before* its requirements resolve
+  (so a missing provider surfaces as a runtime crash, not a mount-time
+  caught failure).
 - `host_state` treated as "what my constructor handed me" rather than
   "what must be in scope."
 - Two parallel state-delivery systems (ambient pulled from chain; typed
@@ -347,13 +375,30 @@ and top-level views within the application. Arrive → mount, depart →
 exit-then-drop, replace-at-slot → strict swap, reorder → preserved by
 key, rapid change → latest-wins, revert-mid-exit → cancel and unwind.
 
+Those last two cases — "depart → exit-then-drop" (coexisting siblings)
+and "replace-at-slot → strict swap" (one occupant at a time) — are not a
+contradiction but **two policies of the one reconciler**, selected per
+stack: `StackPolicy::Layered` for coexisting z-ordered layers (a HUD with
+a modal above it; both live, exits fade in place) and `StackPolicy::Strict`
+for single-occupancy where the incoming view does not mount until the
+outgoing one's exit settles (fullscreen screen swaps — the exact semantics
+UL's hand-rolled `OghamPresence` defined). A strict stack is one logical
+slot; the application's top stack is strict (screens), with layered
+branches above for overlays. (Multiple *independent* strict slots within
+one stack is the deferred "slot" refinement, not this; see Deferred.)
+
 **Why:** the embedder's hand-rolled instance state machine is just the
 widget reconciler one scale up; unifying them means one set of
 transition semantics to learn, test, and trust, and it lets exit
 animations and frosted-glass backdrops compose across layers (a lower
-layer has painted before an upper layer's backdrop samples it).
+layer has painted before an upper layer's backdrop samples it). The two
+policies keep that single transition machine while admitting the only two
+shapes an embedder actually needs (exclusive screens, coexisting layers),
+rather than forking the reconciler.
 
 **Drift indicators:**
+- A second reconciler (or a bespoke "active screen" path) for one policy
+  instead of both being modes of the same `ChildStack`.
 - A view-stack reconciler with different transition semantics than the
   widget reconciler.
 - Child-view matching by position when keys are present.
@@ -448,12 +493,21 @@ pub struct View {
 }
 
 enum ViewBody {
-    Leaf(Instance),       // renders one source = one layer
+    Leaf(LeafState),      // renders one source = one layer
     Branch(ChildStack),   // orders child views; renders nothing itself
 }
 
+// A leaf is built eagerly (host-supplied) or deferred until mount so its
+// host_state requirements resolve before first execution (Tenet 6).
+enum LeafState {
+    Pending(LeafSpec),    // source + config; resolved, seeded, executed at mount
+    Mounted(Instance),
+}
+
 // ── the recursive child manager (reconcile-by-key, one scale up) ──────
-struct ChildStack { children: Vec<Child> }   // ordered bottom→top
+// Policy selects the two transition shapes of the one reconciler (Tenet 9).
+struct ChildStack { children: Vec<Child>, policy: StackPolicy }  // ordered bottom→top
+enum StackPolicy { Strict, Layered }  // exclusive screens | coexisting layers
 
 struct Child {
     view:      View,         // recursive
@@ -491,17 +545,25 @@ impl<'a> ScopeChain<'a> {
 }
 ```
 
-The reconcile/tick recursion: `Application::tick` reconciles `top`
-against the host's desired set, roots a `ScopeChain` at the shell, and
-ticks each live child; a `Branch` ticks its children with the same
-chain; a `Leaf` pushes its own scope onto the chain and reconciles its
-`Instance` against it (`host_state` requirements resolve via
-`ScopeChain::get`). Frozen children (under a `Modal`) skip the tick. A
-`Leaf` whose requirement fails to resolve, or whose `Instance` faults
-during its tick (isolated per-instance), enters `Failed`; the failure
-climbs to the nearest ancestor holding a `Fallback`-role child, which
-the reconciler swaps in (Tenet 10). `Application`'s root fallback bounds
-any failure that reaches the top.
+The reconcile/tick recursion: `reconcile` (cheap, chain-free) just
+records the host's desired set — it can run at any level, so a branch's
+children are reconciled by the host through it. The chain is assembled in
+`tick`: `Application::tick` roots a `ScopeChain` at the shell and ticks
+`top`; each view pushes its own scope and ticks under the extended chain
+— a `Branch` recurses; a `Leaf` resolves its `host_state` requirements
+via `ScopeChain::get`, injects them diff-aware, and re-renders. A
+`Pending` leaf is *constructed here, at its first tick* — requirements
+resolved and seeded before the module's first execution (Tenet 6). A
+frozen strict pending (and a dormant fallback) skip the tick until
+promoted/activated. A `Leaf` whose required requirement fails to resolve,
+or whose `Instance` panics or errors (isolated per-instance), enters
+`Failed`; the failure climbs to the nearest ancestor holding a
+`Fallback`-role child, which the reconciler swaps in (Tenet 10).
+`Application`'s root fallback bounds any failure that reaches the top.
+
+(`View`, `ChildStack`, and `Application` are generic over the key type
+`K` — the embedder supplies its own `ViewKey`; see Open Questions 5,
+resolved.)
 
 ---
 
@@ -594,17 +656,23 @@ changes the shape above.
 3. **`TypedOgham<S, M>` → typed view.** The existing typed handle maps
    onto a leaf view (`S` = its required scope shape, `M` = its emitted
    events). Settle whether the typed surface lives on `View`, on
-   `Instance`, or on a `TypedView` wrapper. Confirm `M` is the *single*
-   outbound channel (Tenet 8) and that today's `*Outcome` enums fold into
-   it, and decide how the owner drains the typed queue each tick (poll
-   after `tick` vs. a handler invoked during it).
+   `Instance`, or on a `TypedView` wrapper, and confirm `M` is the
+   *single* outbound channel (Tenet 8) that today's `*Outcome` enums fold
+   into. *Drain mechanism decided:* **poll after `tick`** (not a handler
+   invoked during it), so emission sees per-frame context; surface
+   placement is the open part (lands with the UL outbound collapse).
 4. **Drop vs. keep-warm policy** for a view leaving the desired set
-   (per-view attribute, or branch-wide default).
-5. **Key type** for `ViewKey` — generic `K` (embedder type-safety) vs. a
-   fixed key — and whether it is uniform across all scales.
-6. **Pure-scope branch state authorship** — confirm branches that
-   provide scope state but render nothing are first-class, and that
-   their state is written through the same host path as leaves'.
+   (per-view attribute, or branch-wide default). *(Current behavior: a
+   departed view exits-then-drops; keep-warm is the additive variant.)*
+5. ~~**Key type** for `ViewKey`.~~ **Resolved:** generic `K: Eq + Hash +
+   Clone`, uniform across all scales (`View<K>`, `ChildStack<K>`,
+   `Application<K>`); the embedder supplies its own key enum.
+6. **Pure-scope branch state authorship.** *Confirmed first-class* (the
+   implementation's proof has a branch providing a `session` value read
+   by two leaf descendants); a branch and a leaf write their scope through
+   the same host path (`scope.provide(...)`). Residual: the ergonomic API
+   for the host to *update* a provider scope each frame (today a test-only
+   accessor) — lands with the UL integration.
 
 ---
 

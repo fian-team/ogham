@@ -93,7 +93,8 @@ pub fn parse_check(args: &[String]) -> Result<CheckArgs, ParseError> {
             other => {
                 if path.is_some() {
                     return Err(ParseError::Usage(
-                        "more than one positional path given; pass exactly one or use `--all`".into(),
+                        "more than one positional path given; pass exactly one or use `--all`"
+                            .into(),
                     ));
                 }
                 path = Some(PathBuf::from(other));
@@ -174,9 +175,18 @@ mod tests {
 
     #[test]
     fn top_level_help_is_help_requested() {
-        assert!(matches!(parse(&s(&["--help"])), Err(ParseError::HelpRequested(_))));
-        assert!(matches!(parse(&s(&["-h"])), Err(ParseError::HelpRequested(_))));
-        assert!(matches!(parse(&s(&["help"])), Err(ParseError::HelpRequested(_))));
+        assert!(matches!(
+            parse(&s(&["--help"])),
+            Err(ParseError::HelpRequested(_))
+        ));
+        assert!(matches!(
+            parse(&s(&["-h"])),
+            Err(ParseError::HelpRequested(_))
+        ));
+        assert!(matches!(
+            parse(&s(&["help"])),
+            Err(ParseError::HelpRequested(_))
+        ));
     }
 
     #[test]

@@ -20,8 +20,7 @@
 //! for the implementation plan this code follows.
 
 use std::marker::PhantomData;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::mpsc::Receiver;
 
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::error::RuntimeError;
@@ -156,7 +155,7 @@ impl Ogham {
         // and would have errored on `UndefinedVariable` for any
         // host_state field referenced at the top level.)
         let config = inject_initial_into_config::<S>(config, &initial_state);
-        let (config, rx) = wire_typed_handlers::<M>(config);
+        let (config, rx) = config.with_typed_events::<M>();
         let ogham = Ogham::watch(path, config)?;
         Ok(TypedOgham {
             inner: ogham,
@@ -180,7 +179,7 @@ impl Ogham {
         let parsed_schema = load_schema_or_runtime_err(LoadSource::Source(source))?;
         check_schemas_match::<S, M>(&parsed_schema)?;
         let config = inject_initial_into_config::<S>(config, &initial_state);
-        let (config, rx) = wire_typed_handlers::<M>(config);
+        let (config, rx) = config.with_typed_events::<M>();
         let ogham = Ogham::from_source(source, config)?;
         Ok(TypedOgham {
             inner: ogham,
@@ -189,6 +188,22 @@ impl Ogham {
             _phantom: PhantomData,
         })
     }
+}
+
+/// Validate that the `.ogh` file at `path` declares `host_state {}` / `events {}`
+/// matching the typed `S` / `M` pair — the same startup check
+/// [`Ogham::watch_typed`] runs — WITHOUT constructing a [`TypedOgham`]. Use this
+/// from a *decoupled* controller's `new()` (where the `Ogham` is owned elsewhere,
+/// e.g. a view-tree `Application`, and the host wires events via
+/// [`crate::runtime::config::RuntimeConfig::with_typed_events`]) so `.ogh`↔Rust
+/// schema drift fails loud at boot instead of degrading to dropped events.
+pub fn check_schemas_match_path<S, M>(path: &str) -> Result<(), RuntimeError>
+where
+    S: OghamState,
+    M: OghamMsg,
+{
+    let parsed = load_schema_or_runtime_err(LoadSource::Path(path))?;
+    check_schemas_match::<S, M>(&parsed)
 }
 
 enum LoadSource<'a> {
@@ -262,10 +277,8 @@ where
     // empty value is invisible at runtime. If anyone ever serializes
     // a runtime-synthesized manifest for debugging, that's the
     // caveat to be aware of.
-    let state_manifest =
-        crate::diagnostics::manifest::StateManifest::from_state::<S>("");
-    let events_manifest =
-        crate::diagnostics::manifest::EventsManifest::from_events::<M>("");
+    let state_manifest = crate::diagnostics::manifest::StateManifest::from_state::<S>("");
+    let events_manifest = crate::diagnostics::manifest::EventsManifest::from_events::<M>("");
 
     let diags = crate::diagnostics::check_against_manifest(
         parsed,
@@ -285,39 +298,3 @@ where
         Err(RuntimeError::SchemaMismatch(rendered))
     }
 }
-
-/// Build a `RuntimeConfig` with one event handler per declared
-/// `M` variant; each handler parses args via
-/// `M::try_from_ogham_event` and pushes the resulting message
-/// into the returned channel.
-///
-/// `Sender<M>` is cloned per handler so each can outlive the
-/// others independently. The receiver is owned by the
-/// `TypedOgham` instance.
-fn wire_typed_handlers<M: OghamMsg>(
-    mut config: RuntimeConfig,
-) -> (RuntimeConfig, Receiver<M>) {
-    let (tx, rx) = channel::<M>();
-    // The compiler closure stores the sender; cloning per handler
-    // keeps the channel alive even when individual handlers go
-    // away. Wrap in a Mutex so the closure satisfies Sync.
-    let tx = std::sync::Arc::new(Mutex::new(tx));
-    let event_names: Vec<String> = M::ogham_events().keys().cloned().collect();
-    for name in event_names {
-        let tx_for_handler = tx.clone();
-        let event_name = name.clone();
-        config = config.with_event_handler(
-            name,
-            move |args: &[Value]| -> Result<Value, String> {
-                if let Some(msg) = M::try_from_ogham_event(&event_name, args) {
-                    if let Ok(sender) = tx_for_handler.lock() {
-                        let _ = sender.send(msg);
-                    }
-                }
-                Ok(Value::Void)
-            },
-        );
-    }
-    (config, rx)
-}
-

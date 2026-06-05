@@ -38,11 +38,9 @@ use std::io;
 use std::path::Path;
 
 use crate::parser::span::Span;
+use crate::parser::typed_bindings::{EventsDecl, FieldDecl, HostStateDecl, RecordDecl};
 use crate::parser::{Parser, SyntaxError};
 use crate::scanner::Scanner;
-use crate::parser::typed_bindings::{
-    EventsDecl, FieldDecl, HostStateDecl, RecordDecl,
-};
 
 // Re-export the type-universe items so callers (and the
 // derive macros) have one canonical import path:
@@ -193,20 +191,11 @@ impl ModuleSchema {
         for decl in &record_decl_order {
             let local_record_name = &decl.name;
             for field in &decl.fields {
-                resolve_type_ref(
-                    &field.ty,
-                    Some(local_record_name),
-                    &schema,
-                    field.span,
-                )?;
+                resolve_type_ref(&field.ty, Some(local_record_name), &schema, field.span)?;
                 // Also detect direct self-reference: a record may
                 // not contain itself non-optionally,
                 // non-collectionally.
-                check_no_direct_self_reference(
-                    &field.ty,
-                    local_record_name,
-                    field.span,
-                )?;
+                check_no_direct_self_reference(&field.ty, local_record_name, field.span)?;
             }
         }
         if let Some(hs) = &schema.host_state {
@@ -256,10 +245,7 @@ fn collect_fields(
             return Err(SyntaxError::new(
                 field.span.start_line,
                 field.span.start_column,
-                format!(
-                    "duplicate field `{}` in `{}`",
-                    field.name, container_name
-                ),
+                format!("duplicate field `{}` in `{}`", field.name, container_name),
             )
             .with_length(field.name.len())
             .with_note("each field name in a record or host_state must be unique"));
@@ -390,10 +376,7 @@ fn check_no_direct_self_reference(
                 Err(SyntaxError::new(
                     span.start_line,
                     span.start_column,
-                    format!(
-                        "record `{}` directly contains itself",
-                        enclosing_record
-                    ),
+                    format!("record `{}` directly contains itself", enclosing_record),
                 )
                 .with_length(enclosing_record.len())
                 .with_note(
@@ -625,7 +608,11 @@ pub trait FromOghamValue: Sized {
 
 impl FromOghamValue for i32 {
     fn from_ogham_value(v: &Value) -> Option<Self> {
-        if let Value::Integer(n) = v { Some(*n) } else { None }
+        if let Value::Integer(n) = v {
+            Some(*n)
+        } else {
+            None
+        }
     }
 }
 
@@ -651,13 +638,21 @@ impl FromOghamValue for f64 {
 
 impl FromOghamValue for bool {
     fn from_ogham_value(v: &Value) -> Option<Self> {
-        if let Value::Boolean(b) = v { Some(*b) } else { None }
+        if let Value::Boolean(b) = v {
+            Some(*b)
+        } else {
+            None
+        }
     }
 }
 
 impl FromOghamValue for String {
     fn from_ogham_value(v: &Value) -> Option<Self> {
-        if let Value::String(s) = v { Some(s.clone()) } else { None }
+        if let Value::String(s) = v {
+            Some(s.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -1055,8 +1050,8 @@ mod tests {
 
     #[test]
     fn load_schema_surfaces_syntax_errors() {
-        let err = load_schema_from_source("host_state { x: int };\nhost_state { y: int };")
-            .unwrap_err();
+        let err =
+            load_schema_from_source("host_state { x: int };\nhost_state { y: int };").unwrap_err();
         match err {
             SchemaLoadError::Syntax(s) => {
                 assert!(s.message.contains("duplicate `host_state`"))
@@ -1076,10 +1071,7 @@ mod tests {
 
     #[test]
     fn load_schema_surfaces_resolver_errors() {
-        let err = load_schema_from_source(
-            "host_state { player: UnknownRecord };",
-        )
-        .unwrap_err();
+        let err = load_schema_from_source("host_state { player: UnknownRecord };").unwrap_err();
         match err {
             SchemaLoadError::Syntax(s) => {
                 assert!(s.message.contains("unknown record `UnknownRecord`"))
@@ -1107,11 +1099,9 @@ mod tests {
                 decl_span: None,
             },
         );
-        let s = load_schema_from_source_with_imports(
-            "host_state { item: ImportedItem };",
-            &imports,
-        )
-        .unwrap();
+        let s =
+            load_schema_from_source_with_imports("host_state { item: ImportedItem };", &imports)
+                .unwrap();
         assert!(s.lookup_record("ImportedItem").is_some());
     }
 
@@ -1138,7 +1128,11 @@ mod tests {
         assert!(err.message.contains("unknown record `Plyer`"));
         // The error should point at the field's span, not the
         // record declaration's span.
-        assert!(err.line >= 4, "expected error on line ≥ 4 (the field), got line {}", err.line);
+        assert!(
+            err.line >= 4,
+            "expected error on line ≥ 4 (the field), got line {}",
+            err.line
+        );
     }
 
     // The HashSet import below is unused but kept to demonstrate

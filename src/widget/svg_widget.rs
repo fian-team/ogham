@@ -187,8 +187,8 @@ impl Widget for SvgWidget {
                 (Some(a), Some(b)) => a.r != b.r || a.g != b.g || a.b != b.b || a.a != b.a,
                 _ => true, // One is Some, one is None
             };
-            let dims_changed = self.width != new_svg_widget.width
-                || self.height != new_svg_widget.height;
+            let dims_changed =
+                self.width != new_svg_widget.width || self.height != new_svg_widget.height;
 
             if path_changed || color_changed {
                 self.path = new_svg_widget.path.clone();

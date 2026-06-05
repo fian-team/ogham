@@ -263,11 +263,7 @@ impl Event {
     /// Phase 3 M1: construct a drag-event (`drag_start`,
     /// `drag_move`, `drag_end`) carrying the current cursor
     /// point and the originator's `drag_payload` Value.
-    pub fn drag(
-        name: &str,
-        point: Point,
-        payload: Option<crate::runtime::value::Value>,
-    ) -> Self {
+    pub fn drag(name: &str, point: Point, payload: Option<crate::runtime::value::Value>) -> Self {
         Self {
             name: name.to_string(),
             point: Some(point),
@@ -298,7 +294,10 @@ impl Event {
     pub fn shift_point(&self, dx: f32, dy: f32) -> Event {
         Self {
             name: self.name.clone(),
-            point: self.point.as_ref().map(|p| Point::new(p.x() + dx, p.y() + dy)),
+            point: self
+                .point
+                .as_ref()
+                .map(|p| Point::new(p.x() + dx, p.y() + dy)),
             keyboard_data: self.keyboard_data.clone(),
             callback: None,
             value: self.value.clone(),

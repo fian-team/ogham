@@ -234,10 +234,7 @@ mod tests {
 
     fn sample_state() -> StateManifest {
         let mut fields = BTreeMap::new();
-        fields.insert(
-            "selected".into(),
-            ManifestField { ty: "int".into() },
-        );
+        fields.insert("selected".into(), ManifestField { ty: "int".into() });
         fields.insert(
             "items".into(),
             ManifestField {
@@ -258,10 +255,7 @@ mod tests {
 
     fn sample_events() -> EventsManifest {
         let mut events = BTreeMap::new();
-        events.insert(
-            "open_chest".into(),
-            ManifestEvent { args: vec![] },
-        );
+        events.insert("open_chest".into(), ManifestEvent { args: vec![] });
         events.insert(
             "take_item".into(),
             ManifestEvent {
@@ -375,8 +369,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir()
-            .join(format!("ogham-manifest-test-{}-{}", std::process::id(), n));
+        let path =
+            std::env::temp_dir().join(format!("ogham-manifest-test-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&path).unwrap();
         path
     }

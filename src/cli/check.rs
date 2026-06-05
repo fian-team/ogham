@@ -48,10 +48,7 @@ pub fn run(args: CheckArgs) -> Result<i32, RunError> {
         let abs = match path.canonicalize() {
             Ok(p) => p,
             Err(e) => {
-                return Err(RunError::Io(format!(
-                    "resolving {}: {e}",
-                    path.display()
-                )));
+                return Err(RunError::Io(format!("resolving {}: {e}", path.display())));
             }
         };
         let diags = check_one(&abs, &registry, !args.no_staleness_check)?;
@@ -119,9 +116,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
         let ty = entry.file_type()?;
         if ty.is_dir() {
             walk(&path, out)?;
-        } else if ty.is_file()
-            && path.extension().and_then(|s| s.to_str()) == Some("ogh")
-        {
+        } else if ty.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ogh") {
             out.push(path);
         }
     }

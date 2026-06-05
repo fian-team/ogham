@@ -37,10 +37,7 @@ fn simple_record_schema_is_correct() {
         schema.fields["name"].ty,
         TypeRef::Primitive(PrimType::String)
     );
-    assert_eq!(
-        schema.fields["count"].ty,
-        TypeRef::Primitive(PrimType::Int)
-    );
+    assert_eq!(schema.fields["count"].ty, TypeRef::Primitive(PrimType::Int));
     assert_eq!(
         schema.fields["available"].ty,
         TypeRef::Primitive(PrimType::Bool)
@@ -87,7 +84,10 @@ fn nested_record_schema_resolves_to_container_types() {
     );
     assert_eq!(
         schema.fields["nicknames"].ty,
-        TypeRef::Map(KeyType::String, Box::new(TypeRef::Primitive(PrimType::String)))
+        TypeRef::Map(
+            KeyType::String,
+            Box::new(TypeRef::Primitive(PrimType::String))
+        )
     );
 }
 
@@ -289,7 +289,10 @@ fn ogham_msg_unknown_event_returns_none() {
 fn ogham_msg_wrong_arity_returns_none() {
     let parsed = SettingsMsg::try_from_ogham_event(
         "set_master_volume",
-        &[Value::String("a".to_string()), Value::String("b".to_string())],
+        &[
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+        ],
     );
     assert!(parsed.is_none());
 }

@@ -94,8 +94,8 @@ fn contextmenu_suppressed_under_block_policy_portal() {
     // walker; verifies the suppression applies to right-click
     // dispatch too, not just left-click.
     use ogham::widget::portal_layer::{CursorPreference, PortalLayer};
-    use ogham::widget::PortalEntry;
     use ogham::widget::rect::Rect;
+    use ogham::widget::PortalEntry;
 
     // Base-tree widget with a contextmenu listener that
     // SHOULD NOT fire when a Block-policy portal is open.

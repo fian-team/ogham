@@ -23,6 +23,7 @@ use crate::widget::builder::WidgetRegistry;
 
 pub mod compiler;
 pub mod config;
+pub mod descriptor;
 pub mod environment;
 pub mod error;
 pub mod host_state;
@@ -31,7 +32,6 @@ pub mod ops;
 pub mod schema;
 pub mod value;
 pub mod vm;
-pub mod descriptor;
 
 pub use host_state::{HostStateSink, HostStateSinkExt, IntoHostValue};
 
@@ -124,7 +124,10 @@ impl StateManager {
     /// The diff `mounted = current − previous`, `unmounted =
     /// previous − current` is computed by callers as needed.
     pub(crate) fn rotate_active_paths(&mut self) {
-        std::mem::swap(&mut self.active_state_paths, &mut self.previous_active_paths);
+        std::mem::swap(
+            &mut self.active_state_paths,
+            &mut self.previous_active_paths,
+        );
         self.active_state_paths.clear();
     }
 
@@ -166,8 +169,7 @@ impl StateManager {
         for key in effect_keys {
             if let Some(slot) = self.effects.remove(&key) {
                 if let Some(cleanup) = slot.pending_cleanup {
-                    self.pending_effect_cleanups
-                        .push((key.0, key.1, cleanup));
+                    self.pending_effect_cleanups.push((key.0, key.1, cleanup));
                 }
             }
         }
@@ -457,10 +459,7 @@ impl Runtime {
         let unmounts = std::mem::take(&mut self.state.pending_unmounts);
         for (path, hook_id, closure) in unmounts {
             if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
-                self.log_lifecycle_error(format!(
-                    "on_unmount at {}#{}: {:?}",
-                    path, hook_id, e
-                ));
+                self.log_lifecycle_error(format!("on_unmount at {}#{}: {:?}", path, hook_id, e));
             }
         }
         // M1: pending_effect_cleanups is always empty (effects
@@ -493,10 +492,7 @@ impl Runtime {
         let mounts = std::mem::take(&mut self.state.pending_mounts);
         for (path, hook_id, closure) in mounts {
             if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
-                self.log_lifecycle_error(format!(
-                    "on_mount at {}#{}: {:?}",
-                    path, hook_id, e
-                ));
+                self.log_lifecycle_error(format!("on_mount at {}#{}: {:?}", path, hook_id, e));
             }
         }
         // Phase 2 M2: fire each scheduled effect. The
@@ -514,10 +510,7 @@ impl Runtime {
             };
             self.current_firing_effect = Some(key.clone());
             if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
-                self.log_lifecycle_error(format!(
-                    "effect at {}#{}: {:?}",
-                    path, hook_id, e
-                ));
+                self.log_lifecycle_error(format!("effect at {}#{}: {:?}", path, hook_id, e));
             }
             self.current_firing_effect = None;
         }
@@ -555,12 +548,7 @@ impl Runtime {
         // disappear but became active again this render are
         // implicitly cancelled — remove their candidate so a
         // later flush_remaining doesn't fire a stale unmount.
-        let reappeared: Vec<String> = self
-            .state
-            .active_state_paths
-            .iter()
-            .cloned()
-            .collect();
+        let reappeared: Vec<String> = self.state.active_state_paths.iter().cloned().collect();
         for path in &reappeared {
             self.state.candidate_unmounts.remove(path);
         }
@@ -576,8 +564,7 @@ impl Runtime {
     /// claimed by a drain because the widget tree had nothing
     /// to drain) still get flushed.
     pub fn flush_remaining_unmount_candidates(&mut self) {
-        let remaining: Vec<String> =
-            self.state.candidate_unmounts.iter().cloned().collect();
+        let remaining: Vec<String> = self.state.candidate_unmounts.iter().cloned().collect();
         for path in remaining {
             self.state.flush_for_path_prefix(&path);
         }
@@ -711,10 +698,7 @@ impl Runtime {
     /// Inject multiple host state values at once. Only values that differ
     /// from the currently stored value are inserted, and `request_rerender`
     /// is called automatically if anything changed.
-    pub fn inject_host_state_batch(
-        &mut self,
-        values: impl IntoIterator<Item = (String, Value)>,
-    ) {
+    pub fn inject_host_state_batch(&mut self, values: impl IntoIterator<Item = (String, Value)>) {
         let mut changed = false;
         for (key, value) in values {
             if self.host_state.get(&key) != Some(&value) {
@@ -1097,8 +1081,7 @@ mod tests {
     use super::*;
 
     fn run(source: &str) -> Value {
-        let mut runtime =
-            Runtime::from_source(source, None).expect("parse and create runtime");
+        let mut runtime = Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         runtime.execute_module(&module).expect("execute")
     }
@@ -1207,8 +1190,7 @@ let main = fn () {
     return count;
 };
 "#;
-        let mut runtime =
-            Runtime::from_source(source, None).expect("parse and create runtime");
+        let mut runtime = Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         let first = runtime.execute_module(&module).expect("first execute");
         assert_eq!(first, Value::Integer(1));
@@ -1248,8 +1230,7 @@ let main = fn () {
   value
 };
 "#;
-        let mut runtime =
-            Runtime::from_source(source, None).expect("parse and create runtime");
+        let mut runtime = Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         let result = runtime.execute_module(&module).expect("execute");
         assert_eq!(result, Value::Integer(5));
@@ -1295,12 +1276,18 @@ let main = fn () {
 
         sm.rotate_active_paths();
 
-        assert!(sm.active_state_paths.is_empty(),
-            "current should be cleared after rotation");
-        assert!(sm.previous_active_paths.contains("frame_n_path"),
-            "previous should now hold frame N's paths");
-        assert!(!sm.previous_active_paths.contains("stale"),
-            "previous's prior contents should be discarded");
+        assert!(
+            sm.active_state_paths.is_empty(),
+            "current should be cleared after rotation"
+        );
+        assert!(
+            sm.previous_active_paths.contains("frame_n_path"),
+            "previous should now hold frame N's paths"
+        );
+        assert!(
+            !sm.previous_active_paths.contains("stale"),
+            "previous's prior contents should be discarded"
+        );
     }
 
     #[test]
@@ -1314,13 +1301,17 @@ let main = fn () {
         sm.active_state_paths.insert("a".to_string());
 
         // mounted = current − previous = {} (a was already active)
-        let mounted: HashSet<&String> = sm.active_state_paths
-            .difference(&sm.previous_active_paths).collect();
+        let mounted: HashSet<&String> = sm
+            .active_state_paths
+            .difference(&sm.previous_active_paths)
+            .collect();
         assert!(mounted.is_empty(), "no newly-mounted paths");
 
         // unmounted = previous − current = {"b"}
-        let unmounted: HashSet<&String> = sm.previous_active_paths
-            .difference(&sm.active_state_paths).collect();
+        let unmounted: HashSet<&String> = sm
+            .previous_active_paths
+            .difference(&sm.active_state_paths)
+            .collect();
         assert_eq!(unmounted.len(), 1);
         assert!(unmounted.contains(&"b".to_string()));
     }
@@ -1336,12 +1327,17 @@ let main = fn () {
         for op in [
             OpCode::RegisterMountHook(0),
             OpCode::RegisterUnmountHook(0),
-            OpCode::RegisterEffect { hook_id: 0, dep_count: 0 },
+            OpCode::RegisterEffect {
+                hook_id: 0,
+                dep_count: 0,
+            },
             OpCode::RegisterEffectCleanup,
         ] {
             let proto = proto_with_op(op);
-            assert!(Runtime::bytecode_uses_lifecycle(&proto),
-                "opcode should mark module as lifecycle-active");
+            assert!(
+                Runtime::bytecode_uses_lifecycle(&proto),
+                "opcode should mark module as lifecycle-active"
+            );
         }
     }
 
@@ -1350,8 +1346,10 @@ let main = fn () {
         let inner = proto_with_op(OpCode::RegisterMountHook(0));
         let mut outer = proto_with_op(OpCode::Void);
         outer.protos.push(inner);
-        assert!(Runtime::bytecode_uses_lifecycle(&outer),
-            "scan should recurse into sub-protos");
+        assert!(
+            Runtime::bytecode_uses_lifecycle(&outer),
+            "scan should recurse into sub-protos"
+        );
     }
 
     #[test]
@@ -1364,8 +1362,10 @@ let main = fn () {
         let mut parser = Parser::new(scanner.scan());
         let module = parser.parse().expect("parse");
         runtime.set_module(module);
-        assert!(!runtime.lifecycle_active,
-            "set_module should reset lifecycle_active to false");
+        assert!(
+            !runtime.lifecycle_active,
+            "set_module should reset lifecycle_active to false"
+        );
     }
 
     #[test]
@@ -1384,10 +1384,14 @@ let main = fn () {
 
         assert_eq!(sm.pending_unmounts.len(), 1);
         assert_eq!(sm.pending_unmounts[0].0, "panel");
-        assert!(!sm.unmount_hooks.contains_key(&("panel".to_string(), 0)),
-            "hook should be removed from persistent map");
-        assert!(sm.unmount_hooks.contains_key(&("other".to_string(), 0)),
-            "non-matching prefix should be untouched");
+        assert!(
+            !sm.unmount_hooks.contains_key(&("panel".to_string(), 0)),
+            "hook should be removed from persistent map"
+        );
+        assert!(
+            sm.unmount_hooks.contains_key(&("other".to_string(), 0)),
+            "non-matching prefix should be untouched"
+        );
     }
 
     #[test]
@@ -1412,12 +1416,19 @@ let main = fn () {
 
         sm.flush_for_path_prefix("panel");
 
-        assert_eq!(sm.pending_effect_cleanups.len(), 1,
-            "effect with pending_cleanup should be queued");
-        assert!(!sm.effects.contains_key(&("panel".to_string(), 0)),
-            "effect slot should be removed from persistent map");
-        assert!(sm.effects.contains_key(&("other".to_string(), 0)),
-            "non-matching prefix should be untouched");
+        assert_eq!(
+            sm.pending_effect_cleanups.len(),
+            1,
+            "effect with pending_cleanup should be queued"
+        );
+        assert!(
+            !sm.effects.contains_key(&("panel".to_string(), 0)),
+            "effect slot should be removed from persistent map"
+        );
+        assert!(
+            sm.effects.contains_key(&("other".to_string(), 0)),
+            "non-matching prefix should be untouched"
+        );
     }
 
     #[test]
@@ -1428,8 +1439,11 @@ let main = fn () {
             dummy_closure("h", vec!["any".to_string()]),
         );
         sm.flush_for_path_prefix("");
-        assert_eq!(sm.unmount_hooks.len(), 1,
-            "empty prefix must not match anything");
+        assert_eq!(
+            sm.unmount_hooks.len(),
+            1,
+            "empty prefix must not match anything"
+        );
         assert!(sm.pending_unmounts.is_empty());
     }
 
@@ -1458,7 +1472,9 @@ let main = fn () {
         // fn@1 itself is matched (exact).
         assert!(!sm.unmount_hooks.contains_key(&("fn@1".to_string(), 0)));
         // fn@1/inner@1 is matched (proper child path).
-        assert!(!sm.unmount_hooks.contains_key(&("fn@1/inner@1".to_string(), 0)));
+        assert!(!sm
+            .unmount_hooks
+            .contains_key(&("fn@1/inner@1".to_string(), 0)));
         // fn@10 must NOT be matched (numeric-prefix false positive
         // is the bug we're guarding against).
         assert!(
@@ -1529,8 +1545,7 @@ let main = fn () {
 let panel = fn () { Flex { children: [] } };
 let main  = fn () { panel() };
 "#;
-        let mut runtime = Runtime::from_source(source, None)
-            .expect("parse and create runtime");
+        let mut runtime = Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         let result = runtime.execute_module(&module).expect("execute");
 
@@ -1543,10 +1558,12 @@ let main  = fn () { panel() };
         // widget is produced from inside a function call, its
         // owned_path is non-empty. A widget produced at module
         // top level (no surrounding fn) would have owned_path = "".
-        assert!(!descriptor.owned_path.is_empty(),
+        assert!(
+            !descriptor.owned_path.is_empty(),
             "widget descriptor must capture a non-empty path \
              when produced from inside an fn call; got: {:?}",
-            descriptor.owned_path);
+            descriptor.owned_path
+        );
     }
 
     #[test]
@@ -1557,18 +1574,21 @@ let main  = fn () { panel() };
 let inner = fn () { return 1; };
 let main  = fn () { return inner(); };
 "#;
-        let mut runtime = Runtime::from_source(source, None)
-            .expect("parse and create runtime");
+        let mut runtime = Runtime::from_source(source, None).expect("parse and create runtime");
         let module = runtime.get_module().expect("module").clone();
         let _ = runtime.execute_module(&module).expect("execute");
 
-        assert!(!runtime.lifecycle_active,
-            "module without lifecycle opcodes should leave flag false");
+        assert!(
+            !runtime.lifecycle_active,
+            "module without lifecycle opcodes should leave flag false"
+        );
         // Note: without lifecycle_active, active_state_paths is only
         // populated by DeclareState — no `state` declarations here,
         // so it should be empty.
-        assert!(runtime.state.active_state_paths.is_empty(),
-            "Call opcode must not mark paths when lifecycle_active=false");
+        assert!(
+            runtime.state.active_state_paths.is_empty(),
+            "Call opcode must not mark paths when lifecycle_active=false"
+        );
     }
 
     // Suppress dead-code warnings for the synthetic helpers when

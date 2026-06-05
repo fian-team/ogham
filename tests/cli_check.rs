@@ -86,7 +86,11 @@ fn clean_run_exits_zero_with_no_output() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout),
     );
-    assert!(output.stdout.is_empty(), "expected empty stdout on clean check; got: {}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.stdout.is_empty(),
+        "expected empty stdout on clean check; got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]

@@ -328,10 +328,7 @@ mod tests {
 
     fn state_manifest_with_field(name: &str, ty: &str) -> StateManifest {
         let mut fields = BTreeMap::new();
-        fields.insert(
-            name.to_string(),
-            ManifestField { ty: ty.to_string() },
-        );
+        fields.insert(name.to_string(), ManifestField { ty: ty.to_string() });
         StateManifest {
             binding: "test::State".into(),
             ogh_module: "test.ogh".into(),
@@ -673,9 +670,15 @@ mod tests {
             assert_eq!(d.binding_id.as_deref(), Some("test::Combined"));
         }
         let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
-        assert!(messages.iter().any(|m| m.contains("selected") && m.contains("missing from Rust")));
-        assert!(messages.iter().any(|m| m.contains("extra_rust_only") && m.contains("not declared in the .ogh")));
-        assert!(messages.iter().any(|m| m.contains("event `open`") && m.contains("missing from Rust")));
+        assert!(messages
+            .iter()
+            .any(|m| m.contains("selected") && m.contains("missing from Rust")));
+        assert!(messages
+            .iter()
+            .any(|m| m.contains("extra_rust_only") && m.contains("not declared in the .ogh")));
+        assert!(messages
+            .iter()
+            .any(|m| m.contains("event `open`") && m.contains("missing from Rust")));
     }
 
     // ---- staleness check (P0-M5) ----------------------------------
@@ -684,11 +687,9 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "ogham-staleness-test-{}-{}",
-            std::process::id(),
-            n,
-        ));
+        let dir =
+            std::env::temp_dir()
+                .join(format!("ogham-staleness-test-{}-{}", std::process::id(), n,));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
     }
@@ -737,10 +738,8 @@ mod tests {
         std::fs::write(&manifest_path, b"{}").unwrap();
         std::fs::write(&rs_path, b"fn main() {}").unwrap();
         // Force the manifest's mtime to be earlier than the rs's.
-        let early = std::time::SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_secs(1_000_000);
-        let later = std::time::SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_secs(2_000_000);
+        let early = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let later = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000);
         std::fs::File::open(&manifest_path)
             .unwrap()
             .set_modified(early)
@@ -750,9 +749,12 @@ mod tests {
             .set_modified(later)
             .unwrap();
         let manifest = make_state_manifest_with_source(&rs_path.to_string_lossy());
-        let diag = check_staleness(&manifest_path, &manifest)
-            .expect("expected staleness diagnostic");
-        assert_eq!(diag.severity, crate::diagnostics::diagnostic::Severity::Warning);
+        let diag =
+            check_staleness(&manifest_path, &manifest).expect("expected staleness diagnostic");
+        assert_eq!(
+            diag.severity,
+            crate::diagnostics::diagnostic::Severity::Warning
+        );
         assert!(diag.message.contains("older than its Rust source"));
     }
 
@@ -762,10 +764,8 @@ mod tests {
         let rs_path = temp_path("source.rs");
         std::fs::write(&manifest_path, b"{}").unwrap();
         std::fs::write(&rs_path, b"fn main() {}").unwrap();
-        let early = std::time::SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_secs(1_000_000);
-        let later = std::time::SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_secs(2_000_000);
+        let early = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let later = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000);
         std::fs::File::open(&rs_path)
             .unwrap()
             .set_modified(early)

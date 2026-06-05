@@ -133,12 +133,7 @@ impl Widget for ImageWidget {
         self.layout.as_ref().is_some_and(|r| r.contains(point))
     }
 
-    fn render(
-        &self,
-        ctx: &mut dyn RenderContext,
-        _focused: bool,
-        image_cache: &mut ImageCache,
-    ) {
+    fn render(&self, ctx: &mut dyn RenderContext, _focused: bool, image_cache: &mut ImageCache) {
         if let Some(layout) = &self.layout {
             ctx.draw_image(
                 &self.path,

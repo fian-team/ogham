@@ -424,6 +424,15 @@ pub enum TextAlign {
     Right,
 }
 
+/// An outline stroked around glyphs, painted *under* the fill so the fill
+/// color stays crisp. `width` is the logical (unscaled) stroke width in
+/// pixels; it is DPI-scaled at paint time like any other stroke.
+#[derive(Debug, Clone, Copy)]
+pub struct TextOutline {
+    pub color: Color,
+    pub width: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct TextStyle {
     pub size: f32,
@@ -438,6 +447,8 @@ pub struct TextStyle {
     /// Optional registered font family name (e.g. `"heading"`).
     /// When `None`, the system default font is used.
     pub font: Option<String>,
+    /// Optional outline stroked around glyphs. `None` draws no outline.
+    pub outline: Option<TextOutline>,
 }
 
 impl TextStyle {
@@ -463,6 +474,10 @@ impl TextStyle {
 
     pub fn get_font(&self) -> Option<&str> {
         self.font.as_deref()
+    }
+
+    pub fn get_outline(&self) -> Option<TextOutline> {
+        self.outline
     }
 
     pub fn with_color(mut self, color: Color) -> Self {
@@ -513,6 +528,11 @@ impl TextStyleBuilder {
         self
     }
 
+    pub fn outline(mut self, outline: TextOutline) -> Self {
+        self.style.outline = Some(outline);
+        self
+    }
+
     pub fn build(self) -> TextStyle {
         self.style
     }
@@ -534,10 +554,15 @@ impl Default for TextStyle {
             weight: FontWeight::Normal,
             decoration: TextDecoration::None,
             align: TextAlign::Left,
-            // Preserve historical behavior: text expands to fill its allocation by default.
+            // Width grows to fill its column allocation (so left/center/right
+            // alignment has room to work); height shrinks to the glyph extent.
+            // A Grow height let a default Text claim its parent's full height,
+            // ballooning any Shrink row that held it — the height analogue of
+            // the flex shrink-measurement bug.
             width: Size::Grow(1.0),
-            height: Size::Grow(1.0),
+            height: Size::Shrink,
             font: None,
+            outline: None,
         }
     }
 }
@@ -562,7 +587,11 @@ impl Direction {
 
     /// The primary axis along which children are laid out.
     pub fn main_axis(&self) -> Axis {
-        if self.is_row() { Axis::Horizontal } else { Axis::Vertical }
+        if self.is_row() {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        }
     }
 
     /// The axis perpendicular to the main axis.
@@ -873,12 +902,20 @@ impl Default for CornerShape {
 impl CornerShape {
     /// Build a `Round(n)`, normalising `n <= 0` to `Sharp`.
     pub fn round(n: f32) -> Self {
-        if n > 0.0 { Self::Round(n) } else { Self::Sharp }
+        if n > 0.0 {
+            Self::Round(n)
+        } else {
+            Self::Sharp
+        }
     }
 
     /// Build a `Chamfer(n)`, normalising `n <= 0` to `Sharp`.
     pub fn chamfer(n: f32) -> Self {
-        if n > 0.0 { Self::Chamfer(n) } else { Self::Sharp }
+        if n > 0.0 {
+            Self::Chamfer(n)
+        } else {
+            Self::Sharp
+        }
     }
 
     /// Scalar size of this corner (radius for `Round`, chamfer depth for
@@ -933,20 +970,35 @@ impl Corners {
         bottom_left: CornerShape,
         bottom_right: CornerShape,
     ) -> Self {
-        Self { top_left, top_right, bottom_left, bottom_right }
+        Self {
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right,
+        }
     }
 
     /// All four corners rounded with the same radius (normalises to
     /// `Sharp` when `radius <= 0`).
     pub fn all_round(radius: f32) -> Self {
         let s = CornerShape::round(radius);
-        Self { top_left: s, top_right: s, bottom_left: s, bottom_right: s }
+        Self {
+            top_left: s,
+            top_right: s,
+            bottom_left: s,
+            bottom_right: s,
+        }
     }
 
     /// All four corners chamfered with the same size.
     pub fn all_chamfer(size: f32) -> Self {
         let s = CornerShape::chamfer(size);
-        Self { top_left: s, top_right: s, bottom_left: s, bottom_right: s }
+        Self {
+            top_left: s,
+            top_right: s,
+            bottom_left: s,
+            bottom_right: s,
+        }
     }
 
     /// True when every corner is `Sharp`. Lets render backends skip
@@ -1024,4 +1076,3 @@ pub enum TextDecoration {
     Underline,
     Strikethrough,
 }
-

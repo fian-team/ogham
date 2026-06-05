@@ -1,17 +1,27 @@
 use crate::runtime::{descriptor::WidgetDescriptor, error::VMError, value::Value, Runtime};
 use crate::widget::animation::{TransitionConfig, TransitionSet};
-use crate::widget::{
-    flex_widget::FlexWidget, grid_widget::{GridPlacement, GridStyle, GridWidget},
-    image_widget::ImageWidget, presence_widget::PresenceWidget, style::*,
-    svg_widget::SvgWidget, text_input_widget::TextInputWidget, text_widget::TextWidget, WidgetRef,
-};
 use crate::widget::event::Event;
+use crate::widget::{
+    flex_widget::FlexWidget,
+    grid_widget::{GridPlacement, GridStyle, GridWidget},
+    image_widget::ImageWidget,
+    presence_widget::PresenceWidget,
+    style::*,
+    svg_widget::SvgWidget,
+    text_input_widget::TextInputWidget,
+    text_widget::TextWidget,
+    WidgetRef,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// A factory function that constructs a `WidgetRef` from a runtime descriptor.
 pub type WidgetFactory = Arc<
-    dyn Fn(&WidgetRegistry, &Arc<Mutex<Runtime>>, &WidgetDescriptor) -> Result<WidgetRef, BridgeError>
+    dyn Fn(
+            &WidgetRegistry,
+            &Arc<Mutex<Runtime>>,
+            &WidgetDescriptor,
+        ) -> Result<WidgetRef, BridgeError>
         + Send
         + Sync,
 >;
@@ -40,10 +50,14 @@ impl WidgetRegistry {
         reg.register("svg", |_reg, rt, desc| create_svg_widget(rt, desc));
         reg.register("image", |_reg, rt, desc| create_image_widget(rt, desc));
         reg.register("grid", |reg, rt, desc| create_grid_widget(reg, rt, desc));
-        reg.register("presence", |reg, rt, desc| create_presence_widget(reg, rt, desc));
+        reg.register("presence", |reg, rt, desc| {
+            create_presence_widget(reg, rt, desc)
+        });
         // Phase 2 Portal — built-in widget; consumer .ogh writes
         // `Portal { open, focus_trap, children }`.
-        reg.register("portal", |reg, rt, desc| create_portal_widget(reg, rt, desc));
+        reg.register("portal", |reg, rt, desc| {
+            create_portal_widget(reg, rt, desc)
+        });
         reg
     }
 
@@ -52,7 +66,11 @@ impl WidgetRegistry {
     pub fn register<S, F>(&mut self, name: S, factory: F)
     where
         S: Into<String>,
-        F: Fn(&WidgetRegistry, &Arc<Mutex<Runtime>>, &WidgetDescriptor) -> Result<WidgetRef, BridgeError>
+        F: Fn(
+                &WidgetRegistry,
+                &Arc<Mutex<Runtime>>,
+                &WidgetDescriptor,
+            ) -> Result<WidgetRef, BridgeError>
             + Send
             + Sync
             + 'static,
@@ -93,7 +111,10 @@ fn make_event_listener(
             let closure = closure.clone();
             let ename = event_name.to_string();
             Some(Box::new(move |_event: &Event| {
-                let result = rt.lock().expect("runtime lock poisoned").call_bytecode_closure(&closure, &[]);
+                let result = rt
+                    .lock()
+                    .expect("runtime lock poisoned")
+                    .call_bytecode_closure(&closure, &[]);
                 if let Err(err) = result {
                     eprintln!("[ogham] {} handler error: {:?}", ename, err);
                 }
@@ -117,7 +138,10 @@ fn make_event_listener_with_arg(
             let ename = event_name.to_string();
             Some(Box::new(move |event: &Event| {
                 let arg = Value::String(event.value.clone().unwrap_or_default());
-                let result = rt.lock().expect("runtime lock poisoned").call_bytecode_closure(&closure, &[arg]);
+                let result = rt
+                    .lock()
+                    .expect("runtime lock poisoned")
+                    .call_bytecode_closure(&closure, &[arg]);
                 if let Err(err) = result {
                     eprintln!("[ogham] {} handler error: {:?}", ename, err);
                 }
@@ -395,24 +419,29 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     style.background_image = Some(path.clone());
                 }
             }
-            "position" => {
-                match value {
-                    Value::String(s) if s == "static" => style.position = Position::Static,
-                    Value::Map(map) => {
-                        let pos_type = map.get("type").and_then(|v| {
-                            if let Value::String(s) = v { Some(s.as_str()) } else { None }
-                        }).unwrap_or("static");
-                        let x = get_float_from_map(map, "x", 0.0);
-                        let y = get_float_from_map(map, "y", 0.0);
-                        match pos_type {
-                            "absolute" => style.position = Position::Absolute(x, y),
-                            "relative" => style.position = Position::Relative(x, y),
-                            _ => {}
-                        }
+            "position" => match value {
+                Value::String(s) if s == "static" => style.position = Position::Static,
+                Value::Map(map) => {
+                    let pos_type = map
+                        .get("type")
+                        .and_then(|v| {
+                            if let Value::String(s) = v {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or("static");
+                    let x = get_float_from_map(map, "x", 0.0);
+                    let y = get_float_from_map(map, "y", 0.0);
+                    match pos_type {
+                        "absolute" => style.position = Position::Absolute(x, y),
+                        "relative" => style.position = Position::Relative(x, y),
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             "overflow" => {
                 if let Value::String(s) = value {
                     match s.as_str() {
@@ -533,9 +562,7 @@ fn parse_transition_value(value: &Value) -> Option<TransitionSet> {
                     "border" => set.border = Some(cfg),
                     // `corner_radius` and `corner_chamfer` are aliases —
                     // both spring the unified per-corner shape field.
-                    "corner_radius" | "corner_chamfer" | "corners" => {
-                        set.corners = Some(cfg)
-                    }
+                    "corner_radius" | "corner_chamfer" | "corners" => set.corners = Some(cfg),
                     "padding" => set.padding = Some(cfg),
                     "margin" => set.margin = Some(cfg),
                     "gap" => set.gap = Some(cfg),
@@ -630,8 +657,27 @@ fn apply_text_style_from_map(style: &mut TextStyle, map: &HashMap<String, Value>
                     style.font = Some(v.clone());
                 }
             }
+            "outline" => {
+                style.outline = parse_text_outline_value(value);
+            }
             _ => {}
         }
+    }
+}
+
+/// Parse a text `outline` value: a map of `{ color, width }`. A bare color
+/// value is also accepted and defaults the width to 1px.
+fn parse_text_outline_value(value: &Value) -> Option<TextOutline> {
+    match value {
+        Value::Map(map) => {
+            let color = map.get("color").and_then(parse_color_value)?;
+            let width = map
+                .get("width")
+                .and_then(value_to_f32)
+                .unwrap_or(1.0);
+            Some(TextOutline { color, width })
+        }
+        _ => parse_color_value(value).map(|color| TextOutline { color, width: 1.0 }),
     }
 }
 
@@ -769,11 +815,8 @@ fn create_flex_widget(
     // when this widget is the drag origin and paints it
     // attached to the cursor.
     if let Some(Value::Widget(child_widget)) = descriptor.properties.get("drag_preview") {
-        let preview_ref = widget_value_to_widget_ref(
-            registry,
-            runtime,
-            &Value::Widget(child_widget.clone()),
-        )?;
+        let preview_ref =
+            widget_value_to_widget_ref(registry, runtime, &Value::Widget(child_widget.clone()))?;
         flex_widget.drag_preview = Some(preview_ref);
     }
 
@@ -939,16 +982,15 @@ fn create_portal_widget(
     if let Some(value) = descriptor.properties.get("layer") {
         match value {
             Value::String(name) => {
-                match crate::widget::portal_layer::PortalLayer::from_source_name(
-                    name,
-                ) {
+                match crate::widget::portal_layer::PortalLayer::from_source_name(name) {
                     Some(layer) => portal.layer = layer,
                     None => {
                         return Err(BridgeError::InvalidPropertyType(
                             "layer".to_string(),
                             format!(
                                 "Portal expects 'layer' to be one of: {}. Got: {:?}",
-                                crate::widget::portal_layer::PortalLayer::all_names_for_diagnostic(),
+                                crate::widget::portal_layer::PortalLayer::all_names_for_diagnostic(
+                                ),
                                 name
                             ),
                         ));
@@ -958,10 +1000,7 @@ fn create_portal_widget(
             other => {
                 return Err(BridgeError::InvalidPropertyType(
                     "layer".to_string(),
-                    format!(
-                        "Portal expects 'layer' as a string; got {:?}",
-                        other
-                    ),
+                    format!("Portal expects 'layer' as a string; got {:?}", other),
                 ));
             }
         }
@@ -1004,10 +1043,7 @@ fn create_portal_widget(
             other => {
                 return Err(BridgeError::InvalidPropertyType(
                     "cursor".to_string(),
-                    format!(
-                        "Portal expects 'cursor' as a string; got {:?}",
-                        other
-                    ),
+                    format!("Portal expects 'cursor' as a string; got {:?}", other),
                 ));
             }
         }
@@ -1019,10 +1055,7 @@ fn create_portal_widget(
             other => {
                 return Err(BridgeError::InvalidPropertyType(
                     "focus_trap".to_string(),
-                    format!(
-                        "Portal expects 'focus_trap' as a boolean; got {:?}",
-                        other
-                    ),
+                    format!("Portal expects 'focus_trap' as a boolean; got {:?}", other),
                 ));
             }
         }
@@ -1597,9 +1630,7 @@ pub(crate) fn parse_border_value(value: &Value) -> Option<Border> {
 /// `corner_radius` shape). A value of 0 becomes `Sharp`.
 pub(crate) fn parse_corners_round_value(value: &Value) -> Option<Corners> {
     match value {
-        Value::Float(_) | Value::Integer(_) => {
-            Some(Corners::all_round(value_to_f32(value)?))
-        }
+        Value::Float(_) | Value::Integer(_) => Some(Corners::all_round(value_to_f32(value)?)),
         Value::Map(map) => {
             let tl = map.get("top_left").and_then(value_to_f32)?;
             let tr = map.get("top_right").and_then(value_to_f32)?;
@@ -1623,9 +1654,7 @@ pub(crate) fn parse_corners_round_value(value: &Value) -> Option<Corners> {
 /// that should keep whatever shape the radius pass set).
 pub(crate) fn parse_corners_chamfer_value(value: &Value) -> Option<Corners> {
     match value {
-        Value::Float(_) | Value::Integer(_) => {
-            Some(Corners::all_chamfer(value_to_f32(value)?))
-        }
+        Value::Float(_) | Value::Integer(_) => Some(Corners::all_chamfer(value_to_f32(value)?)),
         Value::Map(map) => {
             let tl = map.get("top_left").and_then(value_to_f32)?;
             let tr = map.get("top_right").and_then(value_to_f32)?;
@@ -1687,7 +1716,11 @@ pub(crate) fn parse_inner_glow_value(value: &Value) -> Option<InnerGlow> {
         let color = map.get("color").and_then(parse_color_value)?;
         let blur = map.get("blur").and_then(value_to_f32).unwrap_or(0.0);
         let spread = map.get("spread").and_then(value_to_f32).unwrap_or(0.0);
-        Some(InnerGlow { color, blur, spread })
+        Some(InnerGlow {
+            color,
+            blur,
+            spread,
+        })
     } else {
         None
     }

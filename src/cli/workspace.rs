@@ -81,10 +81,7 @@ pub fn discover(starting_dir: &Path) -> Result<Registry, DiscoverError> {
         let manifest = match Manifest::read(&path) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!(
-                    "ogham: skipping malformed manifest {}: {e}",
-                    path.display()
-                );
+                eprintln!("ogham: skipping malformed manifest {}: {e}", path.display());
                 continue;
             }
         };
@@ -103,10 +100,13 @@ pub fn discover(starting_dir: &Path) -> Result<Registry, DiscoverError> {
                 continue;
             }
         };
-        registry.entry(abs_ogh).or_default().push(DiscoveredManifest {
-            manifest,
-            manifest_path: path,
-        });
+        registry
+            .entry(abs_ogh)
+            .or_default()
+            .push(DiscoveredManifest {
+                manifest,
+                manifest_path: path,
+            });
     }
 
     Ok(registry)

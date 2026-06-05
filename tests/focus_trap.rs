@@ -8,9 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use ogham::widget::flex_widget::FlexWidget;
 use ogham::widget::portal_widget::PortalWidget;
-use ogham::widget::{
-    FocusRestoration, PortalEntry, PortalInfo, Widget, WidgetRef, UI,
-};
+use ogham::widget::{FocusRestoration, PortalEntry, PortalInfo, Widget, WidgetRef, UI};
 
 fn make_portal(focus_trap: bool, children: Vec<WidgetRef>) -> WidgetRef {
     let mut p = PortalWidget::new();
@@ -25,11 +23,7 @@ fn make_flex() -> WidgetRef {
 }
 
 fn entry(portal: &WidgetRef) -> PortalEntry {
-    let info = portal
-        .lock()
-        .unwrap()
-        .as_portal()
-        .expect("must be portal");
+    let info = portal.lock().unwrap().as_portal().expect("must be portal");
     PortalEntry {
         widget: portal.clone(),
         viewport_rect: ogham::widget::rect::Rect::zero(),
@@ -219,11 +213,7 @@ fn sync_focus_stack_top_pop_restores_then_deeper_stale_removed_silently() {
     ui.portal_layers.retain(|e| Arc::ptr_eq(&e.widget, &c));
     ui.sync_focus_stack();
 
-    assert_eq!(
-        ui.focus_stack.len(),
-        1,
-        "stack should retain just C"
-    );
+    assert_eq!(ui.focus_stack.len(), 1, "stack should retain just C");
     let focused = ui.get_focused().unwrap();
     assert!(
         Arc::ptr_eq(focused, &c_child),
@@ -295,15 +285,8 @@ fn make_portal_in_layer(
     Arc::new(Mutex::new(p))
 }
 
-fn entry_at(
-    portal: &WidgetRef,
-    layer: ogham::widget::portal_layer::PortalLayer,
-) -> PortalEntry {
-    let info = portal
-        .lock()
-        .unwrap()
-        .as_portal()
-        .expect("must be portal");
+fn entry_at(portal: &WidgetRef, layer: ogham::widget::portal_layer::PortalLayer) -> PortalEntry {
+    let info = portal.lock().unwrap().as_portal().expect("must be portal");
     PortalEntry {
         widget: portal.clone(),
         viewport_rect: ogham::widget::rect::Rect::zero(),
@@ -338,8 +321,10 @@ fn focus_trap_in_overlay_modal_does_trip_the_gate() {
     let modal = make_portal_in_layer(true, PortalLayer::OverlayModal);
     ui.portal_layers
         .push(entry_at(&modal, PortalLayer::OverlayModal));
-    assert!(ui.has_input_blocking_portal(),
-        "focus_trap in OverlayModal layer DOES gate world input");
+    assert!(
+        ui.has_input_blocking_portal(),
+        "focus_trap in OverlayModal layer DOES gate world input"
+    );
 }
 
 #[test]

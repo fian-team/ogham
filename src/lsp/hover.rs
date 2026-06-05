@@ -42,11 +42,15 @@ pub enum HoverInfo {
         field_count: usize,
     },
     /// Phase 2: hover on `on_mount` / `on_unmount` keyword.
-    LifecycleHook { kind: HookKind },
+    LifecycleHook {
+        kind: HookKind,
+    },
     /// Phase 2: hover on `effect` keyword. Dep count surfaces
     /// in the hover text so authors can see "this effect tracks
     /// 3 deps."
-    Effect { dep_count: usize },
+    Effect {
+        dep_count: usize,
+    },
 }
 
 /// Which lifecycle hook keyword the hover landed on.
@@ -109,9 +113,7 @@ impl HoverInfo {
                 if let Some(d) = default_label {
                     out.push_str(&format!("\n\n*default*: `{d}`"));
                 }
-                out.push_str(
-                    "\n\nDeclared in this module's `host_state` block.",
-                );
+                out.push_str("\n\nDeclared in this module's `host_state` block.");
                 out
             }
             HoverInfo::RecordName { name, field_count } => {
@@ -337,9 +339,7 @@ fn hover_in_statement(
             }
             hover_in_expression(&assign.value, line, col, decls)
         }
-        Statement::Expression(expr_stmt) => {
-            hover_in_expression(&expr_stmt.value, line, col, decls)
-        }
+        Statement::Expression(expr_stmt) => hover_in_expression(&expr_stmt.value, line, col, decls),
         Statement::Return(ret) => {
             if let Some(expr) = &ret.value {
                 hover_in_expression(expr, line, col, decls)
@@ -388,11 +388,9 @@ fn hover_in_statement(
             }
             hover_in_block(&for_loop.body, line, col, decls)
         }
-        Statement::Import(import) => {
-            Some(HoverInfo::ImportPath {
-                path: import.path.clone(),
-            })
-        }
+        Statement::Import(import) => Some(HoverInfo::ImportPath {
+            path: import.path.clone(),
+        }),
         // Typed-bindings declarations: M3 will add schema-aware hover
         // (declared types, event signatures, record fields). For now,
         // hover inside these blocks returns nothing.
@@ -404,20 +402,16 @@ fn hover_in_statement(
         // LifecycleHook hover when the cursor is on the keyword
         // itself (anywhere inside the statement span but outside
         // the body block).
-        Statement::OnMount(hook) => {
-            hover_in_block(&hook.body, line, col, decls).or_else(|| {
-                Some(HoverInfo::LifecycleHook {
-                    kind: HookKind::Mount,
-                })
+        Statement::OnMount(hook) => hover_in_block(&hook.body, line, col, decls).or_else(|| {
+            Some(HoverInfo::LifecycleHook {
+                kind: HookKind::Mount,
             })
-        }
-        Statement::OnUnmount(hook) => {
-            hover_in_block(&hook.body, line, col, decls).or_else(|| {
-                Some(HoverInfo::LifecycleHook {
-                    kind: HookKind::Unmount,
-                })
+        }),
+        Statement::OnUnmount(hook) => hover_in_block(&hook.body, line, col, decls).or_else(|| {
+            Some(HoverInfo::LifecycleHook {
+                kind: HookKind::Unmount,
             })
-        }
+        }),
         Statement::Effect(effect) => {
             // Try the deps first, then the body, then fall back
             // to the Effect keyword hover.
@@ -432,17 +426,15 @@ fn hover_in_statement(
                 })
             })
         }
-        Statement::Cleanup(hook) => {
-            hover_in_block(&hook.body, line, col, decls).or_else(|| {
-                Some(HoverInfo::Keyword {
-                    name: "cleanup".to_string(),
-                    description: "Runs before this effect re-fires \
+        Statement::Cleanup(hook) => hover_in_block(&hook.body, line, col, decls).or_else(|| {
+            Some(HoverInfo::Keyword {
+                name: "cleanup".to_string(),
+                description: "Runs before this effect re-fires \
                                   (on dep change) and when the effect's \
                                   owning path unmounts."
-                        .to_string(),
-                })
+                    .to_string(),
             })
-        }
+        }),
     }
 }
 
@@ -564,26 +556,18 @@ fn hover_in_literal(
     decls: &mut Vec<Declaration>,
 ) -> Option<HoverInfo> {
     match lit {
-        Literal::Integer(v, span) if contains(span, line, col) => {
-            Some(HoverInfo::Literal {
-                description: format!("`{v}` -- integer literal"),
-            })
-        }
-        Literal::Float(v, span) if contains(span, line, col) => {
-            Some(HoverInfo::Literal {
-                description: format!("`{v}` -- float literal"),
-            })
-        }
-        Literal::Boolean(v, span) if contains(span, line, col) => {
-            Some(HoverInfo::Literal {
-                description: format!("`{v}` -- boolean literal"),
-            })
-        }
-        Literal::String(v, span) if contains(span, line, col) => {
-            Some(HoverInfo::Literal {
-                description: format!("`\"{v}\"` -- string literal"),
-            })
-        }
+        Literal::Integer(v, span) if contains(span, line, col) => Some(HoverInfo::Literal {
+            description: format!("`{v}` -- integer literal"),
+        }),
+        Literal::Float(v, span) if contains(span, line, col) => Some(HoverInfo::Literal {
+            description: format!("`{v}` -- float literal"),
+        }),
+        Literal::Boolean(v, span) if contains(span, line, col) => Some(HoverInfo::Literal {
+            description: format!("`{v}` -- boolean literal"),
+        }),
+        Literal::String(v, span) if contains(span, line, col) => Some(HoverInfo::Literal {
+            description: format!("`\"{v}\"` -- string literal"),
+        }),
         Literal::Identifier(ident) if ident_contains(ident, line, col) => {
             resolve_ident(&ident.get(), decls)
         }

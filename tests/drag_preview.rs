@@ -17,9 +17,7 @@ use ogham::widget::rect::Rect;
 use ogham::widget::{builder, Widget, WidgetRef, UI};
 
 fn build_root(src: &str) -> WidgetRef {
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -90,11 +88,7 @@ fn dispatch_drag_move_updates_preview_cursor() {
     let origin_ref: WidgetRef = Arc::new(Mutex::new(origin));
 
     let mut ui = UI::new(origin_ref.clone());
-    let mut state = ui.dispatch_drag_start(
-        origin_ref.clone(),
-        Value::Void,
-        Point::new(10.0, 10.0),
-    );
+    let mut state = ui.dispatch_drag_start(origin_ref.clone(), Value::Void, Point::new(10.0, 10.0));
     ui.dispatch_drag_move(&mut state, Point::new(40.0, 70.0));
     let captured = ui.active_drag_preview().expect("preview present");
     assert_eq!(captured.cursor.x(), 40.0);
@@ -109,11 +103,7 @@ fn dispatch_drag_end_clears_preview() {
     let origin_ref: WidgetRef = Arc::new(Mutex::new(origin));
 
     let mut ui = UI::new(origin_ref.clone());
-    let mut state = ui.dispatch_drag_start(
-        origin_ref.clone(),
-        Value::Void,
-        Point::new(0.0, 0.0),
-    );
+    let mut state = ui.dispatch_drag_start(origin_ref.clone(), Value::Void, Point::new(0.0, 0.0));
     assert!(ui.active_drag_preview().is_some());
     ui.dispatch_drag_end(&mut state, Point::new(50.0, 50.0));
     assert!(
@@ -160,15 +150,13 @@ fn drag_preview_gets_laid_out_at_zero_origin_during_ui_layout() {
     let origin_ref: WidgetRef = Arc::new(Mutex::new(origin));
 
     let mut ui = UI::new(origin_ref.clone());
-    ui.dispatch_drag_start(
-        origin_ref.clone(),
-        Value::Void,
-        Point::new(50.0, 50.0),
-    );
+    ui.dispatch_drag_start(origin_ref.clone(), Value::Void, Point::new(50.0, 50.0));
     ui.layout(800.0, 600.0);
 
     let g = preview_ref.lock().unwrap();
-    let rect = g.get_layout_rect().expect("preview should have layout rect");
+    let rect = g
+        .get_layout_rect()
+        .expect("preview should have layout rect");
     assert_eq!(rect.x, 0.0, "preview laid out at local origin x=0");
     assert_eq!(rect.y, 0.0, "preview laid out at local origin y=0");
     assert_eq!(rect.width, 64.0, "preview width from declared size");

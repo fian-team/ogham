@@ -136,7 +136,10 @@ fn diagnostic_includes_length_when_set() {
         "#,
     );
     let err = c.expect("expected compile error");
-    assert!(err.length > 0, "strict-mode errors should set length; got 0");
+    assert!(
+        err.length > 0,
+        "strict-mode errors should set length; got 0"
+    );
     assert_eq!(err.length, "master_voloume".len());
 }
 
@@ -151,7 +154,11 @@ fn diagnostic_event_arg_count_explains_signature() {
     let err = c.expect("expected compile error");
     assert!(err.message.contains("wrong number of arguments"));
     let note = err.note.as_deref().unwrap_or("");
-    assert!(note.contains("rebind(string, string)"), "got note: {}", note);
+    assert!(
+        note.contains("rebind(string, string)"),
+        "got note: {}",
+        note
+    );
     let help = err.help.as_deref().unwrap_or("");
     assert!(help.contains("expected 2"), "got help: {}", help);
     assert!(help.contains("got 1"), "got help: {}", help);

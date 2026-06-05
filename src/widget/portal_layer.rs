@@ -180,8 +180,7 @@ mod tests {
 
     #[test]
     fn priority_ordering_is_strict() {
-        let priorities: Vec<u32> =
-            PortalLayer::ALL.iter().map(|l| l.priority()).collect();
+        let priorities: Vec<u32> = PortalLayer::ALL.iter().map(|l| l.priority()).collect();
         let mut sorted = priorities.clone();
         sorted.sort();
         assert_eq!(priorities, sorted, "ALL is not in priority order");

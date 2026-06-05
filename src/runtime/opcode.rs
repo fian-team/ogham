@@ -162,7 +162,10 @@ pub enum OpCode {
     /// first run), schedule cleanup-then-fire via the pending
     /// queues. Always update the slot's `closure` so the body
     /// reflects current scope.
-    RegisterEffect { hook_id: u16, dep_count: u8 },
+    RegisterEffect {
+        hook_id: u16,
+        dep_count: u8,
+    },
     /// Pop a closure. Attach as the pending-cleanup for the
     /// currently-executing effect. Compile-time error if used
     /// outside an `effect` body.

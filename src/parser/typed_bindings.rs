@@ -367,7 +367,10 @@ impl<'a> TypeRefParser<'a> {
                 self.pos += c.len_utf8();
                 Ok(())
             }
-            Some(c) => Err(TypeRefParseError::UnexpectedChar { ch: c, pos: self.pos }),
+            Some(c) => Err(TypeRefParseError::UnexpectedChar {
+                ch: c,
+                pos: self.pos,
+            }),
             None => Err(TypeRefParseError::UnexpectedEnd),
         }
     }
@@ -404,7 +407,10 @@ mod tests {
     #[test]
     fn round_trip_records() {
         rt(TypeRef::Record("Item".to_string()), "Item");
-        rt(TypeRef::Record("PlayerCharacter".to_string()), "PlayerCharacter");
+        rt(
+            TypeRef::Record("PlayerCharacter".to_string()),
+            "PlayerCharacter",
+        );
         rt(TypeRef::Record("snake_record".to_string()), "snake_record");
     }
 
@@ -429,17 +435,11 @@ mod tests {
     #[test]
     fn round_trip_map_each_key_type() {
         rt(
-            TypeRef::Map(
-                KeyType::String,
-                Box::new(TypeRef::Primitive(PrimType::Int)),
-            ),
+            TypeRef::Map(KeyType::String, Box::new(TypeRef::Primitive(PrimType::Int))),
             "map<string, int>",
         );
         rt(
-            TypeRef::Map(
-                KeyType::Int,
-                Box::new(TypeRef::Record("Item".to_string())),
-            ),
+            TypeRef::Map(KeyType::Int, Box::new(TypeRef::Record("Item".to_string()))),
             "map<int, Item>",
         );
     }
@@ -459,9 +459,9 @@ mod tests {
         // T?? is well-formed though semantically silly; we accept
         // for round-trip simplicity.
         rt(
-            TypeRef::Optional(Box::new(TypeRef::Optional(Box::new(
-                TypeRef::Primitive(PrimType::Int),
-            )))),
+            TypeRef::Optional(Box::new(TypeRef::Optional(Box::new(TypeRef::Primitive(
+                PrimType::Int,
+            ))))),
             "int??",
         );
     }

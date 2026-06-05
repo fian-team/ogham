@@ -23,59 +23,87 @@ pub trait IntoHostValue {
 }
 
 impl IntoHostValue for Value {
-    fn into_host_value(self) -> Value { self }
+    fn into_host_value(self) -> Value {
+        self
+    }
 }
 
 impl IntoHostValue for bool {
-    fn into_host_value(self) -> Value { Value::Boolean(self) }
+    fn into_host_value(self) -> Value {
+        Value::Boolean(self)
+    }
 }
 
 impl IntoHostValue for i32 {
-    fn into_host_value(self) -> Value { Value::Integer(self) }
+    fn into_host_value(self) -> Value {
+        Value::Integer(self)
+    }
 }
 
 impl IntoHostValue for i64 {
-    fn into_host_value(self) -> Value { Value::Integer(self as i32) }
+    fn into_host_value(self) -> Value {
+        Value::Integer(self as i32)
+    }
 }
 
 impl IntoHostValue for u32 {
-    fn into_host_value(self) -> Value { Value::Integer(self as i32) }
+    fn into_host_value(self) -> Value {
+        Value::Integer(self as i32)
+    }
 }
 
 impl IntoHostValue for u64 {
-    fn into_host_value(self) -> Value { Value::Integer(self as i32) }
+    fn into_host_value(self) -> Value {
+        Value::Integer(self as i32)
+    }
 }
 
 impl IntoHostValue for usize {
-    fn into_host_value(self) -> Value { Value::Integer(self as i32) }
+    fn into_host_value(self) -> Value {
+        Value::Integer(self as i32)
+    }
 }
 
 impl IntoHostValue for f32 {
-    fn into_host_value(self) -> Value { Value::Float(self as f64) }
+    fn into_host_value(self) -> Value {
+        Value::Float(self as f64)
+    }
 }
 
 impl IntoHostValue for f64 {
-    fn into_host_value(self) -> Value { Value::Float(self) }
+    fn into_host_value(self) -> Value {
+        Value::Float(self)
+    }
 }
 
 impl IntoHostValue for String {
-    fn into_host_value(self) -> Value { Value::String(self) }
+    fn into_host_value(self) -> Value {
+        Value::String(self)
+    }
 }
 
 impl IntoHostValue for &str {
-    fn into_host_value(self) -> Value { Value::String(self.to_string()) }
+    fn into_host_value(self) -> Value {
+        Value::String(self.to_string())
+    }
 }
 
 impl IntoHostValue for &String {
-    fn into_host_value(self) -> Value { Value::String(self.clone()) }
+    fn into_host_value(self) -> Value {
+        Value::String(self.clone())
+    }
 }
 
 impl IntoHostValue for Vec<Value> {
-    fn into_host_value(self) -> Value { Value::Array(self) }
+    fn into_host_value(self) -> Value {
+        Value::Array(self)
+    }
 }
 
 impl IntoHostValue for HashMap<String, Value> {
-    fn into_host_value(self) -> Value { Value::Map(self) }
+    fn into_host_value(self) -> Value {
+        Value::Map(self)
+    }
 }
 
 /// `&HashMap<String, String>` → `Value::Map` of `Value::String`. Keeps

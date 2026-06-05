@@ -20,7 +20,11 @@ use crate::diagnostics::Diagnostic;
 
 /// Render diagnostics for a single `.ogh` file path. Writes to the
 /// provided writer (`stdout` in main, `&mut Vec<u8>` in tests).
-pub fn render<W: Write>(out: &mut W, file_path: &Path, diags: &[Diagnostic]) -> std::io::Result<()> {
+pub fn render<W: Write>(
+    out: &mut W,
+    file_path: &Path,
+    diags: &[Diagnostic],
+) -> std::io::Result<()> {
     for d in diags {
         let line = if d.primary.start_line == 0 {
             1
@@ -87,10 +91,7 @@ mod tests {
             Some("test::S".into()),
         );
         let out = render_to_string(Path::new("ui.ogh"), std::slice::from_ref(&d));
-        assert_eq!(
-            out,
-            "ui.ogh:7:5: error[ogham:binding]: field `x` missing\n",
-        );
+        assert_eq!(out, "ui.ogh:7:5: error[ogham:binding]: field `x` missing\n",);
     }
 
     #[test]
@@ -131,7 +132,10 @@ mod tests {
             message: "no source loc".into(),
         });
         let out = render_to_string(Path::new("ui.ogh"), std::slice::from_ref(&d));
-        assert!(!out.contains("-->"), "should skip empty-file related spans, got: {out}");
+        assert!(
+            !out.contains("-->"),
+            "should skip empty-file related spans, got: {out}"
+        );
         assert!(!out.contains("no source loc"));
     }
 
@@ -139,10 +143,7 @@ mod tests {
     fn falls_back_to_line_1_when_span_is_zero() {
         let d = Diagnostic::binding_warning("stale", Span::zero(), None);
         let out = render_to_string(Path::new("ui.ogh"), std::slice::from_ref(&d));
-        assert_eq!(
-            out,
-            "ui.ogh:1:1: warning[ogham:binding]: stale\n",
-        );
+        assert_eq!(out, "ui.ogh:1:1: warning[ogham:binding]: stale\n",);
     }
 
     #[test]

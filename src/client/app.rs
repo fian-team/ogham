@@ -172,11 +172,8 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                             "Home" => 36,
                             "End" => 35,
                             _ => {
-                                if key_str.starts_with("Named(")
-                                    && key_str.ends_with(")")
-                                {
-                                    let key_name =
-                                        &key_str[6..key_str.len() - 1];
+                                if key_str.starts_with("Named(") && key_str.ends_with(")") {
+                                    let key_name = &key_str[6..key_str.len() - 1];
                                     match key_name {
                                         "ArrowLeft" => 37,
                                         "ArrowUp" => 38,
@@ -201,42 +198,22 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 };
 
                 if *state == ElementState::Pressed {
-                    let keydown_event = Event::keydown(
-                        key_code,
-                        None,
-                        key_modifiers.clone(),
-                    );
-                    ui_handled |=
-                        self.client.handle_ui_event(&keydown_event);
+                    let keydown_event = Event::keydown(key_code, None, key_modifiers.clone());
+                    ui_handled |= self.client.handle_ui_event(&keydown_event);
 
                     if let Key::Character(c) = logical_key {
                         if let Some(character) = c.chars().next() {
-                            let keypress_event = Event::keypress(
-                                key_code,
-                                Some(character),
-                                key_modifiers,
-                            );
-                            ui_handled |= self
-                                .client
-                                .handle_ui_event(&keypress_event);
+                            let keypress_event =
+                                Event::keypress(key_code, Some(character), key_modifiers);
+                            ui_handled |= self.client.handle_ui_event(&keypress_event);
                         }
                     } else if key_code == 32 {
-                        let keypress_event = Event::keypress(
-                            key_code,
-                            Some(' '),
-                            key_modifiers,
-                        );
-                        ui_handled |=
-                            self.client.handle_ui_event(&keypress_event);
+                        let keypress_event = Event::keypress(key_code, Some(' '), key_modifiers);
+                        ui_handled |= self.client.handle_ui_event(&keypress_event);
                     }
                 } else {
-                    let keyup_event = Event::keyup(
-                        key_code,
-                        None,
-                        key_modifiers,
-                    );
-                    ui_handled |=
-                        self.client.handle_ui_event(&keyup_event);
+                    let keyup_event = Event::keyup(key_code, None, key_modifiers);
+                    ui_handled |= self.client.handle_ui_event(&keyup_event);
                 }
 
                 if self.client.needs_ui_update() {
@@ -288,10 +265,7 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 let y = position.y as f32 / scale_factor as f32;
                 self.input.move_cursor(glm::vec2(x, y));
 
-                let ui_event = Event::with_point(
-                    "mouse_move".to_string(),
-                    Point::new(x, y),
-                );
+                let ui_event = Event::with_point("mouse_move".to_string(), Point::new(x, y));
                 self.client.handle_ui_event(&ui_event);
             }
             WindowEvent::MouseWheel { delta, .. } => {

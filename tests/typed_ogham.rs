@@ -126,7 +126,8 @@ fn missing_field_in_rust_fails_with_diff() {
         OnlyOne::default(),
         RuntimeConfig::default(),
     )
-    .err().expect("expected error");
+    .err()
+    .expect("expected error");
     let RuntimeError::SchemaMismatch(diff) = err else {
         panic!("expected SchemaMismatch, got {:?}", err);
     };
@@ -149,7 +150,8 @@ fn extra_field_on_rust_fails_with_diff() {
         ExtraField::default(),
         RuntimeConfig::default(),
     )
-    .err().expect("expected error");
+    .err()
+    .expect("expected error");
     let RuntimeError::SchemaMismatch(diff) = err else {
         panic!("expected SchemaMismatch, got {:?}", err);
     };
@@ -169,7 +171,8 @@ fn type_mismatch_on_field_fails_with_diff() {
         WrongType::default(),
         RuntimeConfig::default(),
     )
-    .err().expect("expected error");
+    .err()
+    .expect("expected error");
     let RuntimeError::SchemaMismatch(diff) = err else {
         panic!("expected SchemaMismatch, got {:?}", err);
     };
@@ -190,7 +193,8 @@ fn missing_event_on_rust_fails_with_diff() {
         SettingsState::default(),
         RuntimeConfig::default(),
     )
-    .err().expect("expected error");
+    .err()
+    .expect("expected error");
     let RuntimeError::SchemaMismatch(diff) = err else {
         panic!("expected SchemaMismatch, got {:?}", err);
     };
@@ -211,7 +215,8 @@ fn extra_event_on_rust_fails_with_diff() {
         SettingsState::default(),
         RuntimeConfig::default(),
     )
-    .err().expect("expected error");
+    .err()
+    .expect("expected error");
     let RuntimeError::SchemaMismatch(diff) = err else {
         panic!("expected SchemaMismatch, got {:?}", err);
     };

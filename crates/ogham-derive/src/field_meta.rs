@@ -27,8 +27,8 @@ pub(crate) fn collect_struct_fields(
             .ident
             .clone()
             .ok_or_else(|| syn::Error::new_spanned(field, "named fields required"))?;
-        let ogham_name = field_name_override(&field.attrs)?
-            .unwrap_or_else(|| rust_ident.to_string());
+        let ogham_name =
+            field_name_override(&field.attrs)?.unwrap_or_else(|| rust_ident.to_string());
         out.push(FieldMeta {
             rust_ident,
             ogham_name,

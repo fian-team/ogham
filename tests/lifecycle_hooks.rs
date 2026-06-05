@@ -29,8 +29,7 @@ use ogham::scanner::Scanner;
 fn run_with_hook_log(source: &str) -> (Runtime, Arc<Mutex<Vec<String>>>) {
     let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let log_for_handler = Arc::clone(&log);
-    let mut runtime =
-        Runtime::from_source(source, None).expect("parse and create runtime");
+    let mut runtime = Runtime::from_source(source, None).expect("parse and create runtime");
     runtime.register_event_handler("test_log", move |args| {
         if let Some(Value::String(s)) = args.first() {
             log_for_handler.lock().unwrap().push(s.clone());
@@ -322,7 +321,13 @@ let main = fn () {
     let children = parent
         .properties
         .get("children")
-        .and_then(|v| if let Value::Array(a) = v { Some(a) } else { None })
+        .and_then(|v| {
+            if let Value::Array(a) = v {
+                Some(a)
+            } else {
+                None
+            }
+        })
         .expect("children array");
     assert_eq!(children.len(), 2);
     let mut paths: Vec<String> = Vec::new();

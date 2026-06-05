@@ -6,11 +6,11 @@ use std::rc::Rc;
 
 use crate::parser::Identifier;
 use crate::runtime::compiler::deserialize_import_meta;
+use crate::runtime::descriptor::WidgetDescriptor;
 use crate::runtime::error::VMError;
 use crate::runtime::opcode::{FunctionProto, OpCode, Upvalue, UpvalueDescriptor, VMClosure};
 use crate::runtime::ops;
 use crate::runtime::value::Value;
-use crate::runtime::descriptor::WidgetDescriptor;
 use crate::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -364,14 +364,16 @@ impl VM {
                     // path. If so, use the persisted value; otherwise
                     // initialise.
                     let state_key = runtime.state.get_state_key(&name);
-                    let value = if let Some(existing) = runtime.state.component_state.get(&state_key) {
-                        existing.clone()
-                    } else {
-                        runtime.state
-                            .component_state
-                            .insert(state_key.clone(), init_value.clone());
-                        init_value
-                    };
+                    let value =
+                        if let Some(existing) = runtime.state.component_state.get(&state_key) {
+                            existing.clone()
+                        } else {
+                            runtime
+                                .state
+                                .component_state
+                                .insert(state_key.clone(), init_value.clone());
+                            init_value
+                        };
 
                     // Record active path.
                     let path = runtime.state.get_call_stack_path();
@@ -611,8 +613,11 @@ impl VM {
                             } else {
                                 format!("{}/{}", runtime.state.call_stack.join("/"), func_name)
                             };
-                            let call_index =
-                                runtime.state.call_counters.entry(call_site_key).or_insert(0);
+                            let call_index = runtime
+                                .state
+                                .call_counters
+                                .entry(call_site_key)
+                                .or_insert(0);
                             *call_index += 1;
                             let current_idx = *call_index;
                             let unique_id = format!("{}@{}", func_name, current_idx);
@@ -1053,13 +1058,8 @@ impl VM {
                         }
                     };
                     let path = runtime.state.get_call_stack_path();
-                    if !path.is_empty()
-                        && !runtime.state.previous_active_paths.contains(&path)
-                    {
-                        runtime
-                            .state
-                            .pending_mounts
-                            .push((path, hook_id, closure));
+                    if !path.is_empty() && !runtime.state.previous_active_paths.contains(&path) {
+                        runtime.state.pending_mounts.push((path, hook_id, closure));
                     }
                     // Else: path was already active last frame, OR
                     // we're at module top-level (empty path). Drop.
@@ -1081,10 +1081,7 @@ impl VM {
                     };
                     let path = runtime.state.get_call_stack_path();
                     if !path.is_empty() {
-                        runtime
-                            .state
-                            .unmount_hooks
-                            .insert((path, hook_id), closure);
+                        runtime.state.unmount_hooks.insert((path, hook_id), closure);
                     }
                     // Top-level (path == "") unmount hooks would
                     // fire only on runtime shutdown; out of scope.
@@ -1133,10 +1130,11 @@ impl VM {
                         // existing pending_cleanup onto the queue.
                         if let Some(slot) = runtime.state.effects.get_mut(&key) {
                             if let Some(cleanup) = slot.pending_cleanup.take() {
-                                runtime
-                                    .state
-                                    .pending_effect_cleanups
-                                    .push((key.0.clone(), key.1, cleanup));
+                                runtime.state.pending_effect_cleanups.push((
+                                    key.0.clone(),
+                                    key.1,
+                                    cleanup,
+                                ));
                             }
                         }
                         runtime

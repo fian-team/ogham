@@ -92,8 +92,7 @@ pub struct FlexWidget {
     /// the drop-target hit-test consults the predicate with
     /// the in-flight drag's payload. `None` means the widget
     /// is not a drop target (default).
-    pub accepts_drop_predicate:
-        Option<Box<dyn Fn(&crate::runtime::value::Value) -> bool>>,
+    pub accepts_drop_predicate: Option<Box<dyn Fn(&crate::runtime::value::Value) -> bool>>,
 
     /// Phase 3 M2: optional drag preview widget. When this
     /// FlexWidget is the source of an in-flight drag, the
@@ -226,7 +225,10 @@ impl FlexWidget {
         if delta.abs() < 0.5 {
             if self.scroll_y != self.scroll_y_target {
                 self.scroll_y = self.scroll_y_target;
-                return TickResult { needs_repaint: true, ..TickResult::NONE };
+                return TickResult {
+                    needs_repaint: true,
+                    ..TickResult::NONE
+                };
             }
             return TickResult::NONE;
         }
@@ -408,9 +410,7 @@ impl FlexWidget {
                     next.push(self.children[idx].clone());
                 } else {
                     let mut updated_in_place = {
-                        let mut child = self.children[idx]
-                            .lock()
-                            .expect("widget lock poisoned");
+                        let mut child = self.children[idx].lock().expect("widget lock poisoned");
                         child.update(new_child.clone())
                     };
                     agg.needs_layout |= updated_in_place.needs_layout;
@@ -428,9 +428,7 @@ impl FlexWidget {
                         agg.needs_layout = true;
                         agg.needs_repaint = true;
                         let (can_ghost, prefix) = {
-                            let mut g = self.children[idx]
-                                .lock()
-                                .expect("widget lock poisoned");
+                            let mut g = self.children[idx].lock().expect("widget lock poisoned");
                             let p = g.owned_path_prefix().to_string();
                             (g.begin_exit(), p)
                         };
@@ -615,10 +613,7 @@ impl Widget for FlexWidget {
             // Phase 3 M2: drag preview. Swap rather than clone
             // so the preview's own subtree state (animations,
             // reconciled children) carries forward.
-            std::mem::swap(
-                &mut self.drag_preview,
-                &mut new_flex_widget.drag_preview,
-            );
+            std::mem::swap(&mut self.drag_preview, &mut new_flex_widget.drag_preview);
 
             let new_target = self.target_style().clone();
 
@@ -690,6 +685,53 @@ impl Widget for FlexWidget {
                 let _occupied_width: f32 = self.get_children_fixed_width();
                 let occupied_height = self.get_children_fixed_height();
                 let children_basis = self.get_children_basis();
+
+                // Symmetric to the shrink-height path below: a column's WIDTH
+                // (cross axis) can depend on a child's HEIGHT (main axis).
+                // Resolve each child's real main-axis height budget (fixed +
+                // shrink pre-pass + grow pool) so a `height: grow` child isn't
+                // measured at ~1px height during width resolution.
+                let (col_avail_h, col_avail_h_for_grow) = if !self.style.direction.is_row() {
+                    let non_absolute_count = self
+                        .children
+                        .iter()
+                        .filter(|c| {
+                            !c.lock()
+                                .expect("widget lock poisoned")
+                                .is_absolute_positioned()
+                        })
+                        .count();
+                    let gap_space = if non_absolute_count > 1 {
+                        self.style.gap * (non_absolute_count - 1) as f32
+                    } else {
+                        0.0
+                    };
+                    let avail_h = (parent_available_height - occupied_height - gap_space).max(0.0);
+                    let mut shrink_main_total = 0.0;
+                    for child_ref in self.children.iter() {
+                        let child = child_ref.lock().expect("widget lock poisoned");
+                        if child.is_absolute_positioned()
+                            || child.get_basis(&self.style.direction) > 0.0
+                            || child.get_fixed_height().is_some()
+                        {
+                            continue;
+                        }
+                        let (_, ch) = child.get_dimensions(
+                            ctx,
+                            &self.style.direction,
+                            parent_width,
+                            parent_available_width,
+                            parent_height,
+                            avail_h,
+                            children_basis,
+                        );
+                        shrink_main_total += ch;
+                    }
+                    (avail_h, (avail_h - shrink_main_total).max(0.0))
+                } else {
+                    (0.0, 0.0)
+                };
+
                 let get_dimensions = |child: &WidgetRef| {
                     let child = child.lock().expect("widget lock poisoned");
                     if child.is_absolute_positioned() {
@@ -701,7 +743,11 @@ impl Widget for FlexWidget {
                         parent_available_width
                     };
                     let child_available_height = if !self.style.direction.is_row() {
-                        0.0
+                        if child.get_basis(&self.style.direction) > 0.0 {
+                            col_avail_h_for_grow
+                        } else {
+                            col_avail_h
+                        }
                     } else {
                         parent_available_height - occupied_height
                     };
@@ -748,7 +794,11 @@ impl Widget for FlexWidget {
                 } else {
                     parent_width // cross axis — full parent width
                 };
-                if max_width > 0.0 { unclamped.min(max_width) } else { unclamped }
+                if max_width > 0.0 {
+                    unclamped.min(max_width)
+                } else {
+                    unclamped
+                }
             }
             Size::Grow(basis) => {
                 // A child's own `direction` should not affect how its size is allocated by its parent.
@@ -774,13 +824,72 @@ impl Widget for FlexWidget {
                 // children the full window width and they would all
                 // measure as fitting on one line.
                 let self_content_width = (width - self.style.horizontal_inset()).max(0.0);
+
+                // A row's HEIGHT (cross axis) depends on each child's WIDTH
+                // (main axis). Measuring children at width 0 — the old behavior
+                // — made a `width: grow` child resolve to ~1px (Grow returns its
+                // basis when available <= 0), so a `height: shrink` Text laid its
+                // paragraph out at ~1px and wrapped one glyph per line, ballooning
+                // the row's shrink height. Resolve each child's real main-axis
+                // width budget the SAME way `layout()` does (fixed + shrink
+                // pre-pass + grow pool) so heights are measured at render width.
+                let (row_avail_w, row_avail_w_for_grow) = if self.style.direction.is_row() {
+                    let non_absolute_count = self
+                        .children
+                        .iter()
+                        .filter(|c| {
+                            !c.lock()
+                                .expect("widget lock poisoned")
+                                .is_absolute_positioned()
+                        })
+                        .count();
+                    let gap_space = if non_absolute_count > 1 {
+                        self.style.gap * (non_absolute_count - 1) as f32
+                    } else {
+                        0.0
+                    };
+                    let avail_w = (self_content_width
+                        - self.get_children_fixed_width()
+                        - gap_space)
+                        .max(0.0);
+                    // Pre-pass: subtract Shrink-on-main siblings from the grow
+                    // pool so a grow child isn't measured wider than it renders.
+                    let mut shrink_main_total = 0.0;
+                    for child_ref in self.children.iter() {
+                        let child = child_ref.lock().expect("widget lock poisoned");
+                        if child.is_absolute_positioned()
+                            || child.get_basis(&self.style.direction) > 0.0
+                            || child.get_fixed_width().is_some()
+                        {
+                            continue;
+                        }
+                        let (cw, _) = child.get_dimensions(
+                            ctx,
+                            &self.style.direction,
+                            width,
+                            avail_w,
+                            parent_height,
+                            parent_available_height,
+                            children_basis,
+                        );
+                        shrink_main_total += cw;
+                    }
+                    (avail_w, (avail_w - shrink_main_total).max(0.0))
+                } else {
+                    (0.0, 0.0)
+                };
+
                 let get_dimensions = |child: &WidgetRef| {
                     let child = child.lock().expect("widget lock poisoned");
                     if child.is_absolute_positioned() {
                         return (0.0, 0.0);
                     }
                     let child_available_width = if self.style.direction.is_row() {
-                        0.0
+                        if child.get_basis(&self.style.direction) > 0.0 {
+                            row_avail_w_for_grow
+                        } else {
+                            row_avail_w
+                        }
                     } else {
                         self_content_width
                     };
@@ -820,7 +929,11 @@ impl Widget for FlexWidget {
                             continue;
                         }
                         let (cw, ch) = get_dimensions(child_ref);
-                        let projected = if is_first { cursor + cw } else { cursor + self.style.gap + cw };
+                        let projected = if is_first {
+                            cursor + cw
+                        } else {
+                            cursor + self.style.gap + cw
+                        };
                         if !is_first && projected > line_main_max {
                             total += line_max_h + self.style.gap;
                             line_max_h = 0.0;
@@ -843,7 +956,11 @@ impl Widget for FlexWidget {
                     };
                     return (
                         width,
-                        if max_height > 0.0 { unclamped.min(max_height) } else { unclamped },
+                        if max_height > 0.0 {
+                            unclamped.min(max_height)
+                        } else {
+                            unclamped
+                        },
                     );
                 }
 
@@ -880,7 +997,11 @@ impl Widget for FlexWidget {
                 } else {
                     parent_available_height // main axis — share of available
                 };
-                if max_height > 0.0 { unclamped.min(max_height) } else { unclamped }
+                if max_height > 0.0 {
+                    unclamped.min(max_height)
+                } else {
+                    unclamped
+                }
             }
             Size::Grow(basis) => {
                 if parent_direction.is_row() {
@@ -915,8 +1036,7 @@ impl Widget for FlexWidget {
                 if let Some((_, dy)) = event.scroll_delta {
                     if self.style.overflow == Overflow::Scroll {
                         let max_scroll = (self.content_height - self.viewport_height).max(0.0);
-                        self.scroll_y_target =
-                            (self.scroll_y_target - dy).clamp(0.0, max_scroll);
+                        self.scroll_y_target = (self.scroll_y_target - dy).clamp(0.0, max_scroll);
                         return true;
                     }
                 }
@@ -924,7 +1044,11 @@ impl Widget for FlexWidget {
                 // Build an event whose point is in this widget's own content
                 // coordinate space, so children (which store parent-relative
                 // rects) can hit-test without knowing the ancestor chain.
-                let origin = self.layout.as_ref().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+                let origin = self
+                    .layout
+                    .as_ref()
+                    .map(|r| (r.x, r.y))
+                    .unwrap_or((0.0, 0.0));
                 let (scroll_x, scroll_y) = if self.style.overflow == Overflow::Scroll {
                     (0.0, self.scroll_y)
                 } else {
@@ -1415,7 +1539,9 @@ impl Widget for FlexWidget {
             let mut max_bottom: f32 = content_top;
             for child_ref in self.children.iter() {
                 let child = child_ref.lock().expect("widget lock poisoned");
-                if child.is_absolute_positioned() { continue; }
+                if child.is_absolute_positioned() {
+                    continue;
+                }
                 if let Some(r) = child.get_layout_rect() {
                     max_bottom = max_bottom.max(r.y + r.height);
                 }
@@ -1800,7 +1926,12 @@ impl Widget for FlexWidget {
 
             // For scrollable/hidden overflow, clip children to the border box
             if self.style.overflow != Overflow::Visible {
-                ctx.push_clip_rect(border_box_x, border_box_y, border_box_width, border_box_height);
+                ctx.push_clip_rect(
+                    border_box_x,
+                    border_box_y,
+                    border_box_width,
+                    border_box_height,
+                );
             }
         }
     }
@@ -1918,6 +2049,157 @@ mod tests {
             font_collection: None,
             default_font: None,
         }
+    }
+
+    /// A `width: grow, height: shrink` widget whose height depends on its
+    /// width — a font-free stand-in for a Text that wraps. Mirrors the real
+    /// text path: narrower width → more lines → taller. Used to prove a Shrink
+    /// row measures it at its render width (one line) rather than width≈0
+    /// (one glyph per line → balloon).
+    struct WrapTestWidget {
+        intrinsic_w: f32,
+        line_h: f32,
+    }
+
+    impl Widget for WrapTestWidget {
+        fn get_type(&self) -> &str {
+            "wrap_test"
+        }
+
+        fn get_dimensions(
+            &self,
+            _ctx: &LayoutContext,
+            parent_direction: &Direction,
+            parent_width: f32,
+            parent_available_width: f32,
+            _parent_height: f32,
+            _parent_available_height: f32,
+            sibling_basis: f32,
+        ) -> (f32, f32) {
+            let width = if parent_direction.is_row() {
+                parent_direction.get_grow_size(1.0, sibling_basis, parent_available_width)
+            } else {
+                parent_width
+            };
+            let lines = if width < self.intrinsic_w - 0.5 {
+                (self.intrinsic_w / width.max(1.0)).ceil()
+            } else {
+                1.0
+            };
+            (width, lines * self.line_h)
+        }
+
+        fn get_children(&self) -> Vec<WidgetRef> {
+            Vec::new()
+        }
+
+        // Grow along the main axis only when that axis is width (Row parent).
+        fn get_basis(&self, direction: &Direction) -> f32 {
+            if direction.is_row() {
+                1.0
+            } else {
+                0.0
+            }
+        }
+
+        fn get_children_basis(&self) -> f32 {
+            0.0
+        }
+
+        fn get_fixed_width(&self) -> Option<f32> {
+            None
+        }
+
+        fn get_fixed_height(&self) -> Option<f32> {
+            None
+        }
+
+        fn handle_event(
+            &mut self,
+            _event: &Event,
+            _ctx: &mut EventContext,
+            _self_ref: &WidgetRef,
+        ) -> bool {
+            false
+        }
+
+        fn layout(
+            &mut self,
+            _ctx: &LayoutContext,
+            _cursor_x: f32,
+            _cursor_y: f32,
+            _parent_direction: &Direction,
+            _parent_width: f32,
+            _parent_available_width: f32,
+            _parent_height: f32,
+            _parent_available_height: f32,
+            _sibling_basis: f32,
+        ) {
+        }
+
+        fn update(&mut self, _new_widget: WidgetRef) -> UpdateResult {
+            UpdateResult::replace()
+        }
+
+        fn contains_point(&self, _point: &Point) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn test_grow_text_in_shrink_row_does_not_balloon() {
+        let ctx = test_ctx();
+        // A grow-width / shrink-height wrapping child as the lone item of a
+        // Shrink-height row, inside a column parent with a real width and a
+        // large available height. The row's height must be ~one line (the
+        // child measured at the row's full width), NOT the per-glyph-wrapped
+        // balloon it became when measured at width 0.
+        let textish = Arc::new(Mutex::new(WrapTestWidget {
+            intrinsic_w: 200.0,
+            line_h: 20.0,
+        }));
+        let mut row = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Grow(1.0))
+                .height(Size::Shrink)
+                .direction(Direction::Row)
+                .build(),
+        );
+        row.add_child(textish);
+
+        let (_w, h) = row.get_dimensions(&ctx, &Direction::Column, 300.0, 300.0, 600.0, 600.0, 0.0);
+        assert!(
+            h <= 40.0,
+            "Shrink row ballooned: height {h} (expected ~one 20px line, not a per-glyph wrap)"
+        );
+    }
+
+    #[test]
+    fn test_grow_text_shares_row_width_with_fixed_siblings() {
+        let ctx = test_ctx();
+        // The grow child sits next to a fixed-width sibling (like a row of
+        // icon buttons). Its measured height should still be ~one line — the
+        // grow pool (content - fixed) is wide enough to avoid wrapping.
+        let textish = Arc::new(Mutex::new(WrapTestWidget {
+            intrinsic_w: 200.0,
+            line_h: 20.0,
+        }));
+        let button = Arc::new(Mutex::new(TestWidget::new(24.0, 24.0)));
+        let mut row = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Grow(1.0))
+                .height(Size::Shrink)
+                .direction(Direction::Row)
+                .build(),
+        );
+        row.add_child(textish);
+        row.add_child(button);
+
+        let (_w, h) = row.get_dimensions(&ctx, &Direction::Column, 300.0, 300.0, 600.0, 600.0, 0.0);
+        assert!(
+            h <= 40.0,
+            "Shrink row with a fixed sibling ballooned: height {h}"
+        );
     }
 
     #[test]
@@ -2719,8 +3001,7 @@ mod tests {
     fn make_transition_style(bg: Color) -> FlexStyle {
         let mut s = FlexStyle::default();
         s.background_color = Some(bg);
-        s.transitions.background_color =
-            Some(crate::widget::animation::TransitionConfig::DEFAULT);
+        s.transitions.background_color = Some(crate::widget::animation::TransitionConfig::DEFAULT);
         s
     }
 
@@ -2846,9 +3127,11 @@ mod tests {
         }
         // Sanity: bg is somewhere between declared and exit (not initial).
         let mid = w.style.background_color.expect("bg present");
-        assert!(mid.r < 255 && mid.r > 50,
+        assert!(
+            mid.r < 255 && mid.r > 50,
             "test setup: spring should be mid-flight, got r={}",
-            mid.r);
+            mid.r
+        );
 
         w.restart_entry_animation();
 
@@ -2966,12 +3249,10 @@ mod tests {
         // First reconcile: remove `a` → becomes a ghost.
         let mut empty: Vec<WidgetRef> = vec![];
         parent.reconcile_children(&mut empty);
-        assert!(
-            parent.children[0]
-                .lock()
-                .expect("widget lock poisoned")
-                .is_exiting()
-        );
+        assert!(parent.children[0]
+            .lock()
+            .expect("widget lock poisoned")
+            .is_exiting());
 
         // Second reconcile: `a` reappears with same key.
         let reinserted: WidgetRef = {
@@ -2987,10 +3268,7 @@ mod tests {
 
         let g = parent.children[0].lock().expect("widget lock poisoned");
         let flex = g.downcast_ref::<FlexWidget>().expect("FlexWidget");
-        assert!(
-            !flex.exiting,
-            "reinsertion should clear the exiting flag"
-        );
+        assert!(!flex.exiting, "reinsertion should clear the exiting flag");
     }
 
     #[test]
@@ -3095,7 +3373,10 @@ mod tests {
         let result = parent.reconcile_children(&mut new_children);
 
         assert!(
-            result.cancelled_unmount_prefixes.iter().any(|p| p == "fn@9"),
+            result
+                .cancelled_unmount_prefixes
+                .iter()
+                .any(|p| p == "fn@9"),
             "cancelled exit should report the owned_path_prefix; got {:?}",
             result.cancelled_unmount_prefixes
         );

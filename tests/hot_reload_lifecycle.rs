@@ -80,11 +80,9 @@ fn ogham_recompile_from_source_runs_cleanly() {
     // afterward.
     let src1 = "let main = fn () { Flex { children: [] } };";
     let src2 = "let main = fn () { Flex { children: [Flex { children: [] }] } };";
-    let mut ogham = ogham::Ogham::from_source(
-        src1,
-        ogham::runtime::config::RuntimeConfig::default(),
-    )
-    .expect("create");
+    let mut ogham =
+        ogham::Ogham::from_source(src1, ogham::runtime::config::RuntimeConfig::default())
+            .expect("create");
 
     // Force the OLD UI to have some focus state.
     let f = make_flex();
@@ -92,9 +90,7 @@ fn ogham_recompile_from_source_runs_cleanly() {
     assert!(ogham.get_ui().get_focused().is_some());
 
     // Recompile.
-    ogham
-        .recompile_from_source(src2)
-        .expect("recompile");
+    ogham.recompile_from_source(src2).expect("recompile");
 
     // New UI is clean. Note: the old UI's focus was on a
     // widget from the OLD tree that's no longer reachable —

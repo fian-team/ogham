@@ -21,9 +21,7 @@ use ogham_derive::{OghamMsg, OghamRecord, OghamState};
 fn manifest_path(kind: &str, binding_module: &str, type_name: &str) -> PathBuf {
     let target = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target")
-        });
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
     let sanitized: String = binding_module
         .chars()
         .map(|c| match c {
@@ -70,10 +68,7 @@ fn state_with_binding_module_compiles_and_schema_unchanged() {
         schema.fields["selected"].ty,
         TypeRef::Primitive(PrimType::Int),
     );
-    assert_eq!(
-        schema.fields["open"].ty,
-        TypeRef::Primitive(PrimType::Bool),
-    );
+    assert_eq!(schema.fields["open"].ty, TypeRef::Primitive(PrimType::Bool),);
 }
 
 #[test]
@@ -238,10 +233,7 @@ fn binding_module_combines_with_rename() {
     assert_eq!(LocalState::OGHAM_RECORD_NAME, "Renamed");
     let schema = LocalState::ogham_record_schema();
     assert_eq!(schema.fields.len(), 1);
-    assert_eq!(
-        schema.fields["v"].ty,
-        TypeRef::Primitive(PrimType::Int),
-    );
+    assert_eq!(schema.fields["v"].ty, TypeRef::Primitive(PrimType::Int),);
 }
 
 // ---------------------------------------------------------------------

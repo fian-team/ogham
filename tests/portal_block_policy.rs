@@ -72,13 +72,9 @@ fn portal_layer_priority_drives_paint_order() {
     // OverlayModal (100) paints before (under) Tooltip (300).
     // Verifies the priority constants haven't drifted from
     // UI_RUNTIME.md spec.
-    assert!(
-        PortalLayer::OverlayModal.priority() < PortalLayer::Tooltip.priority()
-    );
+    assert!(PortalLayer::OverlayModal.priority() < PortalLayer::Tooltip.priority());
     assert!(PortalLayer::Tooltip.priority() < PortalLayer::Toast.priority());
-    assert!(
-        PortalLayer::Toast.priority() < PortalLayer::CursorAttached.priority()
-    );
+    assert!(PortalLayer::Toast.priority() < PortalLayer::CursorAttached.priority());
 }
 
 #[test]

@@ -26,15 +26,27 @@ use skia_safe::{FontMgr, Typeface};
 pub mod cli;
 pub mod diagnostics;
 mod file_watcher;
+mod macros;
 pub mod parser;
 pub mod runtime;
 pub mod scanner;
 pub mod skia;
-pub mod widget;
-mod macros;
 mod typed;
+pub mod view;
+pub mod widget;
 
 pub use typed::TypedOgham;
+// Re-export the typed-binding derives + the standalone schema check so
+// embedders import everything from the `ogham` facade
+// (`use ogham::{OghamState, OghamMsg, OghamRecord};`) rather than depending on
+// the `ogham-derive` crate directly.
+pub use ogham_derive::{OghamMsg, OghamRecord, OghamState};
+// The matching traits live at `runtime::schema`; re-export them under the same
+// names (serde-style — derive in the macro namespace, trait in the type
+// namespace) so `use ogham::OghamState` brings both the derive and the trait's
+// methods (`ogham_snapshot_into`, `ogham_diff_apply`) into scope.
+pub use runtime::schema::{OghamField, OghamMsg, OghamRecord, OghamState};
+pub use typed::check_schemas_match_path;
 
 /// Top-level Ogham instance that owns the runtime, widget tree, and
 /// optional file watcher.
@@ -60,7 +72,10 @@ impl Ogham {
         path: String,
         config: runtime::config::RuntimeConfig,
     ) -> Result<Self, runtime::error::RuntimeError> {
-        let runtime = Arc::new(Mutex::new(runtime::Runtime::from_file(&path, Some(config.clone()))?));
+        let runtime = Arc::new(Mutex::new(runtime::Runtime::from_file(
+            &path,
+            Some(config.clone()),
+        )?));
         let ui = Self::create_ui_from_runtime(&runtime)?;
         let watch_paths = Self::paths_to_watch(&path, &runtime);
         let watcher = file_watcher::FileWatcher::new(watch_paths)?;
@@ -167,7 +182,12 @@ impl Ogham {
     /// Build the list of paths to watch: main file plus every imported module.
     fn paths_to_watch(main_path: &str, runtime: &Arc<Mutex<runtime::Runtime>>) -> Vec<PathBuf> {
         let mut paths = vec![PathBuf::from(main_path)];
-        paths.extend(runtime.lock().expect("runtime lock poisoned").get_imported_paths());
+        paths.extend(
+            runtime
+                .lock()
+                .expect("runtime lock poisoned")
+                .get_imported_paths(),
+        );
         paths
     }
 
@@ -495,9 +515,7 @@ impl Ogham {
         drop(g);
         self.ui.mark_needs_layout();
         let rt = self.runtime.clone();
-        rt.lock()
-            .expect("runtime lock poisoned")
-            .request_rerender();
+        rt.lock().expect("runtime lock poisoned").request_rerender();
     }
 
     /// Cancel any in-flight drag preview on this Ogham. Used by the
@@ -523,6 +541,22 @@ impl Ogham {
 
         let widget_ref =
             widget::builder::widget_value_to_widget_ref(&registry, &self.runtime, &widget_value)?;
+
+        // Self-heal a stranded host-orchestrated exit. `begin_exit_root` puts the
+        // root into an exiting state that only `restart_entry_animations` /
+        // `cancel_exit_root` clears; a host that exits this Ogham and later
+        // re-shows it without that paired call would otherwise reconcile into a
+        // blank ghost (a common orchestrator foot-gun). Reaching here means a
+        // rerender is pending — the host is actively pushing this UI's live
+        // content — so if a prior root-exit has *fully completed* we clear it now
+        // and let the reconcile below re-mount the live tree. Gated on
+        // `is_exit_complete_root` so an in-flight exit is never disturbed, and
+        // only the root can be exiting this way (normal in-tree / Presence exits
+        // leave the root un-exiting), so this can't interfere with element-level
+        // exit animations.
+        if self.is_exit_complete_root() {
+            self.cancel_exit_root();
+        }
 
         // Reconcile reports whether anything in the new tree actually
         // differed from the cached widgets. When the module re-executes

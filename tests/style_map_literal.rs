@@ -57,8 +57,8 @@ fn parse_flex_style_with_nested_map_literals() {
     }
 
     // style property must be present and be a map literal
-    let style_expr = find_prop(&widget.properties, "style")
-        .expect("Flex should have a 'style' property");
+    let style_expr =
+        find_prop(&widget.properties, "style").expect("Flex should have a 'style' property");
     let style_map = match style_expr {
         Expression::Literal(Literal::Map(m)) => m,
         _ => panic!("style value should be a map literal, got {:?}", style_expr),
@@ -77,8 +77,7 @@ fn parse_flex_style_with_nested_map_literals() {
     assert!(has_prop(&bg_map.properties, "a"));
 
     // padding: map with top, right, bottom, left
-    let pad = find_prop(&style_map.properties, "padding")
-        .expect("style should have padding");
+    let pad = find_prop(&style_map.properties, "padding").expect("style should have padding");
     let pad_map = match pad {
         Expression::Literal(Literal::Map(m)) => m,
         _ => panic!("padding should be a map literal, got {:?}", pad),
@@ -89,8 +88,7 @@ fn parse_flex_style_with_nested_map_literals() {
     assert!(has_prop(&pad_map.properties, "left"));
 
     // margin: map with top, right, bottom, left
-    let margin = find_prop(&style_map.properties, "margin")
-        .expect("style should have margin");
+    let margin = find_prop(&style_map.properties, "margin").expect("style should have margin");
     let margin_map = match margin {
         Expression::Literal(Literal::Map(m)) => m,
         _ => panic!("margin should be a map literal, got {:?}", margin),
@@ -219,12 +217,9 @@ fn build_flex_style(source: &str) -> ogham::widget::style::FlexStyle {
     let widget_value = runtime.execute_module(&module).unwrap();
     let runtime_ref = std::sync::Arc::new(std::sync::Mutex::new(runtime));
     let registry = ogham::widget::builder::WidgetRegistry::with_defaults();
-    let widget_ref = ogham::widget::builder::widget_value_to_widget_ref(
-        &registry,
-        &runtime_ref,
-        &widget_value,
-    )
-    .unwrap();
+    let widget_ref =
+        ogham::widget::builder::widget_value_to_widget_ref(&registry, &runtime_ref, &widget_value)
+            .unwrap();
     let guard = widget_ref.lock().unwrap();
     guard
         .downcast_ref::<ogham::widget::flex_widget::FlexWidget>()
@@ -236,9 +231,7 @@ fn build_flex_style(source: &str) -> ogham::widget::style::FlexStyle {
 #[test]
 fn corner_radius_shorthand_applies_round_to_all_four() {
     use ogham::widget::style::CornerShape;
-    let style = build_flex_style(
-        r#"let main = fn () { Flex { style: { corner_radius: 8 } } };"#,
-    );
+    let style = build_flex_style(r#"let main = fn () { Flex { style: { corner_radius: 8 } } };"#);
     assert_eq!(style.corners.top_left, CornerShape::Round(8.0));
     assert_eq!(style.corners.top_right, CornerShape::Round(8.0));
     assert_eq!(style.corners.bottom_left, CornerShape::Round(8.0));
@@ -264,9 +257,7 @@ fn corner_radius_zero_normalises_to_sharp() {
 #[test]
 fn corner_chamfer_shorthand_applies_chamfer_to_all_four() {
     use ogham::widget::style::CornerShape;
-    let style = build_flex_style(
-        r#"let main = fn () { Flex { style: { corner_chamfer: 6 } } };"#,
-    );
+    let style = build_flex_style(r#"let main = fn () { Flex { style: { corner_chamfer: 6 } } };"#);
     assert_eq!(style.corners.top_left, CornerShape::Chamfer(6.0));
     assert_eq!(style.corners.top_right, CornerShape::Chamfer(6.0));
     assert_eq!(style.corners.bottom_left, CornerShape::Chamfer(6.0));

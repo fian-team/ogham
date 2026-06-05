@@ -16,11 +16,7 @@ fn make_flex() -> WidgetRef {
     Arc::new(Mutex::new(FlexWidget::new()))
 }
 
-fn entry_for(
-    portal: &WidgetRef,
-    layer: PortalLayer,
-    cursor: CursorPreference,
-) -> PortalEntry {
+fn entry_for(portal: &WidgetRef, layer: PortalLayer, cursor: CursorPreference) -> PortalEntry {
     PortalEntry {
         widget: portal.clone(),
         viewport_rect: ogham::widget::rect::Rect::zero(),
@@ -54,8 +50,10 @@ fn wants_cursor_free_true_when_overlay_modal_open() {
     let info = modal.lock().unwrap().as_portal().unwrap();
     ui.portal_layers
         .push(entry_for(&modal, PortalLayer::OverlayModal, info.cursor));
-    assert!(ui.wants_cursor_free(),
-        "open OverlayModal portal should declare cursor-free");
+    assert!(
+        ui.wants_cursor_free(),
+        "open OverlayModal portal should declare cursor-free"
+    );
 }
 
 #[test]
@@ -67,8 +65,10 @@ fn wants_cursor_free_false_when_only_tooltip_open() {
     let info = tooltip.lock().unwrap().as_portal().unwrap();
     ui.portal_layers
         .push(entry_for(&tooltip, PortalLayer::Tooltip, info.cursor));
-    assert!(!ui.wants_cursor_free(),
-        "tooltip should not influence cursor state");
+    assert!(
+        !ui.wants_cursor_free(),
+        "tooltip should not influence cursor state"
+    );
 }
 
 #[test]
@@ -80,8 +80,10 @@ fn wants_cursor_free_true_when_popover_open() {
     let info = popover.lock().unwrap().as_portal().unwrap();
     ui.portal_layers
         .push(entry_for(&popover, PortalLayer::Popover, info.cursor));
-    assert!(ui.wants_cursor_free(),
-        "open Popover should declare cursor-free");
+    assert!(
+        ui.wants_cursor_free(),
+        "open Popover should declare cursor-free"
+    );
 }
 
 #[test]

@@ -88,7 +88,10 @@ fn is_exit_complete_root_tracks_in_flight_then_settled() {
     }
     assert!(!ogham.is_exit_complete_root(), "no exit started yet");
     ogham.begin_exit_root();
-    assert!(!ogham.is_exit_complete_root(), "exit just started; not settled");
+    assert!(
+        !ogham.is_exit_complete_root(),
+        "exit just started; not settled"
+    );
 
     // Drive the exit spring all the way out.
     let mut settled = false;
@@ -102,7 +105,10 @@ fn is_exit_complete_root_tracks_in_flight_then_settled() {
             break;
         }
     }
-    assert!(settled, "exit should settle within a reasonable tick budget");
+    assert!(
+        settled,
+        "exit should settle within a reasonable tick budget"
+    );
 }
 
 #[test]
@@ -338,4 +344,6 @@ fn restart_marks_layout_dirty() {
 
 // Layout APIs used above need pub access; assert via compile if needed.
 #[allow(dead_code)]
-fn _size_check(s: Size) -> Size { s }
+fn _size_check(s: Size) -> Size {
+    s
+}

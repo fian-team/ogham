@@ -2,19 +2,19 @@ use super::{block::*, call::*, identifier::*, literal::*, operator::*, span::Spa
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expression {
-    Literal(Literal),                 // 5 1 3 true "Hello world!"
-    Unary(Unary),                     // -5 !true
-    Binary(Binary),                   // 5 + 3, 8 * 1
-    Grouping(Grouping),               // (5 + 3)
-    Widget(Widget),                   // WidgetIdentifier { key: value }
-    MemberAccess(MemberAccess),       // foo.bar
-    Call(Call),                       // foo() or array.length()
-    IndexAccess(IndexAccess),         // array[index]
-    Range(RangeExpression),           // 0..5
-    ForLoop(ForLoopExpression),       // for (i in 0..5) { ... }
-    SpreadForLoop(ForLoopExpression), // ...for (i in 0..5) { ... }
-    Spread(SpreadExpression),         // ...expr (e.g. in array literals)
-    Match(MatchExpression),           // match expr { pat => body, ... }
+    Literal(Literal),                      // 5 1 3 true "Hello world!"
+    Unary(Unary),                          // -5 !true
+    Binary(Binary),                        // 5 + 3, 8 * 1
+    Grouping(Grouping),                    // (5 + 3)
+    Widget(Widget),                        // WidgetIdentifier { key: value }
+    MemberAccess(MemberAccess),            // foo.bar
+    Call(Call),                            // foo() or array.length()
+    IndexAccess(IndexAccess),              // array[index]
+    Range(RangeExpression),                // 0..5
+    ForLoop(ForLoopExpression),            // for (i in 0..5) { ... }
+    SpreadForLoop(ForLoopExpression),      // ...for (i in 0..5) { ... }
+    Spread(SpreadExpression),              // ...expr (e.g. in array literals)
+    Match(MatchExpression),                // match expr { pat => body, ... }
     PrefixIncrement(IncrementExpression),  // ++x
     PostfixIncrement(IncrementExpression), // x++
 }

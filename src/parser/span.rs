@@ -10,12 +10,7 @@ pub struct Span {
 }
 
 impl Span {
-    pub fn new(
-        start_line: usize,
-        start_column: usize,
-        end_line: usize,
-        end_column: usize,
-    ) -> Self {
+    pub fn new(start_line: usize, start_column: usize, end_line: usize, end_column: usize) -> Self {
         Span {
             start_line,
             start_column,

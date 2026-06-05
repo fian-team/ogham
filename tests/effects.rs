@@ -159,11 +159,7 @@ let main = fn () {
     // Change value → fires again.
     runtime.inject_host_state("counter".to_string(), Value::Integer(1));
     runtime.rerender().expect("third render");
-    assert_eq!(
-        log.lock().unwrap().len(),
-        2,
-        "dep change should refire"
-    );
+    assert_eq!(log.lock().unwrap().len(), 2, "dep change should refire");
 }
 
 #[test]
@@ -216,11 +212,7 @@ let main = fn () {
     let entries = log.lock().unwrap().clone();
     assert_eq!(
         entries,
-        vec![
-            "fire".to_string(),
-            "clean".to_string(),
-            "fire".to_string()
-        ],
+        vec!["fire".to_string(), "clean".to_string(), "fire".to_string()],
         "cleanup runs before re-fire"
     );
 }
@@ -466,9 +458,7 @@ fn effect_statement_is_a_distinct_ast_variant() {
     // Walk into main's body to find the Effect statement.
     let mut found_effect = false;
     if let Statement::Declare(d) = &module.body.statement_list[0] {
-        if let ogham::parser::Expression::Literal(ogham::parser::Literal::Function(f)) =
-            &d.value
-        {
+        if let ogham::parser::Expression::Literal(ogham::parser::Literal::Function(f)) = &d.value {
             for s in &f.body.statement_list {
                 if matches!(s, Statement::Effect(_)) {
                     found_effect = true;

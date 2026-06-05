@@ -217,6 +217,26 @@ impl SkiaEnv {
         scaled_font_size
     }
 
+    /// Build a paragraph for `text` using the current `text_style` and lay it
+    /// out, wrapping only when the content exceeds `scaled_width`.
+    fn build_laid_out_paragraph(
+        &self,
+        text: &str,
+        scaled_width: f32,
+    ) -> skia_safe::textlayout::Paragraph {
+        let mut paragraph_builder =
+            ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
+        paragraph_builder.push_style(&self.text_style);
+        paragraph_builder.add_text(text);
+        let mut paragraph = paragraph_builder.build();
+        paragraph.layout(f32::INFINITY);
+        let intrinsic = paragraph.max_intrinsic_width();
+        if scaled_width < intrinsic - 0.5 {
+            paragraph.layout(scaled_width);
+        }
+        paragraph
+    }
+
     /// Constructs a pure-round `RRect` with DPI-scaled radii. Caller is
     /// responsible for ensuring the corners are all `Sharp` or `Round`
     /// (i.e. `corners.is_pure_round()`); any `Chamfer` corner is treated
@@ -282,7 +302,8 @@ impl SkiaEnv {
         // BR corner.
         match corners.bottom_right {
             CornerShape::Round(_) if brs > 0.0 => {
-                let oval = Rect::from_xywh(right - 2.0 * brs, bottom - 2.0 * brs, 2.0 * brs, 2.0 * brs);
+                let oval =
+                    Rect::from_xywh(right - 2.0 * brs, bottom - 2.0 * brs, 2.0 * brs, 2.0 * brs);
                 pb.arc_to(oval, 0.0, 90.0, false);
             }
             _ => {
@@ -321,8 +342,7 @@ impl SkiaEnv {
     fn draw_border_line(&mut self, side: &BorderSide, x1: f32, y1: f32, x2: f32, y2: f32) {
         if side.width > 0.0 {
             self.paint.set_style(PaintStyle::Stroke);
-            self.paint
-                .set_stroke_width(self.scale_stroke(side.width));
+            self.paint.set_stroke_width(self.scale_stroke(side.width));
             self.paint.set_color(Color::from_argb(
                 side.color.a,
                 side.color.r,
@@ -371,18 +391,10 @@ impl SkiaEnv {
             y + half_top,
         );
     }
-
 }
 
 impl RenderContext for SkiaEnv {
-    fn fill_rect(
-        &mut self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        color: &crate::widget::style::Color,
-    ) {
+    fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: &crate::widget::style::Color) {
         let sx = self.scale_coord(x);
         let sy = self.scale_coord(y);
         let sw = self.scale_dim(w);
@@ -425,15 +437,7 @@ impl RenderContext for SkiaEnv {
         }
     }
 
-    fn draw_border(
-        &mut self,
-        border: &Border,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        corners: &Corners,
-    ) {
+    fn draw_border(&mut self, border: &Border, x: f32, y: f32, w: f32, h: f32, corners: &Corners) {
         let has_border = border.top.width > 0.0
             || border.right.width > 0.0
             || border.bottom.width > 0.0
@@ -459,8 +463,7 @@ impl RenderContext for SkiaEnv {
         let border_width = border.top.width;
         let border_color = border.top.color;
         self.paint.set_style(PaintStyle::Stroke);
-        self.paint
-            .set_stroke_width(self.scale_stroke(border_width));
+        self.paint.set_stroke_width(self.scale_stroke(border_width));
         self.paint.set_color(Color::from_argb(
             border_color.a,
             border_color.r,
@@ -479,7 +482,13 @@ impl RenderContext for SkiaEnv {
             // bounding rect by `half` on each side is a fair approximation
             // for typical 1–2px hairline borders; for thicker borders the
             // inset is approximate at the chamfered corners.
-            let path = self.build_corners_path(sx + half, sy + half, sw - 2.0 * half, sh - 2.0 * half, corners);
+            let path = self.build_corners_path(
+                sx + half,
+                sy + half,
+                sw - 2.0 * half,
+                sh - 2.0 * half,
+                corners,
+            );
             self.surface.canvas().draw_path(&path, &self.paint);
         }
     }
@@ -516,19 +525,33 @@ impl RenderContext for SkiaEnv {
         width: f32,
     ) {
         self.apply_text_style(style);
-        let mut paragraph_builder =
-            ParagraphBuilder::new(&self.paragraph_style, &self.font_collection);
-        paragraph_builder.push_style(&self.text_style);
-        paragraph_builder.add_text(text);
-        let mut paragraph = paragraph_builder.build();
         let scaled_width = self.scale_dim(width);
-        paragraph.layout(f32::INFINITY);
-        let intrinsic = paragraph.max_intrinsic_width();
-        if scaled_width < intrinsic - 0.5 {
-            paragraph.layout(scaled_width);
-        }
         let scaled_x = self.scale_coord(x);
         let scaled_y = self.scale_coord(y);
+
+        // Outline pass: stroke the glyphs underneath the fill so the fill color
+        // stays crisp. We bake a stroke paint into the text style, paint the
+        // outline, then restore the fill paint (`self.paint`) for the fill pass.
+        if let Some(outline) = style.get_outline() {
+            let mut stroke_paint = Paint::default();
+            stroke_paint.set_anti_alias(true);
+            stroke_paint.set_style(PaintStyle::Stroke);
+            stroke_paint.set_stroke_width(self.scale_stroke(outline.width));
+            stroke_paint.set_stroke_join(skia_safe::paint::Join::Round);
+            stroke_paint.set_color(Color::from_argb(
+                outline.color.a,
+                outline.color.r,
+                outline.color.g,
+                outline.color.b,
+            ));
+            self.text_style.set_foreground_paint(&stroke_paint);
+            let mut outline_paragraph = self.build_laid_out_paragraph(text, scaled_width);
+            outline_paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
+            // Restore the fill paint for the fill pass below.
+            self.text_style.set_foreground_paint(&self.paint);
+        }
+
+        let mut paragraph = self.build_laid_out_paragraph(text, scaled_width);
         paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
     }
 
@@ -550,14 +573,7 @@ impl RenderContext for SkiaEnv {
         self.stroke();
     }
 
-    fn draw_svg_dom(
-        &mut self,
-        dom: &skia_safe::svg::Dom,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-    ) {
+    fn draw_svg_dom(&mut self, dom: &skia_safe::svg::Dom, x: f32, y: f32, w: f32, h: f32) {
         let sx = self.scale_coord(x);
         let sy = self.scale_coord(y);
         let sw = self.scale_dim(w);
@@ -687,11 +703,7 @@ impl RenderContext for SkiaEnv {
         // effect would wash out for the duration of the animation.
         // Fall back to drawing a blurred slice of the snapshot we
         // captured when the layer opened.
-        let backdrop_snapshot = self
-            .backdrop_snapshots
-            .iter()
-            .rev()
-            .find_map(|s| s.clone());
+        let backdrop_snapshot = self.backdrop_snapshots.iter().rev().find_map(|s| s.clone());
 
         let canvas = self.surface.canvas();
         // Outer save: lets pop_backdrop_blur restore() back past the
@@ -816,11 +828,9 @@ impl RenderContext for SkiaEnv {
         if s_blur > 0.0 {
             // Solid mask filter blurs the alpha channel along the stroke,
             // producing the soft glow falloff.
-            if let Some(mf) = skia_safe::MaskFilter::blur(
-                skia_safe::BlurStyle::Normal,
-                s_blur,
-                false,
-            ) {
+            if let Some(mf) =
+                skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, s_blur, false)
+            {
                 paint.set_mask_filter(mf);
             }
         }
@@ -867,9 +877,9 @@ impl Surface for SkiaEnv {
         if let Some(preview_state) = ui.active_drag_preview().cloned() {
             let preview_rect = {
                 let g = preview_state.preview.lock().expect("widget lock poisoned");
-                g.get_layout_rect().cloned().unwrap_or_else(|| {
-                    crate::widget::rect::Rect::new(0.0, 0.0, 0.0, 0.0)
-                })
+                g.get_layout_rect()
+                    .cloned()
+                    .unwrap_or_else(|| crate::widget::rect::Rect::new(0.0, 0.0, 0.0, 0.0))
             };
             ui.portal_layers.push(crate::widget::PortalEntry {
                 widget: preview_state.preview.clone(),
@@ -909,18 +919,11 @@ impl Surface for SkiaEnv {
             // translucent backdrop drawn before any entry.
             // Dim is currently treated as None (TODO; no
             // layer defaults to Dim).
-            if layer.default_backdrop()
-                == crate::widget::portal_layer::BackdropPolicy::Block
-            {
+            if layer.default_backdrop() == crate::widget::portal_layer::BackdropPolicy::Block {
                 Self::paint_layer_backdrop(self, viewport_size);
             }
             for entry in &entries {
-                Self::paint_portal_entry(
-                    self,
-                    entry,
-                    focused.as_ref(),
-                    &mut ui.image_cache,
-                );
+                Self::paint_portal_entry(self, entry, focused.as_ref(), &mut ui.image_cache);
             }
         }
 
@@ -1055,10 +1058,7 @@ impl SkiaEnv {
         // (origin minus scroll) adds to the cumulative
         // translate, so when a portal is encountered deep in
         // the tree its viewport_rect is captured correctly.
-        let child_accumulated = (
-            accumulated_translate.0 + tx,
-            accumulated_translate.1 + ty,
-        );
+        let child_accumulated = (accumulated_translate.0 + tx, accumulated_translate.1 + ty);
         for child in &children {
             Self::draw_widget_recursive(
                 env,

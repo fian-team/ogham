@@ -62,21 +62,42 @@ pub fn build_semantic_tokens(tokens: &[Token], ast: Option<&Function>) -> Vec<Se
 fn collect_from_token_stream(tokens: &[Token], out: &mut Vec<RawToken>) {
     for token in tokens {
         let (token_type, length) = match &token.token_type {
-            TokenType::Let | TokenType::State | TokenType::If | TokenType::Else
-            | TokenType::Return | TokenType::Log | TokenType::Fn | TokenType::For
-            | TokenType::In | TokenType::Match | TokenType::Import | TokenType::From
-            | TokenType::OnMount | TokenType::OnUnmount
-            | TokenType::Effect | TokenType::Cleanup => {
-                (TT_KEYWORD, token.length as u32)
-            }
-            TokenType::Plus | TokenType::Minus | TokenType::Multiply | TokenType::Divide
-            | TokenType::Modulo | TokenType::Power | TokenType::EqualEqual
-            | TokenType::NotEqual | TokenType::GreaterThan | TokenType::GreaterThanOrEqualTo
-            | TokenType::LessThan | TokenType::LessThanOrEqualTo | TokenType::Not
-            | TokenType::And | TokenType::Or | TokenType::Equal | TokenType::FatArrow
-            | TokenType::Range | TokenType::Spread | TokenType::Increment => {
-                (TT_OPERATOR, token.length as u32)
-            }
+            TokenType::Let
+            | TokenType::State
+            | TokenType::If
+            | TokenType::Else
+            | TokenType::Return
+            | TokenType::Log
+            | TokenType::Fn
+            | TokenType::For
+            | TokenType::In
+            | TokenType::Match
+            | TokenType::Import
+            | TokenType::From
+            | TokenType::OnMount
+            | TokenType::OnUnmount
+            | TokenType::Effect
+            | TokenType::Cleanup => (TT_KEYWORD, token.length as u32),
+            TokenType::Plus
+            | TokenType::Minus
+            | TokenType::Multiply
+            | TokenType::Divide
+            | TokenType::Modulo
+            | TokenType::Power
+            | TokenType::EqualEqual
+            | TokenType::NotEqual
+            | TokenType::GreaterThan
+            | TokenType::GreaterThanOrEqualTo
+            | TokenType::LessThan
+            | TokenType::LessThanOrEqualTo
+            | TokenType::Not
+            | TokenType::And
+            | TokenType::Or
+            | TokenType::Equal
+            | TokenType::FatArrow
+            | TokenType::Range
+            | TokenType::Spread
+            | TokenType::Increment => (TT_OPERATOR, token.length as u32),
             _ => continue,
         };
         out.push(RawToken {

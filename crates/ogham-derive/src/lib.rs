@@ -171,11 +171,7 @@ fn expand_ogham_state(input: DeriveInput) -> syn::Result<proc_macro2::TokenStrea
                 ty: f.ty.clone(),
             })
             .collect();
-        manifest_emit::emit_state_manifest(
-            &name_ident.to_string(),
-            &binding_module,
-            &emit_fields,
-        );
+        manifest_emit::emit_state_manifest(&name_ident.to_string(), &binding_module, &emit_fields);
     }
 
     // OghamState reuses the OghamRecord derive's schema/value
@@ -303,11 +299,7 @@ fn expand_ogham_msg(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                 args: v.arg_types.clone(),
             })
             .collect();
-        manifest_emit::emit_events_manifest(
-            &name_ident.to_string(),
-            &binding_module,
-            &emit_events,
-        );
+        manifest_emit::emit_events_manifest(&name_ident.to_string(), &binding_module, &emit_events);
     }
 
     // const OGHAM_EVENTS — list of (name, arg-type-refs) pairs.

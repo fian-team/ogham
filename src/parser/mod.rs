@@ -74,7 +74,12 @@ impl Parser {
     /// Build a span covering just the current token (before consuming it).
     fn current_token_span(&self) -> Span {
         let token = &self.input[self.current];
-        Span::new(token.line, token.column, token.line, token.column + token.length)
+        Span::new(
+            token.line,
+            token.column,
+            token.line,
+            token.column + token.length,
+        )
     }
 
     // -- Token helpers ------------------------------------------------------
@@ -647,7 +652,11 @@ impl Parser {
         self.consume_if(scanner::TokenType::RightBracket)?;
         self.consume_if(scanner::TokenType::Semicolon)?;
         let span = self.span_from(start);
-        Ok(Statement::RecordDeclaration(RecordDecl { name, fields, span }))
+        Ok(Statement::RecordDeclaration(RecordDecl {
+            name,
+            fields,
+            span,
+        }))
     }
 
     /// Parse `host_state { field: TypeRef = literal?, ... };`. At most
@@ -663,7 +672,10 @@ impl Parser {
         self.consume_if(scanner::TokenType::RightBracket)?;
         self.consume_if(scanner::TokenType::Semicolon)?;
         let span = self.span_from(start);
-        Ok(Statement::HostStateDeclaration(HostStateDecl { fields, span }))
+        Ok(Statement::HostStateDeclaration(HostStateDecl {
+            fields,
+            span,
+        }))
     }
 
     /// Parse `events { name(TypeRef, ...), ... };`.
@@ -731,7 +743,12 @@ impl Parser {
                 None
             };
             let span = self.span_from(field_start);
-            fields.push(FieldDecl { name, ty, default, span });
+            fields.push(FieldDecl {
+                name,
+                ty,
+                default,
+                span,
+            });
             if self.next_is(vec![scanner::TokenType::Comma]) {
                 self.consume();
                 // Allow trailing comma before `}`.
@@ -751,9 +768,9 @@ impl Parser {
     /// as `Optional<Optional<T>>` (a valid if eyebrow-raising shape).
     fn parse_type_ref(&mut self, allow_self: bool) -> Result<typed_bindings::TypeRef, SyntaxError> {
         use typed_bindings::{PrimType, TypeRef};
-        let token = self.current().ok_or_else(|| {
-            SyntaxError::new(0, 0, "Unexpected end of input while parsing type")
-        })?;
+        let token = self
+            .current()
+            .ok_or_else(|| SyntaxError::new(0, 0, "Unexpected end of input while parsing type"))?;
         let line = token.line;
         let column = token.column;
         let mut ty = match token.token_type.clone() {
@@ -1055,7 +1072,11 @@ impl Parser {
                 self.consume();
             }
             _ => {
-                return Err(SyntaxError::new(current.line, current.column, "Expected 'match'"));
+                return Err(SyntaxError::new(
+                    current.line,
+                    current.column,
+                    "Expected 'match'",
+                ));
             }
         }
         self.parsing_match_scrutinee = true;
@@ -1439,8 +1460,7 @@ impl Parser {
             }
         }
         self.consume_if(scanner::TokenType::RightParenthesis)?;
-        let span =
-            self.span_from((callee_span.start_line, callee_span.start_column));
+        let span = self.span_from((callee_span.start_line, callee_span.start_column));
         Ok(Call::new(callee, arguments, span))
     }
 
@@ -1463,7 +1483,11 @@ impl Parser {
         }
         if self.current >= self.input.len() {
             let last = self.input.last().unwrap();
-            return Err(SyntaxError::new(last.line, last.column, "Unterminated map literal"));
+            return Err(SyntaxError::new(
+                last.line,
+                last.column,
+                "Unterminated map literal",
+            ));
         }
         self.consume_if(scanner::TokenType::RightBracket)?;
         map.span = self.span_from(start);
@@ -1668,7 +1692,10 @@ mod tests {
         match expr {
             Expression::Unary(unary) => {
                 assert_eq!(unary.operator, Operator::Minus);
-                assert!(matches!(*unary.value, Expression::Literal(Literal::Integer(5, _))));
+                assert!(matches!(
+                    *unary.value,
+                    Expression::Literal(Literal::Integer(5, _))
+                ));
             }
             other => panic!("Expected Unary, got {:?}", other),
         }
@@ -1684,7 +1711,10 @@ mod tests {
         match expr {
             Expression::Unary(unary) => {
                 assert_eq!(unary.operator, Operator::Not);
-                assert!(matches!(*unary.value, Expression::Literal(Literal::Boolean(true, _))));
+                assert!(matches!(
+                    *unary.value,
+                    Expression::Literal(Literal::Boolean(true, _))
+                ));
             }
             other => panic!("Expected Unary, got {:?}", other),
         }
@@ -1703,7 +1733,10 @@ mod tests {
                 match outer.value.as_ref() {
                     Expression::Unary(inner) => {
                         assert_eq!(inner.operator, Operator::Minus);
-                        assert!(matches!(*inner.value, Expression::Literal(Literal::Integer(5, _))));
+                        assert!(matches!(
+                            *inner.value,
+                            Expression::Literal(Literal::Integer(5, _))
+                        ));
                     }
                     other => panic!("Expected inner Unary, got {:?}", other),
                 }
@@ -1722,11 +1755,17 @@ mod tests {
         match &expr {
             Expression::Binary(binary) => {
                 assert_eq!(binary.operator, Operator::Minus);
-                assert!(matches!(*binary.left, Expression::Literal(Literal::Integer(0, _))));
+                assert!(matches!(
+                    *binary.left,
+                    Expression::Literal(Literal::Integer(0, _))
+                ));
                 match binary.right.as_ref() {
                     Expression::Unary(unary) => {
                         assert_eq!(unary.operator, Operator::Minus);
-                        assert!(matches!(*unary.value, Expression::Literal(Literal::Integer(5, _))));
+                        assert!(matches!(
+                            *unary.value,
+                            Expression::Literal(Literal::Integer(5, _))
+                        ));
                     }
                     other => panic!("Expected Unary on right, got {:?}", other),
                 }

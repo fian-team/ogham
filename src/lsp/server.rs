@@ -96,9 +96,7 @@ impl LanguageServer for OghamLanguageServer {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         self.store.lock().unwrap().close(&uri);
-        self.client
-            .publish_diagnostics(uri, vec![], None)
-            .await;
+        self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -130,7 +128,11 @@ impl LanguageServer for OghamLanguageServer {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = params.text_document_position_params.text_document.uri.clone();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
         let pos = params.text_document_position_params.position;
         let store = self.store.lock().unwrap();
         let Some(doc) = store.get(&uri) else {
@@ -173,8 +175,7 @@ impl LanguageServer for OghamLanguageServer {
         let Some(doc) = store.get(&params.text_document.uri) else {
             return Ok(None);
         };
-        let tokens =
-            semantic_tokens::build_semantic_tokens(&doc.tokens, doc.ast.as_ref());
+        let tokens = semantic_tokens::build_semantic_tokens(&doc.tokens, doc.ast.as_ref());
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
@@ -231,7 +232,10 @@ fn collect_diagnostics(doc: &crate::document::Document) -> Vec<Diagnostic> {
             let line = token.line.saturating_sub(1) as u32;
             let col = token.column.saturating_sub(1) as u32;
             diagnostics.push(Diagnostic {
-                range: Range::new(Position::new(line, col), Position::new(line, col + token.length as u32)),
+                range: Range::new(
+                    Position::new(line, col),
+                    Position::new(line, col + token.length as u32),
+                ),
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("ogham".to_string()),
                 message: msg.clone(),
@@ -290,9 +294,7 @@ fn collect_diagnostics(doc: &crate::document::Document) -> Vec<Diagnostic> {
 /// at runtime but earns a warning at the LSP because the
 /// semantic almost certainly isn't what the author wanted (use
 /// `effect (cond) { ... }` for "run when the flag changes").
-fn collect_lifecycle_warnings(
-    module: &ogham::parser::Function,
-) -> Vec<ogham::parser::SyntaxError> {
+fn collect_lifecycle_warnings(module: &ogham::parser::Function) -> Vec<ogham::parser::SyntaxError> {
     let mut warnings = Vec::new();
     walk_block_for_hooks(&module.body, /* in_conditional */ false, &mut warnings);
     warnings
@@ -384,9 +386,8 @@ fn walk_stmt_for_hooks(
         // fires in real consumer code: hooks live in fn bodies,
         // not at module top level.
         Statement::Declare(d) => {
-            if let ogham::parser::Expression::Literal(
-                ogham::parser::Literal::Function(f),
-            ) = &d.value
+            if let ogham::parser::Expression::Literal(ogham::parser::Literal::Function(f)) =
+                &d.value
             {
                 walk_block_for_hooks(&f.body, in_conditional, out);
             }
@@ -419,11 +420,7 @@ fn syntax_error_to_diagnostic(err: &ogham::parser::SyntaxError) -> Diagnostic {
         range: Range::new(Position::new(line, col), Position::new(line, col + length)),
         severity: Some(severity),
         source: Some("ogham".to_string()),
-        message: format_diagnostic_message(
-            &err.message,
-            err.note.as_deref(),
-            err.help.as_deref(),
-        ),
+        message: format_diagnostic_message(&err.message, err.note.as_deref(), err.help.as_deref()),
         ..Default::default()
     }
 }
@@ -496,7 +493,9 @@ let main = fn () {
         let warnings = collect_lifecycle_warnings(&module);
         assert_eq!(warnings.len(), 1, "should warn on the conditional on_mount");
         assert!(
-            warnings[0].message.contains("on_mount inside a conditional"),
+            warnings[0]
+                .message
+                .contains("on_mount inside a conditional"),
             "warning text mismatch: {}",
             warnings[0].message
         );

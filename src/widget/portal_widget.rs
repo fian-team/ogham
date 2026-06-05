@@ -19,9 +19,7 @@
 use super::flex_widget::FlexWidget;
 use super::portal_layer::{CursorPreference, PortalLayer};
 use super::style::{Direction, FlexStyle, Size};
-use super::{
-    PortalInfo, RenderEffects, TickResult, UpdateResult, Widget, WidgetRef,
-};
+use super::{PortalInfo, RenderEffects, TickResult, UpdateResult, Widget, WidgetRef};
 use crate::widget::event::{Event, EventContext};
 use crate::widget::point::Point;
 use crate::widget::rect::Rect;

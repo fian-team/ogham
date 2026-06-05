@@ -91,7 +91,10 @@ fn schema_compatible_reload_preserves_typed_state() {
     let path = write_temp_ogh("compat", SCHEMA_OGH);
     let mut typed = Ogham::watch_typed::<CountState, CountMsg>(
         path.clone(),
-        CountState { count: 5, label: "initial".into() },
+        CountState {
+            count: 5,
+            label: "initial".into(),
+        },
         RuntimeConfig::default(),
     )
     .expect("initial construction");
@@ -116,7 +119,10 @@ fn schema_compatible_reload_preserves_typed_state() {
     let count = rt.get_host_state("count").expect("count should be set");
     assert_eq!(count, ogham::runtime::value::Value::Integer(99));
     let label = rt.get_host_state("label").expect("label should be set");
-    assert_eq!(label, ogham::runtime::value::Value::String("updated".into()));
+    assert_eq!(
+        label,
+        ogham::runtime::value::Value::String("updated".into())
+    );
 }
 
 #[test]
@@ -138,7 +144,11 @@ fn schema_incompatible_reload_returns_schema_mismatch() {
     let RuntimeError::SchemaMismatch(diff) = err else {
         panic!("expected SchemaMismatch, got {:?}", err);
     };
-    assert!(diff.contains("count"), "diff should mention count: {}", diff);
+    assert!(
+        diff.contains("count"),
+        "diff should mention count: {}",
+        diff
+    );
     assert!(diff.contains("type differs"), "diff: {}", diff);
 
     // The original runtime should be untouched: the count value
@@ -158,5 +168,7 @@ fn from_source_typed_reload_is_noop() {
         RuntimeConfig::default(),
     )
     .expect("from_source_typed");
-    typed.reload().expect("reload should be a no-op for from_source");
+    typed
+        .reload()
+        .expect("reload should be a no-op for from_source");
 }

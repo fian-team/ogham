@@ -17,7 +17,10 @@ use ogham::runtime::Runtime;
 use ogham::widget::flex_widget::FlexWidget;
 use ogham::widget::{WidgetRef, UI};
 
-fn record_log() -> (Arc<Mutex<Vec<String>>>, impl Fn(&[Value]) -> Result<Value, String> + 'static) {
+fn record_log() -> (
+    Arc<Mutex<Vec<String>>>,
+    impl Fn(&[Value]) -> Result<Value, String> + 'static,
+) {
     let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let log_for = Arc::clone(&log);
     let handler = move |args: &[Value]| {
@@ -89,10 +92,7 @@ let main = fn () {
     runtime.rerender().expect("second render");
     runtime.flush_remaining_unmount_candidates();
     runtime.pre_layout_drain();
-    assert_eq!(
-        log.lock().unwrap().clone(),
-        vec!["unmounted".to_string()],
-    );
+    assert_eq!(log.lock().unwrap().clone(), vec!["unmounted".to_string()],);
 }
 
 #[test]

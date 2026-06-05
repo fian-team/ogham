@@ -12,10 +12,10 @@ use ogham::runtime::Runtime;
 use ogham::widget::event::{DragState, Event, EventContext};
 use ogham::widget::flex_widget::FlexWidget;
 use ogham::widget::point::Point;
+use ogham::widget::portal_layer::{CursorPreference, PortalLayer};
 use ogham::widget::rect::Rect;
 use ogham::widget::style::FlexStyle;
 use ogham::widget::{builder, PortalEntry, Widget, WidgetRef, UI};
-use ogham::widget::portal_layer::{CursorPreference, PortalLayer};
 
 fn make_flex_with_layout(rect: Rect) -> WidgetRef {
     let mut f = FlexWidget::new();
@@ -24,9 +24,7 @@ fn make_flex_with_layout(rect: Rect) -> WidgetRef {
 }
 
 fn build_root(src: &str) -> WidgetRef {
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -127,7 +125,10 @@ fn dispatch_drag_start_fires_listener_on_origin() {
     let payload = Value::Map(item_map);
 
     let state = ui.dispatch_drag_start(origin.clone(), payload.clone(), Point::new(5.0, 5.0));
-    assert!(fired.load(Ordering::SeqCst), "drag_start listener should fire");
+    assert!(
+        fired.load(Ordering::SeqCst),
+        "drag_start listener should fire"
+    );
     assert!(state.past_dead_zone);
     assert!(state.origin_widget.is_some());
     let captured = captured_payload.lock().unwrap();
@@ -400,9 +401,7 @@ let main = fn () {
   }
 };
 "#;
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -412,8 +411,7 @@ let main = fn () {
         rt.execute_module(&module).expect("execute")
     };
     let registry = builder::WidgetRegistry::with_defaults();
-    let result =
-        builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value);
+    let result = builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value);
     assert!(
         matches!(
             result,

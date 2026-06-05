@@ -113,7 +113,12 @@ impl fmt::Display for Value {
             Value::WidgetRef(id) => write!(f, "<widget#{}>", id),
             Value::Mutation(m) => {
                 let s = m.borrow();
-                write!(f, "<mutation {} status={}>", s.event_name, s.status.as_str())
+                write!(
+                    f,
+                    "<mutation {} status={}>",
+                    s.event_name,
+                    s.status.as_str()
+                )
             }
             Value::BoundTrigger(_) => write!(f, "<bound trigger>"),
         }
@@ -126,35 +131,51 @@ pub trait IntoOghamValue {
 }
 
 impl IntoOghamValue for i32 {
-    fn into_ogham_value(self) -> Value { Value::Integer(self) }
+    fn into_ogham_value(self) -> Value {
+        Value::Integer(self)
+    }
 }
 
 impl IntoOghamValue for u32 {
-    fn into_ogham_value(self) -> Value { Value::Integer(self as i32) }
+    fn into_ogham_value(self) -> Value {
+        Value::Integer(self as i32)
+    }
 }
 
 impl IntoOghamValue for u64 {
-    fn into_ogham_value(self) -> Value { Value::Integer(self as i32) }
+    fn into_ogham_value(self) -> Value {
+        Value::Integer(self as i32)
+    }
 }
 
 impl IntoOghamValue for f32 {
-    fn into_ogham_value(self) -> Value { Value::Float(self as f64) }
+    fn into_ogham_value(self) -> Value {
+        Value::Float(self as f64)
+    }
 }
 
 impl IntoOghamValue for f64 {
-    fn into_ogham_value(self) -> Value { Value::Float(self) }
+    fn into_ogham_value(self) -> Value {
+        Value::Float(self)
+    }
 }
 
 impl IntoOghamValue for bool {
-    fn into_ogham_value(self) -> Value { Value::Boolean(self) }
+    fn into_ogham_value(self) -> Value {
+        Value::Boolean(self)
+    }
 }
 
 impl IntoOghamValue for String {
-    fn into_ogham_value(self) -> Value { Value::String(self) }
+    fn into_ogham_value(self) -> Value {
+        Value::String(self)
+    }
 }
 
 impl IntoOghamValue for &str {
-    fn into_ogham_value(self) -> Value { Value::String(self.to_string()) }
+    fn into_ogham_value(self) -> Value {
+        Value::String(self.to_string())
+    }
 }
 
 impl<T: IntoOghamValue> IntoOghamValue for Option<T> {
@@ -173,5 +194,7 @@ impl<T: IntoOghamValue> IntoOghamValue for Vec<T> {
 }
 
 impl IntoOghamValue for Value {
-    fn into_ogham_value(self) -> Value { self }
+    fn into_ogham_value(self) -> Value {
+        self
+    }
 }

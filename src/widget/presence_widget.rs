@@ -414,10 +414,7 @@ mod tests {
         Arc::new(Mutex::new(FlexWidget::new()))
     }
 
-    fn presence_ref(
-        key: Option<&str>,
-        children: Vec<WidgetRef>,
-    ) -> WidgetRef {
+    fn presence_ref(key: Option<&str>, children: Vec<WidgetRef>) -> WidgetRef {
         let mut p = PresenceWidget::new();
         p.generation_key = key.map(|s| s.to_string());
         p.inner.children = children;
@@ -579,7 +576,10 @@ mod tests {
         let revert = presence_ref("a".into(), vec![exit_capable_child()]);
         let result = live.update(revert);
         assert!(
-            result.cancelled_unmount_prefixes.iter().any(|p| p == "panel"),
+            result
+                .cancelled_unmount_prefixes
+                .iter()
+                .any(|p| p == "panel"),
             "cancelled exit's prefix should be reported; got {:?}",
             result.cancelled_unmount_prefixes
         );
@@ -617,7 +617,10 @@ mod tests {
         // Tick until the exit spring settles and the ghost drains.
         let mut committed = false;
         for _ in 0..240 {
-            { let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0); live.tick_animations(&mut ctx); }
+            {
+                let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0);
+                live.tick_animations(&mut ctx);
+            }
             if live.pending_children.is_none() {
                 committed = true;
                 break;
@@ -648,7 +651,10 @@ mod tests {
         assert_eq!(live.inner.children.len(), 1);
 
         for _ in 0..240 {
-            { let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0); live.tick_animations(&mut ctx); }
+            {
+                let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0);
+                live.tick_animations(&mut ctx);
+            }
             if live.pending_children.is_none() {
                 break;
             }
@@ -681,7 +687,10 @@ mod tests {
 
         // Tick a bit so the exit has some progress (interrupt mid-flight).
         for _ in 0..5 {
-            { let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0); live.tick_animations(&mut ctx); }
+            {
+                let mut ctx = crate::widget::event::TickContext::new(1.0 / 60.0);
+                live.tick_animations(&mut ctx);
+            }
         }
 
         // b -> a: revert. Pending dropped; exit on current unwound.

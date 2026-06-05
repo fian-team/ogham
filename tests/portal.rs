@@ -32,9 +32,7 @@ impl<'a> std::fmt::Debug for DebugBridgeError<'a> {
 }
 
 fn build_root(src: &str) -> ogham::widget::WidgetRef {
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -106,7 +104,10 @@ let main = fn () {
     let info = info.unwrap();
     assert!(info.open, "open should be true from descriptor");
     assert!(!info.focus_trap, "focus_trap should be false");
-    assert!(!widget.get_children().is_empty(), "open portal exposes children");
+    assert!(
+        !widget.get_children().is_empty(),
+        "open portal exposes children"
+    );
 }
 
 #[test]
@@ -156,9 +157,7 @@ let main = fn () {
     // execute_module returns the widget VALUE, then the host
     // (lib::Ogham::new) calls widget_value_to_widget_ref,
     // which is where the type-check fires. Replicate that here.
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -190,9 +189,7 @@ let main = fn () {
   }
 };
 "#;
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -247,9 +244,7 @@ let main = fn () {
   }
 };
 "#;
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     {
         let mut rt = runtime.lock().unwrap();
         rt.inject_host_state("gate".to_string(), Value::Boolean(true));
@@ -263,8 +258,8 @@ let main = fn () {
         rt.execute_module(&module).expect("execute")
     };
     let registry = ogham::widget::builder::WidgetRegistry::with_defaults();
-    let root = builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value)
-        .expect("build");
+    let root =
+        builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value).expect("build");
 
     {
         let widget = root.lock().unwrap();
@@ -282,8 +277,7 @@ let main = fn () {
         rt.rerender().expect("rerender")
     };
     let new_root =
-        builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value2)
-            .expect("rebuild");
+        builder::widget_value_to_widget_ref(&registry, &runtime, &widget_value2).expect("rebuild");
     {
         let mut root_guard = root.lock().unwrap();
         root_guard.update(new_root);
@@ -321,20 +315,14 @@ fn portal_layer_property_parses_each_named_layer() {
         let root = build_root(&src);
         let widget = root.lock().unwrap();
         let info = widget.as_portal().expect("is portal");
-        assert_eq!(
-            info.layer, layer,
-            "round-trip failed for layer {:?}",
-            layer
-        );
+        assert_eq!(info.layer, layer, "round-trip failed for layer {:?}", layer);
     }
 }
 
 #[test]
 fn portal_layer_property_rejects_unknown_layer_name() {
     let src = r#"let main = fn () { Portal { layer: "modal", children: [] } };"#;
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -359,9 +347,7 @@ fn portal_layer_property_rejects_unknown_layer_name() {
 #[test]
 fn portal_layer_property_rejects_non_string_value() {
     let src = r#"let main = fn () { Portal { layer: 42, children: [] } };"#;
-    let runtime = Arc::new(Mutex::new(
-        Runtime::from_source(src, None).expect("parse"),
-    ));
+    let runtime = Arc::new(Mutex::new(Runtime::from_source(src, None).expect("parse")));
     let module = {
         let rt = runtime.lock().unwrap();
         rt.get_module().expect("module").clone()
@@ -409,10 +395,14 @@ fn multiple_portals_across_layers_paint_low_to_high() {
 
     // Paint order: low priority first.
     let paint: Vec<_> = layers.iter_paint_order().collect();
-    assert!(Arc::ptr_eq(&paint[0].widget, &modal),
-        "OverlayModal (priority 100) paints before Tooltip (300)");
-    assert!(Arc::ptr_eq(&paint[1].widget, &tooltip),
-        "Tooltip (300) paints on top of OverlayModal (100)");
+    assert!(
+        Arc::ptr_eq(&paint[0].widget, &modal),
+        "OverlayModal (priority 100) paints before Tooltip (300)"
+    );
+    assert!(
+        Arc::ptr_eq(&paint[1].widget, &tooltip),
+        "Tooltip (300) paints on top of OverlayModal (100)"
+    );
 }
 
 #[test]
@@ -425,8 +415,10 @@ fn iter_hit_test_order_walks_high_priority_first_then_lifo() {
     layers.push(entry_for(tooltip.clone(), PortalLayer::Tooltip));
 
     let hit: Vec<_> = layers.iter_hit_test_order().collect();
-    assert!(Arc::ptr_eq(&hit[0].widget, &tooltip),
-        "high-priority Tooltip is hit-tested first");
+    assert!(
+        Arc::ptr_eq(&hit[0].widget, &tooltip),
+        "high-priority Tooltip is hit-tested first"
+    );
     assert!(Arc::ptr_eq(&hit[1].widget, &modal));
 }
 
@@ -458,10 +450,7 @@ fn make_portal_widget(layer: PortalLayer) -> ogham::widget::WidgetRef {
     Arc::new(Mutex::new(p))
 }
 
-fn entry_for(
-    widget: ogham::widget::WidgetRef,
-    layer: PortalLayer,
-) -> ogham::widget::PortalEntry {
+fn entry_for(widget: ogham::widget::WidgetRef, layer: PortalLayer) -> ogham::widget::PortalEntry {
     ogham::widget::PortalEntry {
         widget,
         viewport_rect: ogham::widget::rect::Rect::zero(),

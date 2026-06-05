@@ -110,13 +110,9 @@ impl TextWidget {
             ));
 
             if let Some(ref family) = self.style.font {
-                cache
-                    .skia_text_style
-                    .set_font_families(&[family.as_str()]);
+                cache.skia_text_style.set_font_families(&[family.as_str()]);
             } else if let Some(default) = ctx.default_font {
-                cache
-                    .skia_text_style
-                    .set_font_families(&[default]);
+                cache.skia_text_style.set_font_families(&[default]);
             } else {
                 cache.skia_text_style.set_font_families(&[] as &[&str]);
             }

@@ -85,9 +85,7 @@ impl Spring {
             self.current += self.velocity * step;
         }
 
-        if (self.target - self.current).abs() < SETTLE_POS
-            && self.velocity.abs() < SETTLE_VEL
-        {
+        if (self.target - self.current).abs() < SETTLE_POS && self.velocity.abs() < SETTLE_VEL {
             self.current = self.target;
             self.velocity = 0.0;
             false

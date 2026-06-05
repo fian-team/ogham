@@ -20,23 +20,23 @@
 pub mod animation;
 /// Flexbox-like layout widget.
 pub mod flex_widget;
-/// Lifecycle-sequencing container that holds one generation of content
-/// at a time and waits for exits before mounting the next.
-pub mod presence_widget;
-/// Phase 2 Portal widget — defers paint + hit-test to the
-/// per-frame `UI.portal_layers`, rendering in front of all
-/// base-tree siblings.
-pub mod portal_widget;
-/// Phase 2.5 M0: named portal layers + per-layer backdrop
-/// policies. Portal widgets declare a layer; the renderer
-/// dispatches to per-layer storage and paints in priority
-/// order.
-pub mod portal_layer;
 /// Grid layout widget.
 pub mod grid_widget;
 pub mod image;
 /// Image rendering widget.
 pub mod image_widget;
+/// Phase 2.5 M0: named portal layers + per-layer backdrop
+/// policies. Portal widgets declare a layer; the renderer
+/// dispatches to per-layer storage and paints in priority
+/// order.
+pub mod portal_layer;
+/// Phase 2 Portal widget — defers paint + hit-test to the
+/// per-frame `UI.portal_layers`, rendering in front of all
+/// base-tree siblings.
+pub mod portal_widget;
+/// Lifecycle-sequencing container that holds one generation of content
+/// at a time and waits for exits before mounting the next.
+pub mod presence_widget;
 /// Convenience macros for working with widgets.
 #[macro_use]
 pub mod event;
@@ -449,8 +449,7 @@ impl UI {
         let mut block_lower = false;
         // Use the convenience entries() collection rather than
         // borrowing self in a closure — handle_event needs &mut.
-        let entries: Vec<PortalEntry> =
-            self.portal_layers.iter_hit_test_order().cloned().collect();
+        let entries: Vec<PortalEntry> = self.portal_layers.iter_hit_test_order().cloned().collect();
         for entry in &entries {
             // Translate the click into the portal's child
             // coordinate space — viewport_rect is now
@@ -479,9 +478,7 @@ impl UI {
             // open entry suppresses fall-through to the base
             // tree. Even if no specific child claimed the
             // click, the modal "swallows" it.
-            if entry.layer.default_backdrop()
-                == portal_layer::BackdropPolicy::Block
-            {
+            if entry.layer.default_backdrop() == portal_layer::BackdropPolicy::Block {
                 block_lower = true;
             }
         }
@@ -554,7 +551,10 @@ impl UI {
             // (preview's intrinsic size is unchanged).
             self.mark_needs_repaint();
         }
-        let payload = state.payload.clone().unwrap_or(crate::runtime::value::Value::Void);
+        let payload = state
+            .payload
+            .clone()
+            .unwrap_or(crate::runtime::value::Value::Void);
         let target = self.hit_test_drag_target(&point);
         if let Some(target_ref) = target.clone() {
             let event = Event::drag("drag_move", point, Some(payload));
@@ -576,7 +576,10 @@ impl UI {
         point: Point,
     ) -> Option<WidgetRef> {
         state.current_position = point.clone();
-        let payload = state.payload.clone().unwrap_or(crate::runtime::value::Value::Void);
+        let payload = state
+            .payload
+            .clone()
+            .unwrap_or(crate::runtime::value::Value::Void);
         let target = self
             .hit_test_drop_target(&payload, &point)
             .or_else(|| state.origin_widget.clone());
@@ -620,8 +623,7 @@ impl UI {
     /// drag_move dispatches to the widget under the cursor
     /// regardless of whether it accepts the drop.
     pub fn hit_test_drag_target(&self, point: &Point) -> Option<WidgetRef> {
-        let entries: Vec<PortalEntry> =
-            self.portal_layers.iter_hit_test_order().cloned().collect();
+        let entries: Vec<PortalEntry> = self.portal_layers.iter_hit_test_order().cloned().collect();
         for entry in &entries {
             let child_point = Point::new(
                 point.x() - entry.viewport_rect.x,
@@ -637,17 +639,13 @@ impl UI {
                     g.contains_point(&child_point)
                 };
                 if contains {
-                    if let Some(deep) =
-                        Self::deepest_at(child, &child_point)
-                    {
+                    if let Some(deep) = Self::deepest_at(child, &child_point) {
                         return Some(deep);
                     }
                     return Some(child.clone());
                 }
             }
-            if entry.layer.default_backdrop()
-                == portal_layer::BackdropPolicy::Block
-            {
+            if entry.layer.default_backdrop() == portal_layer::BackdropPolicy::Block {
                 return None;
             }
         }
@@ -671,8 +669,7 @@ impl UI {
         payload: &crate::runtime::value::Value,
         point: &Point,
     ) -> Option<WidgetRef> {
-        let entries: Vec<PortalEntry> =
-            self.portal_layers.iter_hit_test_order().cloned().collect();
+        let entries: Vec<PortalEntry> = self.portal_layers.iter_hit_test_order().cloned().collect();
         for entry in &entries {
             let child_point = Point::new(
                 point.x() - entry.viewport_rect.x,
@@ -688,16 +685,12 @@ impl UI {
                     g.contains_point(&child_point)
                 };
                 if contains {
-                    if let Some(target) =
-                        Self::deepest_drop_target(child, &child_point, payload)
-                    {
+                    if let Some(target) = Self::deepest_drop_target(child, &child_point, payload) {
                         return Some(target);
                     }
                 }
             }
-            if entry.layer.default_backdrop()
-                == portal_layer::BackdropPolicy::Block
-            {
+            if entry.layer.default_backdrop() == portal_layer::BackdropPolicy::Block {
                 return None;
             }
         }
@@ -719,7 +712,10 @@ impl UI {
     fn deepest_at(widget: &WidgetRef, point: &Point) -> Option<WidgetRef> {
         let (origin, children) = {
             let g = widget.lock().expect("widget lock poisoned");
-            let o = g.get_layout_rect().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+            let o = g
+                .get_layout_rect()
+                .map(|r| (r.x, r.y))
+                .unwrap_or((0.0, 0.0));
             (o, g.get_children())
         };
         let local = Point::new(point.x() - origin.0, point.y() - origin.1);
@@ -749,7 +745,10 @@ impl UI {
     ) -> Option<WidgetRef> {
         let (origin, children, self_accepts) = {
             let g = widget.lock().expect("widget lock poisoned");
-            let o = g.get_layout_rect().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+            let o = g
+                .get_layout_rect()
+                .map(|r| (r.x, r.y))
+                .unwrap_or((0.0, 0.0));
             (o, g.get_children(), g.accepts_drop(payload))
         };
         let local = Point::new(point.x() - origin.0, point.y() - origin.1);
@@ -759,9 +758,7 @@ impl UI {
                 cg.contains_point(&local)
             };
             if contains {
-                if let Some(deeper) =
-                    Self::deepest_drop_target(child, &local, payload)
-                {
+                if let Some(deeper) = Self::deepest_drop_target(child, &local, payload) {
                     return Some(deeper);
                 }
             }
@@ -823,8 +820,7 @@ impl UI {
 
     /// Updates the bounds of widgets in the hierarchy within the constraints provided (typically the screen size).
     pub fn layout(&mut self, width: f32, height: f32) {
-        let dims_changed =
-            self.last_layout_width != width || self.last_layout_height != height;
+        let dims_changed = self.last_layout_width != width || self.last_layout_height != height;
         if !self.needs_layout && !dims_changed {
             return;
         }
@@ -899,17 +895,7 @@ impl UI {
             let mut preview = preview_ref.lock().expect("widget lock poisoned");
             let pw = preview.get_fixed_width().unwrap_or(0.0);
             let ph = preview.get_fixed_height().unwrap_or(0.0);
-            preview.layout(
-                &ctx,
-                0.0,
-                0.0,
-                &Direction::Column,
-                pw,
-                pw,
-                ph,
-                ph,
-                0.0,
-            );
+            preview.layout(&ctx, 0.0, 0.0, &Direction::Column, pw, pw, ph, ph, 0.0);
         }
     }
 
@@ -1034,9 +1020,9 @@ impl UI {
     /// && game_wants_lock`.
     pub fn wants_cursor_free(&self) -> bool {
         // Any portal entry declaring Free contributes.
-        let portal_says_free = self.portal_layers.any(|e| {
-            e.cursor == portal_layer::CursorPreference::Free
-        });
+        let portal_says_free = self
+            .portal_layers
+            .any(|e| e.cursor == portal_layer::CursorPreference::Free);
         if portal_says_free {
             return true;
         }
@@ -1146,9 +1132,8 @@ impl UI {
         // restoring their previous_focus would do more harm than
         // good (try_set_focus would reject moves outside the
         // surviving top's subtree anyway).
-        self.focus_stack.retain(|r| {
-            trap_entries.iter().any(|(p, _)| Arc::ptr_eq(p, &r.portal))
-        });
+        self.focus_stack
+            .retain(|r| trap_entries.iter().any(|(p, _)| Arc::ptr_eq(p, &r.portal)));
     }
 
     /// Phase 2 M4 (extended in P25-M0 / P3-M2): clear all
@@ -1252,15 +1237,7 @@ pub trait RenderContext {
         corners: &Corners,
         color: &Color,
     );
-    fn draw_border(
-        &mut self,
-        border: &Border,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        corners: &Corners,
-    );
+    fn draw_border(&mut self, border: &Border, x: f32, y: f32, w: f32, h: f32, corners: &Corners);
     fn draw_image(
         &mut self,
         path: &str,
@@ -1272,14 +1249,7 @@ pub trait RenderContext {
     );
     fn draw_text(&mut self, text: &str, style: &TextStyle, x: f32, y: f32, width: f32);
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: &Color);
-    fn draw_svg_dom(
-        &mut self,
-        dom: &skia_safe::svg::Dom,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-    );
+    fn draw_svg_dom(&mut self, dom: &skia_safe::svg::Dom, x: f32, y: f32, w: f32, h: f32);
 
     /// Push a clip rectangle. All subsequent drawing is clipped to this rect
     /// until `pop_clip_rect()` is called. Uses save/restore semantics.
@@ -1565,51 +1535,56 @@ pub trait Widget: Downcast {
     /// no-op for widgets that don't support event listeners.
     fn fire_listeners(&self, _event_name: &str, _event: &Event) {}
 
-
     /// Render this widget using the provided render context. The default
     /// implementation is a no-op; widgets override this to draw themselves.
-    fn render(
-        &self,
-        _ctx: &mut dyn RenderContext,
-        _focused: bool,
-        _image_cache: &mut ImageCache,
-    ) {
-    }
+    fn render(&self, _ctx: &mut dyn RenderContext, _focused: bool, _image_cache: &mut ImageCache) {}
 
     /// Get the layout rect for this widget (if it has been laid out).
     /// Rects are stored in parent-relative coordinates.
-    fn get_layout_rect(&self) -> Option<&Rect> { None }
+    fn get_layout_rect(&self) -> Option<&Rect> {
+        None
+    }
 
     /// Scroll offset applied to descendants. The renderer translates the
     /// canvas by `-(dx, dy)` and the hit-tester offsets the event point by
     /// `+(dx, dy)` before recursing into this widget's children. Defaults
     /// to `(0, 0)` — scrolling containers override.
-    fn scroll_offset(&self) -> (f32, f32) { (0.0, 0.0) }
+    fn scroll_offset(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
 
     /// Stable identity for this widget, used during reconciliation to
     /// match children across frames even when they are inserted, removed,
     /// or reordered in the declarative tree. Widgets without a key fall
     /// back to position-based matching.
-    fn key(&self) -> Option<&str> { None }
+    fn key(&self) -> Option<&str> {
+        None
+    }
 
     /// Paint-time effects (opacity + transform) applied around this
     /// widget and its descendants. Returns `None` when the widget has
     /// no effects to push, saving a canvas save/restore. Widgets with
     /// effects should resolve their pivot point (typically the widget's
     /// own layout center) inside this method.
-    fn render_effects(&self) -> Option<RenderEffects> { None }
+    fn render_effects(&self) -> Option<RenderEffects> {
+        None
+    }
 
     /// Whether this widget is currently playing an exit animation. Such
     /// widgets are kept in their parent's `children` vec until the
     /// animation completes, then dropped.
-    fn is_exiting(&self) -> bool { false }
+    fn is_exiting(&self) -> bool {
+        false
+    }
 
     /// Attempt to put this widget into the "exiting" lifecycle state.
     /// Returns `true` if the widget accepts exiting (i.e. it has an
     /// exit style and will animate out); returns `false` for widgets
     /// that don't support exit animations or have nothing to animate
     /// toward. The parent should drop widgets that return `false`.
-    fn begin_exit(&mut self) -> bool { false }
+    fn begin_exit(&mut self) -> bool {
+        false
+    }
 
     /// Cancel an in-flight exit so the widget re-enters normal life,
     /// transitioning back toward its declared style. Called when a
@@ -1619,7 +1594,9 @@ pub trait Widget: Downcast {
     /// True once a widget's exit animation has fully settled and it
     /// is safe for the parent to remove. Non-exiting widgets should
     /// return `false`.
-    fn is_exit_complete(&self) -> bool { false }
+    fn is_exit_complete(&self) -> bool {
+        false
+    }
 
     /// Re-seed this widget at its `initial_style` and retarget springs
     /// toward `declared_style`, then cascade to children. Used by the
@@ -1645,13 +1622,17 @@ pub trait Widget: Downcast {
     }
 
     /// Returns true if this widget needs post_render called after children render.
-    fn needs_post_render(&self) -> bool { false }
+    fn needs_post_render(&self) -> bool {
+        false
+    }
 
     /// Phase 2 Portal: returns Some when this widget is a Portal.
     /// The renderer uses this to detect the defer-to-portal-layer
     /// branch — Portal widgets paint nothing in the main pass and
     /// their children render in Pass B against the viewport.
-    fn as_portal(&self) -> Option<PortalInfo> { None }
+    fn as_portal(&self) -> Option<PortalInfo> {
+        None
+    }
 
     /// Phase 2.5 M1: cursor preference for this widget when
     /// focused. Default `None` (no influence). TextInputWidget
@@ -1661,9 +1642,7 @@ pub trait Widget: Downcast {
     /// Called by `wants_cursor_free()` on the focused widget
     /// only — non-focused widgets' cursor preferences are
     /// ignored.
-    fn cursor_preference_when_focused(
-        &self,
-    ) -> Option<portal_layer::CursorPreference> {
+    fn cursor_preference_when_focused(&self) -> Option<portal_layer::CursorPreference> {
         None
     }
 
@@ -1691,7 +1670,9 @@ pub trait Widget: Downcast {
     /// Default `""` means "owns no specific paths" (most widgets —
     /// only function-call containers like `FlexWidget` produced
     /// by an `fn` invocation own a path).
-    fn owned_path_prefix(&self) -> &str { "" }
+    fn owned_path_prefix(&self) -> &str {
+        ""
+    }
 
     /// Phase 3 M1: drag payload declared on this widget. When
     /// `Some(_)`, this widget is a valid drag source; the input
@@ -1741,12 +1722,7 @@ pub trait Widget: Downcast {
 
     /// Called after all children have been rendered. Used by scrollable
     /// containers to pop their clip rect.
-    fn post_render(
-        &self,
-        _ctx: &mut dyn RenderContext,
-        _image_cache: &mut ImageCache,
-    ) {
-    }
+    fn post_render(&self, _ctx: &mut dyn RenderContext, _image_cache: &mut ImageCache) {}
 }
 impl_downcast!(Widget);
 

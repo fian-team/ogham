@@ -89,16 +89,22 @@ impl GridWidget {
     fn total_width(&self) -> f32 {
         let content = self.style.columns as f32 * self.style.cell_width
             + (self.style.columns.saturating_sub(1)) as f32 * self.style.gap;
-        content + self.style.padding.left + self.style.padding.right
-            + self.style.margin.left + self.style.margin.right
+        content
+            + self.style.padding.left
+            + self.style.padding.right
+            + self.style.margin.left
+            + self.style.margin.right
     }
 
     /// Total height of the grid including padding and margin.
     fn total_height(&self) -> f32 {
         let content = self.style.rows as f32 * self.style.cell_height
             + (self.style.rows.saturating_sub(1)) as f32 * self.style.gap;
-        content + self.style.padding.top + self.style.padding.bottom
-            + self.style.margin.top + self.style.margin.bottom
+        content
+            + self.style.padding.top
+            + self.style.padding.bottom
+            + self.style.margin.top
+            + self.style.margin.bottom
     }
 
     /// Compute the pixel position and size for a given grid placement.
@@ -173,7 +179,11 @@ impl Widget for GridWidget {
             }
             // Shift the point into this widget's own coord space before
             // recursing (child rects are parent-relative).
-            let origin = self.layout.as_ref().map(|r| (r.x, r.y)).unwrap_or((0.0, 0.0));
+            let origin = self
+                .layout
+                .as_ref()
+                .map(|r| (r.x, r.y))
+                .unwrap_or((0.0, 0.0));
             let local_event = event.shift_point(-origin.0, -origin.1);
             // Propagate to children in reverse order (topmost first)
             for (_, child_ref) in self.children.iter().rev() {
@@ -291,12 +301,7 @@ impl Widget for GridWidget {
         self.layout.as_ref()
     }
 
-    fn render(
-        &self,
-        ctx: &mut dyn RenderContext,
-        _focused: bool,
-        _image_cache: &mut ImageCache,
-    ) {
+    fn render(&self, ctx: &mut dyn RenderContext, _focused: bool, _image_cache: &mut ImageCache) {
         let layout = match &self.layout {
             Some(l) => l,
             None => return,
@@ -313,8 +318,12 @@ impl Widget for GridWidget {
                 ctx.fill_rect(content_x, content_y, content_w, content_h, bg);
             } else {
                 ctx.fill_corners_rect(
-                    content_x, content_y, content_w, content_h,
-                    &self.style.corners, bg,
+                    content_x,
+                    content_y,
+                    content_w,
+                    content_h,
+                    &self.style.corners,
+                    bg,
                 );
             }
         }
@@ -324,7 +333,10 @@ impl Widget for GridWidget {
             for row in 0..self.style.rows {
                 for col in 0..self.style.columns {
                     let placement = GridPlacement {
-                        col, row, col_span: 1, row_span: 1,
+                        col,
+                        row,
+                        col_span: 1,
+                        row_span: 1,
                     };
                     let cell = self.cell_rect(&placement, layout.x, layout.y);
                     ctx.fill_rect(cell.x, cell.y, cell.width, cell.height, cell_color);

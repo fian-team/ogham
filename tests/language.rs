@@ -833,22 +833,21 @@ fn event_handler_receives_args() {
     let received = Arc::new(Mutex::new(Vec::<i32>::new()));
     let received_clone = received.clone();
 
-    let config = ogham::runtime::config::RuntimeConfig::new().with_event_handler(
-        "my_event",
-        move |args| {
+    let config =
+        ogham::runtime::config::RuntimeConfig::new().with_event_handler("my_event", move |args| {
             if let Some(Value::Integer(n)) = args.first() {
                 received_clone.lock().unwrap().push(*n);
             }
             Ok(Value::Void)
-        },
-    );
+        });
 
     let source = r#"
 let main = fn () {
     event("my_event", 99);
 };
 "#;
-    let mut runtime = ogham::runtime::Runtime::from_source(source, Some(config)).expect("from_source");
+    let mut runtime =
+        ogham::runtime::Runtime::from_source(source, Some(config)).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
     runtime.execute_module(&module).expect("execute");
 
@@ -1004,7 +1003,8 @@ let main = fn () {
     greeting
 };
 "#;
-    let mut runtime = ogham::runtime::Runtime::from_source(source, Some(config)).expect("from_source");
+    let mut runtime =
+        ogham::runtime::Runtime::from_source(source, Some(config)).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
     let result = runtime.execute_module(&module).expect("execute");
     assert_eq!(result, Value::String("Hello".to_string()));
@@ -1223,13 +1223,17 @@ let main = fn () {
 
     // First render: trigger fires, handler errors.
     let r1 = runtime.execute_module(&module).expect("first");
-    let Value::Mutation(m1) = r1 else { panic!("expected Mutation") };
+    let Value::Mutation(m1) = r1 else {
+        panic!("expected Mutation")
+    };
     assert_eq!(m1.borrow().status.as_str(), "error");
 
     // Bump host state and re-render; the same persisted mutation is re-triggered.
     runtime.inject_host_state("trigger_count".into(), Value::Integer(7));
     let r2 = runtime.execute_module(&module).expect("second");
-    let Value::Mutation(m2) = r2 else { panic!("expected Mutation") };
+    let Value::Mutation(m2) = r2 else {
+        panic!("expected Mutation")
+    };
     let s = m2.borrow();
     assert_eq!(s.status.as_str(), "success");
     assert_eq!(s.data, Value::Integer(7));
@@ -1255,13 +1259,11 @@ let main = fn () {
     let observed_clone = observed.clone();
     // Handler can't see its own mutation state directly (Rust side), but it
     // can succeed, so we just verify the final status is "success".
-    let config = ogham::runtime::config::RuntimeConfig::new().with_event_handler(
-        "check",
-        move |_args| {
+    let config =
+        ogham::runtime::config::RuntimeConfig::new().with_event_handler("check", move |_args| {
             *observed_clone.lock().unwrap() = "ran".to_string();
             Ok(Value::Void)
-        },
-    );
+        });
     let mut runtime =
         ogham::runtime::Runtime::from_source(source, Some(config)).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
@@ -1322,13 +1324,17 @@ let main = fn () {
 };
 "#;
     let result = run(source);
-    let Value::Widget(w) = result else { panic!("expected widget") };
+    let Value::Widget(w) = result else {
+        panic!("expected widget")
+    };
     let Some(Value::Array(children)) = w.properties.get("children") else {
         panic!("expected children")
     };
     assert_eq!(children.len(), 2);
     // First child is the inner Context wrapper.
-    let Value::Widget(inner) = &children[0] else { panic!("expected widget") };
+    let Value::Widget(inner) = &children[0] else {
+        panic!("expected widget")
+    };
     let Some(Value::Array(inner_children)) = inner.properties.get("children") else {
         panic!("expected inner children")
     };
@@ -1359,11 +1365,15 @@ let main = fn () {
 };
 "#;
     let result = run(source);
-    let Value::Widget(w) = result else { panic!("expected widget") };
+    let Value::Widget(w) = result else {
+        panic!("expected widget")
+    };
     let Some(Value::Array(children)) = w.properties.get("children") else {
         panic!("expected children")
     };
-    let Value::Map(m) = &children[0] else { panic!("expected map") };
+    let Value::Map(m) = &children[0] else {
+        panic!("expected map")
+    };
     assert_eq!(m.get("count"), Some(&Value::Integer(42)));
     assert_eq!(m.get("label"), Some(&Value::String("hello".to_string())));
 }

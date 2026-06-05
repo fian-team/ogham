@@ -77,11 +77,7 @@ pub(crate) fn emit_state_manifest(type_ident: &str, binding_module: &str, fields
 }
 
 /// Emit an events manifest for one `OghamMsg` derive.
-pub(crate) fn emit_events_manifest(
-    type_ident: &str,
-    binding_module: &str,
-    events: &[EventSig],
-) {
+pub(crate) fn emit_events_manifest(type_ident: &str, binding_module: &str, events: &[EventSig]) {
     if skip_emit() {
         return;
     }
@@ -111,13 +107,7 @@ fn build_state_json(binding: &str, ogh_module: &str, fields: &[StateField]) -> S
     field_pairs.sort_by(|a, b| a.0.cmp(&b.0));
     let fields_json = field_pairs
         .iter()
-        .map(|(name, ty)| {
-            format!(
-                r#""{}":{{"ty":"{}"}}"#,
-                json_escape(name),
-                json_escape(ty),
-            )
-        })
+        .map(|(name, ty)| format!(r#""{}":{{"ty":"{}"}}"#, json_escape(name), json_escape(ty),))
         .collect::<Vec<_>>()
         .join(",");
     format!(
@@ -147,10 +137,7 @@ fn build_events_json(binding: &str, ogh_module: &str, events: &[EventSig]) -> St
                 .map(|a| format!(r#""{}""#, json_escape(a)))
                 .collect::<Vec<_>>()
                 .join(",");
-            format!(
-                r#""{}":{{"args":[{args_json}]}}"#,
-                json_escape(name),
-            )
+            format!(r#""{}":{{"args":[{args_json}]}}"#, json_escape(name),)
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -192,8 +179,11 @@ fn try_canonical(ty: &Type) -> Option<String> {
     let last = path.segments.last()?;
     let name = last.ident.to_string();
     match (name.as_str(), &last.arguments) {
-        ("i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
-        | "u128" | "usize", PathArguments::None) => Some("int".into()),
+        (
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+            | "usize",
+            PathArguments::None,
+        ) => Some("int".into()),
         ("f32" | "f64", PathArguments::None) => Some("float".into()),
         ("bool", PathArguments::None) => Some("bool".into()),
         ("String", PathArguments::None) => Some("string".into()),
@@ -353,7 +343,10 @@ mod tests {
         // env-dependent, but the *filename* component is deterministic.
         let p = manifest_path("state", "untold_lore", "data/ui/chest.ogh", "ChestUiState");
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        assert_eq!(name, "state-untold_lore-data_ui_chest_ogh-ChestUiState.json");
+        assert_eq!(
+            name,
+            "state-untold_lore-data_ui_chest_ogh-ChestUiState.json"
+        );
         let p = manifest_path("events", "untold_lore", "data/ui/chest.ogh", "ChestUiMsg");
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(name, "events-untold_lore-data_ui_chest_ogh-ChestUiMsg.json");
@@ -413,11 +406,7 @@ mod tests {
                 ty: parse_quote!(Vec<Item>),
             },
         ];
-        let json = build_state_json(
-            "untold_lore::ChestUiState",
-            "data/ui/chest.ogh",
-            &fields,
-        );
+        let json = build_state_json("untold_lore::ChestUiState", "data/ui/chest.ogh", &fields);
         // Spot-check shape via substring matches; the integration
         // test in tests/binding_module_attr.rs runs the actual
         // round-trip through ogham::diagnostics::Manifest::read.
@@ -441,11 +430,7 @@ mod tests {
                 args: vec![parse_quote!(i32), parse_quote!(Item)],
             },
         ];
-        let json = build_events_json(
-            "untold_lore::ChestUiMsg",
-            "data/ui/chest.ogh",
-            &events,
-        );
+        let json = build_events_json("untold_lore::ChestUiMsg", "data/ui/chest.ogh", &events);
         assert!(json.contains(r#""kind":"events""#));
         assert!(json.contains(r#""open_chest":{"args":[]}"#));
         assert!(json.contains(r#""take_item":{"args":["int","Item"]}"#));

@@ -202,8 +202,7 @@ impl Widget for TextInputWidget {
             // `get_dimensions` derives the box width from `self.value.len()`
             // in that case. For `Fixed` / `Grow` / `Percent` the box is
             // unaffected and the new text is paint-only.
-            let value_affects_layout =
-                value_changed && matches!(self.style.width, Size::Shrink);
+            let value_affects_layout = value_changed && matches!(self.style.width, Size::Shrink);
             UpdateResult {
                 absorbed: true,
                 needs_layout: style_changed || value_affects_layout,
@@ -481,14 +480,7 @@ impl Widget for TextInputWidget {
             if style.corners.is_all_sharp() {
                 ctx.fill_rect(box_x, box_y, box_width, box_height, &bg);
             } else {
-                ctx.fill_corners_rect(
-                    box_x,
-                    box_y,
-                    box_width,
-                    box_height,
-                    &style.corners,
-                    &bg,
-                );
+                ctx.fill_corners_rect(box_x, box_y, box_width, box_height, &style.corners, &bg);
             }
 
             // Borders

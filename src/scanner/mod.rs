@@ -503,10 +503,7 @@ mod tests {
     fn scan_let_declaration() {
         let tokens = scan("let x = 5;");
         assert_eq!(tokens[0].token_type, TokenType::Let);
-        assert_eq!(
-            tokens[1].token_type,
-            TokenType::Identifier("x".to_string())
-        );
+        assert_eq!(tokens[1].token_type, TokenType::Identifier("x".to_string()));
         assert_eq!(tokens[2].token_type, TokenType::Equal);
         assert_eq!(tokens[3].token_type, TokenType::Integer(5));
         assert_eq!(tokens[4].token_type, TokenType::Semicolon);
@@ -592,15 +589,24 @@ mod tests {
         // Critical: keeping `array` and `map` as identifiers preserves
         // backward compatibility with any existing variable names.
         let tokens = scan("array map");
-        assert_eq!(tokens[0].token_type, TokenType::Identifier("array".to_string()));
-        assert_eq!(tokens[1].token_type, TokenType::Identifier("map".to_string()));
+        assert_eq!(
+            tokens[0].token_type,
+            TokenType::Identifier("array".to_string())
+        );
+        assert_eq!(
+            tokens[1].token_type,
+            TokenType::Identifier("map".to_string())
+        );
     }
 
     #[test]
     fn self_lowercase_remains_identifier() {
         // Only `Self` (capital S) is the keyword; `self` stays an identifier.
         let tokens = scan("self");
-        assert_eq!(tokens[0].token_type, TokenType::Identifier("self".to_string()));
+        assert_eq!(
+            tokens[0].token_type,
+            TokenType::Identifier("self".to_string())
+        );
     }
 
     #[test]

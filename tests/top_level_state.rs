@@ -41,7 +41,10 @@ let main = fn () {
     let mut runtime = ogham::runtime::Runtime::from_source(source, None).expect("from_source");
     let module = runtime.get_module().expect("module").clone();
 
-    assert_eq!(runtime.execute_module(&module).expect("first"), Value::Integer(2));
+    assert_eq!(
+        runtime.execute_module(&module).expect("first"),
+        Value::Integer(2)
+    );
     assert_eq!(runtime.rerender().expect("second"), Value::Integer(3));
     assert_eq!(runtime.rerender().expect("third"), Value::Integer(4));
 }

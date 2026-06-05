@@ -15,9 +15,7 @@ use ogham::scanner::Scanner;
 
 fn compile(source: &str) -> Result<(), VMError> {
     let tokens = Scanner::new(source.to_string()).scan();
-    let module = Parser::new(tokens)
-        .parse()
-        .expect("parse should succeed");
+    let module = Parser::new(tokens).parse().expect("parse should succeed");
     Compiler::compile_module(&module).map(|_| ())
 }
 
@@ -164,10 +162,7 @@ fn strict_mode_unknown_identifier_suggests_close_match() {
         let main = fn () { master_voloume };
         "#,
     );
-    assert_eq!(
-        err.help.as_deref(),
-        Some("did you mean `master_volume`?")
-    );
+    assert_eq!(err.help.as_deref(), Some("did you mean `master_volume`?"));
 }
 
 #[test]
@@ -279,10 +274,7 @@ fn strict_mode_unknown_event_errors_with_suggestion() {
         "#,
     );
     assert!(err.message.contains("unknown event `close_settngs`"));
-    assert_eq!(
-        err.help.as_deref(),
-        Some("did you mean `close_settings`?")
-    );
+    assert_eq!(err.help.as_deref(), Some("did you mean `close_settings`?"));
 }
 
 #[test]
@@ -325,7 +317,11 @@ fn strict_mode_event_arg_count_too_few_errors() {
         "#,
     );
     assert!(err.message.contains("wrong number of arguments"));
-    assert!(err.note.as_deref().unwrap().contains("rebind(string, string)"));
+    assert!(err
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("rebind(string, string)"));
     assert!(err.help.as_deref().unwrap().contains("expected 2"));
     assert!(err.help.as_deref().unwrap().contains("got 1"));
 }
