@@ -376,9 +376,10 @@ decided). Every node carries `{ key (label), path, kind, editable }`, plus:
 | `Enum(v)` | `enum` | `value`, `options` | `Set` |
 | `Formula` | `formula` | `value` (+ host validity) | `Set` |
 | `Ref(t)` | `ref` | `table`, `value` (id) — candidates via `refs.<t>` | `Set` |
-| `Record`/`Tuple` | `group` | `children: [node…]` | — |
+| `Record` | `group` | `children: [node…]` (named) | — |
+| `Tuple` | `group` | `children: [node…]` (positional `.0`/`.1`) | — |
 | `List(T)` | `list` | `items: [node…]` (each `path…​.N`) | `AddListItem` / `RemoveListItem` / `MoveListItem` |
-| `Optional(T)` | `list` (cap 1) | `items` (0 or 1) | `AddListItem` / `RemoveListItem(0)` |
+| `Optional(T)` | `option` | `inner: node \| none` | `AddListItem` (set) / `RemoveListItem(0)` (clear) |
 | `Map(T)` | `map` | `entries: [{ key, node }…]` | `AddMapEntry{key}` / `RemoveMapEntry{key}` |
 | `Union(v)` | `union` | `variant`, `variants` (names), `payload: [node…]` | `Set` on `…​.kind` (re-defaults payload) |
 
@@ -393,10 +394,104 @@ events instead of smuggling them through magic keys. Keep the node vocabulary an
   `begin_union(variant)…` callbacks. (Resolves the direction of the §5 "Reader
   shape" item; only the exact callback names remain open.)
 - `.ogh` renders with a **recursive `field_node` component** that `match`es
-  `node.kind` and recurses into `children`/`items`/`payload`/`entries` via `for`.
-  Each child is **keyed by its `path`** — the dotted path is a naturally stable
-  identity, so reconcile-by-key (INTENT §3/§5) and path-based hook identity
+  `node.kind` and recurses into `children`/`items`/`payload`/`entries`/`inner` via
+  `for`. Each child is **keyed by its `path`** — the dotted path is a naturally
+  stable identity, so reconcile-by-key (INTENT §3/§5) and path-based hook identity
   (INTENT §9) make the recursive tree animate and preserve state correctly.
+
+**Positional vs. named labels (the `"0"` rule).** Structure is *always* faithful —
+a tuple/newtype variant's fields are real children at `.0`, `.1`, …, never
+flattened. (Flattening is a structural edit, banned by the nesting rule, and it
+doesn't generalize: `Foo(u32, u32)` has nothing to hoist.) The ugly `"0"` is a
+*label* problem, fixed in `field_node`, not the derive: a node marks whether its
+label is positional, and `field_node` **hides the label of a *sole* positional
+field** (so `Effect::Ruleset(Action)` renders its `Action` inline under the
+`ruleset` variant) while showing `0`/`1` for genuine multi-field tuples. Want
+names instead of `0`/`1`? Use a struct variant — that's the nudge.
+
+### Three structural warts the `Scene` walk surfaced
+
+1. **[DECIDED] Newtype/tuple-variant `"0"`** — label-only fix above; structure
+   stays faithful.
+2. **[DECIDED] `Optional` is its own `option` kind** (set/clear), not a cap-1
+   `list`. Eight `Scene` fields are `Option`; "+ Add / clear" reads far better
+   than list chrome.
+3. **[OPEN] A domain field literally named `kind`** (`Transition.kind`) shadows
+   `editable`'s reserved union discriminant. Harmless today (the special-case only
+   fires on unions; `Transition` is a record) but a latent footgun — and it is
+   *why* `Effect` is externally serde-tagged (`schema.rs:916`). Noted, not fixed;
+   revisit whether the discriminant should be a non-colliding token.
+
+### Worked example: `Scene` (the buildable target)
+
+The derived read of one `Scene` (`small_mercies/content-core/src/schema.rs`),
+abbreviated to the instructive nodes:
+
+```
+Scene                                   group  []
+├ id                  text     [id]
+├ backdrop  Opt<ref sprite>    option   [backdrop]            (set/clear → ref:sprite)
+├ body      #[text]            textarea [body]
+├ beats     Vec<Beat>          list     [beats]               +add/remove/move
+│  └ ⟨N⟩ Beat                  group    [beats.N]
+│     ├ advance  Advance       union    [beats.N.advance]     auto|click|either
+│     │   └ (auto) f32         number   [beats.N.advance.0]   sole positional → unlabeled
+│     ├ transition Transition  group    [beats.N.transition]
+│     │   ├ kind  TransitionKind enum   [beats.N.transition.kind]   ⚠ field named "kind"
+│     │   └ duration_secs f32  number   [beats.N.transition.duration_secs]
+│     └ on_enter Vec<Effect>   list     [beats.N.on_enter]
+│        └ ⟨M⟩ Effect          union    [beats.N.on_enter.M]  15 variants
+│           ├ (ruleset) Action union    [beats.N.on_enter.M.0]  sole positional → inline
+│           └ (give_item) → ref:item [..M.item], number [..M.quantity]
+├ next      Opt<ref scene>     option   [next]
+├ choices   Vec<Choice>        list     [choices]
+│  └ ⟨N⟩ Choice → label(text), gate(option·formula), check(option·ref check),
+│        time_cost(number), outcomes(group → success/failure(group),
+│        critical/partial(option·group Outcome)), moral_tags(list·text)
+├ ends_run  bool               bool     [ends_run]
+└ epilogue  Vec<EpilogueFragment> list  [epilogue]
+```
+
+Every leaf write is `Set(path, value)`; every container exposes its `FieldOp`
+directly. No sentinels, no serde, no flattening.
+
+### What the derived read retires (cleanup — do not leave these behind)
+
+The nested derived read is *also a deletion mandate*. A lot of recently-moved
+machinery is the flat/serde model we rejected and must go — otherwise we keep two
+rival inspectors, the disease this doc exists to kill:
+
+- **`editor/src/widgets/schema_form.rs` (~814 LOC) — [DECIDED] REPLACE, not
+  evolve.** It is a half-built generic inspector on every choice we rejected:
+  **flat** (`§list` markers, `inspector_lines`), **serde-read**
+  (`T: Editable + Serialize`, walks `serde_json::Value` — the drift bomb, live),
+  **Ref-as-plain-text**, and a `MAX_NESTED_DEPTH = 3` "(edit in JSON)" fallback.
+  Its *walk* moves into the `editable` derive (the `Reader`); what survives
+  host-side is the small `Value`-building visitor + the `refs.<table>` channel.
+- **`FieldKind`** (`pane/mod.rs:129`, 3 variants) → subsumed by the node `kind`
+  vocabulary. Delete.
+- **`InspectorField` + builders** `read_only`/`editable`/`number`/`toggle`
+  (`pane/mod.rs:142`) → the derived node tree. Delete.
+- **Hand-written `*_value` projections in `client.rs`** — `inspector_value`,
+  `backstory_rows_value`, `entries_value`, `field_entries`, `inspector_fields`
+  (the "300+ `Value::String` boxings"). Delete.
+- **The `§list` marker hack** (`list_marker`; list chrome encoded as a `Toggle`)
+  → real `list` nodes.
+- **Sentinel keys `__add` / `__objdel` / `__add_kind`** (`characters.rs:647/685`,
+  `items.rs:197`) and their `.ogh` arms (`characters.ogh:93-95`,
+  `add_control_row` / `obj_del_row`) → explicit container ops.
+- **`MAX_NESTED_DEPTH` + the "edit in JSON" leaf** → gone with nesting (only
+  `Named`-cycle handling remains).
+- **Per-pane hand-written inspector projections** (`scenes.rs` / `characters.rs` /
+  `abilities.rs` / …) → the migration `schema_form` started, completed onto the
+  nested derived read.
+- **The flat `field_row` match** (`common.ogh:183`, 3 arms, no default) → the
+  recursive `field_node`.
+
+**Explicitly NOT retired (stays plain host state, never schema'd):** the map-pane
+chrome — `panes_value`, `map_modes_value`, `terrain_layers_value`, `layers_value`,
+filters, selection. Bespoke UI, injected as `Value` directly — §3's opt-in line in
+action.
 
 **Smaller decisions (settled):** `value` is a **string** in every node (symmetric
 with `FieldOp::Set`, which parses); **labels** default to the field name with an
@@ -410,10 +505,16 @@ with `FieldOp::Set`, which parses); **labels** default to the field name with an
 - **[RESOLVED 2026-06-07] Nested vs. flat projection** (§4) — **nested**, true to
   the data structure; flattening is a rival representation that drifts and breaks
   on new schemas. `Ref` candidates ride a sibling `refs.<table>` channel.
-- **[LEANING] The `Value` ↔ `Kind` node vocabulary** (§4) — structure decided
-  (nested node per `Kind`, ops 1:1 with `FieldOp`, retiring the sentinel hacks);
-  what remains is finalizing node *field names* (`children`/`items`/`payload`/
-  `entries`) and the `.ogh` `field_node` component.
+- **[LEANING] The `Value` ↔ `Kind` node vocabulary** (§4) — structure, kinds, ops,
+  the `option` kind, and the positional-label (`"0"`) rule are decided (worked end
+  to end on `Scene`); what remains is finalizing node *field names*
+  (`children`/`items`/`payload`/`entries`/`inner`) and writing the `.ogh`
+  `field_node` component.
+- **[DECIDED — execution pending] Retire the flat/serde editor machinery** (§4
+  "What the derived read retires") — replace `schema_form.rs`; delete `FieldKind`,
+  `InspectorField`, the `*_value` projections, the `§list` marker, the
+  `__add`/`__objdel`/`__add_kind` sentinels, and `MAX_NESTED_DEPTH`. Sequence this
+  with the cut-sequencing item below.
 - **[OPEN, direction set] The read visitor's exact shape** (§4) — a **structured
   (begin/end) `Reader`** is decided (nested demands it); the open part is the
   exact callback names and the host's `Value`-building visitor. Concrete enough to
