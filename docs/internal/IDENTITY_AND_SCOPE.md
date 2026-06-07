@@ -79,11 +79,13 @@ breadth is how challengers lose.
 
 **The preserved option is the four-pass pipeline** (scanner → parser → compiler
 → VM). That spine already pays rent (it runs `for`/`match`/components) and keeps
-the door open to richer in-language logic later *without a rewrite*. Portals,
-`mutation`, the dynamism tail, `OghamState`, the standalone-app posture are
-**not** option value — they are depreciating inventory that rots while it waits
-(proof: the `compile_increment`-on-upvalue bug at `compiler.rs:1255-1257`, a
-feature that is unused *and already wrong*).
+the door open to richer in-language logic later *without a rewrite*. `mutation`, the
+unused dynamism tail, `OghamState`, the standalone-app posture are **not** option
+value — they are depreciating inventory that rots while it waits (proof: the
+`compile_increment`-on-upvalue bug at `compiler.rs:1255-1257` — a feature unused
+long enough to be silently wrong. We *keep* `++`/`--` per §2 because they're
+cheap and expected, but that bug is the tax of having shipped unexercised
+surface, and fixing it is part of the price of keeping them).
 
 > If the JS-killer is ever a real goal, it deserves its own roadmap and timeline
 > — not a standing tax on the game projects. Conflated, both lose.
@@ -105,6 +107,14 @@ feature that is unused *and already wrong*).
   back-door for host-defined state.
 - **Grid** — [DECIDED] keep. It's a flex specialization (INTENT §4), nearly
   free, and UL uses it (5 files).
+- **Portal** — [DECIDED] keep. Unnecessary ~95% of the time, but the genuine
+  escape hatch for modals/overlays that must cleanly supersede other elements
+  across subtree boundaries — the case in-tree flex layering *can't* do cleanly.
+  Low cost to retain; keep UL's existing use, no migration.
+- **`++` / `--`** — [DECIDED] keep. Cheap to retain and expected to exist in a
+  language. *Caveat:* fix the latent increment-on-upvalue bug
+  (`compiler.rs:1255-1257` emits `SetState` before `SetUpvalue`) as part of
+  keeping them — don't ship the rot.
 - **LSP + structural diagnostics** — [DECIDED] keep. Hover, goto-def, semantic
   tokens, scanner/parser diagnostics genuinely reduce friction for *agents
   hand-authoring `.ogh`*, which remains a substantial fraction of player-facing
@@ -129,18 +139,12 @@ feature that is unused *and already wrong*).
   `RegisterEffect`/`EffectSlot`, the mount/unmount drain queues,
   `cancel_unmount_for_prefix`. 0 uses.
 - `mutation()` request/response seam. 0 uses.
-- `++`/`--` increment ops (unused, verbose desugar, latent upvalue bug).
 - `svg` widget. 0 uses.
 - Dead scaffolding: the `Environment` tree-walker leftover, `Placement`/`Gating`
   (inert), the `Dim` backdrop policy (TODO stub), `bezier_curve_to`/`close_path`.
 
 > Note: `range` as a *standalone* expression is dead, but `range`-in-`for` is
 > load-bearing — keep the parse path, it feeds for-loop bounds.
-
-### Cut — decision-gated (cut, but a migration moves first)
-
-- **Portals.** Effectively cut, but UL's single `.ogh` use must migrate to flex
-  layering — which is already how SM does every overlay, so the target is proven.
 
 ### Defer — behind the seam, demand-gated (NOT built now)
 
@@ -279,6 +283,35 @@ and, optionally, a schema JSON for the LSP. Both are produced *host-side*.
 composes the two.** That is the Rust-app-UI identity expressed structurally —
 neither framework reaches into the other.
 
+### Naming, and the `OghamRead` / `OghamWrite` idea  [OPEN]
+
+`editable` is the *correct* name within the Lorekeeper engine — it describes "a
+value that can describe + edit itself," and it's deliberately UI-agnostic (the
+pure leaf). But the name isn't Ogham-specific, and there may be value in thin
+**Ogham-tied** derivable traits layered *over* the leaf. Working names (NOT
+canonical — placeholders only): `OghamRead` / `OghamWrite`, where
+
+- `OghamRead` ≈ the read-only projection Flow B needs (`schema()` + the
+  `editable → Value` lowering),
+- `OghamWrite` ≈ `Editable + Ogham extras` (the read projection + `apply()`
+  routing + `view()`), what Flow A needs.
+
+This maps cleanly onto the two flows and could tidy the seam into a trait the
+host names directly instead of an ad-hoc projection call.
+
+**The trap to avoid (layering caveat).** These traits must NOT force a domain
+type to depend on the Ogham crate — that is *exactly* the coupling that killed
+`OghamState`. Candidate resolution: a **blanket impl in a thin bridge** — e.g.
+`impl<T: Editable> OghamRead for T` in a crate that depends on both — so a domain
+type still derives only `Editable` (pure leaf) and the Ogham-facing capability is
+added structurally by the bridge. That preserves the layering invariant above
+*and* gives the clean trait-level seam.
+
+**Not a return of `OghamState`.** These would be a thin facade *layered on the
+one schema*, not a parallel rival schema. The single-vocabulary decision still
+holds — `editable` remains the only schema system; `OghamRead`/`OghamWrite` are
+just its Ogham-facing face.
+
 ### The hard open sub-problem
 
 **The `Value` ↔ `Kind` representation mapping.** Ogham speaks `Value`
@@ -303,6 +336,10 @@ sentinels at the same time — it pays double.
 - **[OPEN] Scoped/declared reads vs. ambient reads** (§3 #5) — the component-
   isolation benefit collides with the moddability value. Separable from the
   state-model decision; decide on its own.
+- **[OPEN] Ogham-facing trait facade over `editable`** (§4) — naming, and whether
+  `OghamRead`/`OghamWrite` (or similar) layered on `Editable` cleans up the seam.
+  Must preserve the layering invariant (domain types derive only the pure leaf;
+  a bridge adds the Ogham capability via blanket impl).
 - **[OPEN] Cut sequencing** — order the safe-immediate cuts vs. the
   decision-gated ones (portal migration); confirm nothing in the "safe" list has
   a hidden consumer.
