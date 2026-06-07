@@ -12,7 +12,9 @@
 > **[LEANING]** — consensus direction, not yet pinned.
 > **[OPEN]** — genuine fork, needs a future session.
 >
-> First drafted: 2026-06-07.
+> First drafted: 2026-06-07. Revised 2026-06-07 (the generic-editing reckoning:
+> §3 de-universalized; §4 reframed around reading/writing Rust structs from one
+> `editable` derive, with no second crate and no serde in the UI path).
 
 ---
 
@@ -161,15 +163,23 @@ surface, and fixing it is part of the price of keeping them).
 
 ## 3. The state model
 
-**[DECIDED] All *host* state is schema-described (via `editable`); local state
-stays free-form and ephemeral.** This sharpens the host/local boundary into two
-clean, mechanically-distinct disciplines:
+**[DECIDED — revised 2026-06-07] Host state that needs *generic editing* is
+schema-described (via `editable`); everything else the host wants on screen is
+plain Rust injected as `Value`; local state stays free-form and ephemeral.**
 
-- **Host state** — uniformly schema-described, typed, introspectable,
-  moddable-at-the-data-layer. *Always.* "Schema-described" means *any*
-  `editable::Kind`, **not** rigid records: dynamic/data-driven shape (e.g.
-  mod-defined resources) is `Kind::Map`; variant data is `Kind::Union`. Total
-  *coverage*, not total *rigidity*.
+> This *supersedes* an earlier same-day draft that read "**all** host state is
+> schema-described." Universalizing the schema was the overcomplication — it made
+> the §4 seam look like a framework-defining crisis instead of a bounded tool.
+> The honest position: schema/`editable` is an **opt-in tool for the
+> generic-editing case** (§4), not a tax on every screen.
+
+Three mechanically-distinct disciplines result:
+
+- **Schema-described host state** — the content that gets *generically* edited
+  (SM's `Scene` / `Character` / `Encounter` / …): typed, introspectable, driven
+  by `editable`. The §4 seam exists for exactly this.
+- **Plain host state** — everything else the host just wants rendered: injected
+  as a `Value` directly (read in, events out, §2); no schema, no `editable`.
 - **Local state** — free, ephemeral, view-owned. *Never* schema'd.
 
 ### The dividing line (drift indicator)
@@ -190,20 +200,24 @@ defined those tabs. Local state is the mechanism that makes the decoupling
 possible. The erosion to lint against is **host-defined semantic state leaking
 into local cells**.
 
-### Honest accounting of the gains from "all host state is a struct"
+### Honest accounting of the gains (for the schema-described subset)
 
-We adopted this *with eyes open* about what it actually buys now vs. later:
+These gains apply to the *schema-described* content (the generic-editing subset),
+not to host state at large. We adopt the discipline *with eyes open*:
 
 **Real, present-tense gains:**
-1. **Dissolves the LSP/typo residual edge.** There are no unschematized host
-   keys, so the "is this key typed or ad-hoc?" gradient — and the question of a
-   featherweight key-manifest to typo-check ad-hoc keys — simply disappears.
-2. **Uniformity.** One mental model for host state; no two-tier boundary to
-   explain or police.
-3. **A named change-unit seam** (rung 1, below).
+1. **LSP/typo checking where it pays.** Generically-edited content gets its
+   `.ogh` field references validated against the schema (the LSP re-sourcing, §4).
+   Plain host state stays ad-hoc — fine, it carries no editor.
+2. **A named change-unit seam** (rung 1, below).
+
+> The earlier "all host state is a struct" draft also claimed **uniformity**
+> ("one mental model, no two-tier boundary"). That is *deliberately given up*:
+> opt-in schema means there *is* a two-tier boundary (schema'd vs. plain). Worth
+> it — universal schema cost more than the uniformity bought.
 
 **Deferred / speculative gains (do NOT build for these now):**
-4. **Rerender granularity (rung 2).** Subtree reactivity keyed on struct change.
+3. **Rerender granularity (rung 2).** Subtree reactivity keyed on struct change.
    *Valuable and dangerous* — flagged by the proposer as "not strictly
    necessary." Split it:
    - **Rung 1 — take now, nearly free:** a struct is a named change-unit. The
@@ -216,130 +230,161 @@ We adopted this *with eyes open* about what it actually buys now vs. later:
      prerequisite). Build only when a real app janks on global rerenders.
    Framing: struct-partitioned state is *preserved option value* for reactivity.
    Take the seam; defer the engine.
-5. **Component isolation (implication #3) — real but NOT automatic.** Ogham's
-   read model is *ambient* (plain identifiers fall through to the global host
-   bag, §2), so structs-in-host-state isolate nothing by themselves. The benefit
-   only materializes if components must *declare* which structs they see
-   (props/inputs, not ambient global) — a separate, bigger decision that *trades
-   against moddability* (ambient reads make a modder's "just show this here"
-   easy; declared reads force threading). Keep it separable; don't bundle.
-6. **Clearer typing (implication #4) — weakest.** The type system enforces
-   *existence*, not *cohesion*; nothing prevents a junk-drawer `ScreenState`. A
-   mild discipline nudge, not a structural guarantee. Don't lean on it.
+4. **Component isolation — real but NOT automatic.** Ogham's read model is
+   *ambient* (plain identifiers fall through to the global host bag, §2), so
+   structs-in-host-state isolate nothing by themselves. The benefit only
+   materializes if components must *declare* which structs they see (props, not
+   ambient global) — a separate, bigger decision that *trades against
+   moddability* (ambient reads make a modder's "just show this here" easy;
+   declared reads force threading). Keep it separable; don't bundle.
+5. **Clearer typing — weakest.** The type system enforces *existence*, not
+   *cohesion*; nothing prevents a junk-drawer `ScreenState`. A mild discipline
+   nudge, not a structural guarantee. Don't lean on it.
 
 ### Consequence
 
-The host now always emits *typed `editable` values* as its per-frame output
-rather than a hand-built `Value` map. It largely does this internally already,
-but it makes the `editable → Value` projection (§4) **load-bearing for all host
-state**, not just editor panes. That projection is the long pole.
+For the schema-described subset, the host emits *typed `editable` values* and the
+read walk (§4) turns them into the `Value` the renderer consumes — so that read
+is **load-bearing for the generic-editing path** (not for all host state; plain
+state is still injected as `Value` directly). It is the one piece worth designing
+carefully (§4).
 
 ---
 
-## 4. The `editable` ⟷ Ogham seam  [OPEN — crucial]
+## 4. The `editable` ⟷ Ogham seam — reading & writing Rust structs
 
-This is the most important unresolved design problem. `editable` (a **pure leaf**
-— serde only, no Ogham/`app`/Skia) is the *single* schema/description system
-(killing the `OghamState` rival). The question is how Ogham host state relates to
-it.
+### The goal, stated explicitly  [DECIDED]
 
-### Not mutually exclusive: three coexisting things
+**A Rust struct that derives `editable` should round-trip through Ogham's
+existing host-state-in / events-out pattern with no per-type hand-written glue.**
+For a content type like SM's `Scene`:
 
-(Correcting an earlier false dichotomy of "universal vs scoped".) "Universal"
-means **single vocabulary, not universal coverage**: `editable` is the only
-schema system, but these coexist permanently —
+- **Read:** `&Scene` projects into a `Value` tree of *field rows* that `.ogh`
+  renders as an editor. Each row carries a label, the current value, a `kind`
+  telling `.ogh` which widget to draw, and the dotted `path` an edit carries
+  back. (SM's `field_entries` in `editor/src/client.rs` already hand-writes this
+  shape: `{ key, value, field (=path), kind, options, editable }`.)
+- **Write:** a field edit leaves `.ogh` as an event carrying `(path, op)`; the
+  host applies it via `editable::apply()`. No `SetHostState` opcode (§2 holds).
 
-1. **`editable` content** — schema-driven; read/write in dev tools (Flow A),
-   usually read-only in player UI (Flow B).
-2. **Player-facing data** — now also schema-described per §3, but read-only into
-   `.ogh` (host state flows in, never mutated by `.ogh`, §2).
-3. **Pure stateless UI** — hand-authored markup binding to no data at all.
+That is the *entire* job — not a new pattern, just host-state-in / events-out
+with "the state" a projected struct and "the events" field edits.
 
-### Two flows, different halves of `editable`
+### Scope: generic editing only  [DECIDED]
 
-- **Flow A — dev-tool UI** (`EditablePane<T: Editable>`): uses `schema()` *and*
-  `apply()`. Ogham is a dumb renderer of a `view()` projection. (The generic
-  `schema_form` inspector for this is *in progress* as of 2026-06-07 — SM
-  `editable` step 5.)
-- **Flow B — player-facing UI**: only ever *reads*, so it uses `schema()` + a
-  read projection and **never** `apply()`. Edits leave as events; the host
-  applies them via `editable::apply()` host-side. §2 preserved.
+The schema machinery (`editable`, `Kind`, path-`apply`, the read walk) exists for
+**one** thing: handling content **generically** — rendering/editing it without a
+hand-written UI per type. That is the pervasive real case (SM's inspector over
+`Scene` / `Character` / `Encounter` / …). Two would-be justifications are **out
+of scope**:
 
-### The convergent design (three pieces)
+- **Mod-defined shapes.** Mods rely solely on **hand-authored Ogham state**, not
+  Rust structs — a mod's content shape has no compile-time struct to derive from,
+  so it never enters this seam. (Retires the old §3 `Kind::Map`-for-mod-resources
+  framing.)
+- **"All host state is schema-described."** Superseded (§3). Most host state is
+  plain Rust injected as `Value`; schema is **opt-in** for the generic-editing
+  case. Universalizing it was the overcomplication that made this seam look like a
+  framework crisis instead of a bounded tool.
 
-1. **`editable::schema()` → JSON → the LSP/authoring manifest.** Replaces
-   `ogham check`. The LSP validates `.ogh` field references against the schema
-   blob. (This is the LSP "re-sourcing" from §2-Keep.)
-2. **A derivable `editable → Value` read projection.** Replaces the 300+ hand
-   `Value::String(...)` boxings at the injection boundary. The friction-killer.
-3. **Edits flow out as events / `PaneAction`s, applied host-side via `apply()`.**
-   No `SetHostState` opcode ever appears.
+### One derive, both directions — no second crate needed  [DECIDED]
 
-### The layering invariant (what makes it *right*)
+Read and write come from **the same `editable` derive**. `apply` already walks the
+real types to *write*; the derive gains the symmetric walk to *read*. There is
+**no second derive** and **no `OghamRead` / `OghamWrite` capability crate** — the
+prior draft's "thin Ogham-tied traits over the leaf" are superseded.
 
-**Ogham depends on `editable` for nothing.** It receives a `Value` tree to render
-and, optionally, a schema JSON for the LSP. Both are produced *host-side*.
-`editable` stays a pure UI-less leaf; Ogham stays domain-agnostic; **the host
-composes the two.** That is the Rust-app-UI identity expressed structurally —
-neither framework reaches into the other.
+The code that turns a read into Ogham's `Value` (the row tree) names *both*
+`editable` and Ogham, so it can't live in `editable` (purity). But it does **not
+need a dedicated crate**: the **host already depends on both** and is the
+composition point (the layering invariant), so the `Value`-building visitor can
+live in the host. Promote it to a *thin, derive-less* shared helper **only** if a
+second host (SM + UL) wants to reuse it — a packaging choice, not a layer.
 
-### Naming, and the `OghamRead` / `OghamWrite` idea  [OPEN]
+> This supersedes the earlier "the translator is a second engine crate" lean:
+> once read is part of `editable`'s own derive, the remaining glue is small enough
+> to be host code.
 
-`editable` is the *correct* name within the Lorekeeper engine — it describes "a
-value that can describe + edit itself," and it's deliberately UI-agnostic (the
-pure leaf). But the name isn't Ogham-specific, and there may be value in thin
-**Ogham-tied** derivable traits layered *over* the leaf. Working names (NOT
-canonical — placeholders only): `OghamRead` / `OghamWrite`, where
+### Read is the mirror of `apply` — not serde  [DECIDED]
 
-- `OghamRead` ≈ the read-only projection Flow B needs (`schema()` + the
-  `editable → Value` lowering),
-- `OghamWrite` ≈ `Editable + Ogham extras` (the read projection + `apply()`
-  routing + `view()`), what Flow A needs.
+`editable` has no instance-read *today* by design — schema (type-level) + `apply`
+(write) only. The read must come from somewhere, and the tempting shortcut —
+pull values via **serde** — is **rejected**.
 
-This maps cleanly onto the two flows and could tidy the seam into a trait the
-host names directly instead of an ad-hoc projection call.
+**Why serde is wrong here:** serde is a *second, independently-configured
+description of the same struct*, tuned for **persistence**, and not guaranteed to
+agree with the `editable` schema / `apply` convention. It already disagrees in the
+SM corpus:
 
-**The trap to avoid (layering caveat).** These traits must NOT force a domain
-type to depend on the Ogham crate — that is *exactly* the coupling that killed
-`OghamState`. Candidate resolution: a **blanket impl in a thin bridge** — e.g.
-`impl<T: Editable> OghamRead for T` in a crate that depends on both — so a domain
-type still derives only `Editable` (pure leaf) and the Ogham-facing capability is
-added structurally by the bridge. That preserves the layering invariant above
-*and* gives the clean trait-level seam.
+- `Effect` (externally-tagged) → `{"Ruleset": {…}}` / `{"GiveItem": {…}}`.
+- `Action` (`#[serde(tag = "kind")]`) → `{"kind": "apply_condition", …}`.
+- `editable::apply` addresses **every** union through the `kind` discriminant.
 
-**Not a return of `OghamState`.** These would be a thin facade *layered on the
-one schema*, not a parallel rival schema. The single-vocabulary decision still
-holds — `editable` remains the only schema system; `OghamRead`/`OghamWrite` are
-just its Ogham-facing face.
+So a serde read would feed `.ogh` an `Effect` shaped `{"Ruleset": {…}}` while a
+variant-switch write goes out as `effects.0.kind = "give_item"` into `apply`'s
+`kind`-path — read and write disagreeing on a union's shape, **in shipping
+content**. That is the two-descriptions-drift disease that killed `OghamState`;
+serde re-opens it on the read side. (Secondary cost: serde's choices are
+*save-format* choices — `#[serde(default)]`, `skip`, tagging — so an editor built
+on serde couples to the save format.)
 
-### The hard open sub-problem
+**The fix:** read is emitted by the **same derive** as `apply`, so the two share
+the `kind` convention **by construction** and cannot drift. serde keeps its real
+job (disk / saves) and stays out of the UI path.
 
-**The `Value` ↔ `Kind` representation mapping.** Ogham speaks `Value`
-(Int/String/Bool/Array/Map/Widget); `editable` speaks `Kind`
-(Record/List/Union/Ref/Optional/Map/…). The projection concentrates on the hard
-kinds: how does `Ref(table)` land — bare `String(id)`, or `{id,label}`? How does
-`Union` project — `Value::Map{ kind: "...", <payload> }`?
+**Keeping `editable` pure:** the read is a **visitor / streaming traversal**, not
+a returned tree — `editable` must not depend on Ogham's `Value` *and* keeps its
+"no intermediate value model" rule. `editable` gains a small **pure** `Reader`
+trait (scalar / list-begin/end / union-variant callbacks); the derived read
+drives it; the host's `Value`-building visitor implements it. One walker, no serde
+in the UI path, purity intact, read/write drift-proof.
 
-**Payoff note:** the union-across-the-seam question is the *same problem* as the
-`key == "__add"` / `"__objdel"` sentinel-key hacks (the ugliest wart in the
-`.ogh` corpus, which exist precisely because there's no principled union
-projection across the host boundary today). Solving the projection retires the
-sentinels at the same time — it pays double.
+### The layering invariant (unchanged, now sharper)
+
+`editable` depends on Ogham for nothing — it gains only a *pure* `Reader` trait
+and stays a serde-only leaf. Ogham stays domain-agnostic. The host composes the
+two by supplying the `Value`-building visitor. Domain types still derive **only**
+`editable`.
+
+### The `Value` ↔ `Kind` mapping: a row vocabulary, not a theory  [LEANING]
+
+The once-"hard" projection is just *what row does each `Kind` produce?* — a small
+checklist generalizing shapes SM's `field_entries` already hand-writes:
+
+| `Kind` | row `kind` | widget |
+|---|---|---|
+| `Str` / `Int` / `Bool` | `text` / `number` / `bool` | input / checkbox *(exists)* |
+| `Text` | `textarea` | multiline |
+| `Ref(table)` | `ref:<table>` | picker — value is the id; the candidate list is the one genuinely host-supplied bit |
+| `List` / `Optional` | `list` | child rows + add/remove ops |
+| `Union` | `union` | variant selector + current variant's payload rows (`kind` discriminant) |
+| `Map` | `map` | keyed entries + add/remove (rare; data-driven host state) |
+
+Fixing this vocabulary is what makes the read derive writable and retires the
+hand-built inspectors. Unions and refs are the only non-trivial rows; the union
+row (`kind` discriminant + payload recursion) is also what retires the `__add` /
+`__objdel` sentinel-key hacks — it pays double.
 
 ---
 
 ## 5. Open questions for future sessions
 
-- **[OPEN] The `Value` ↔ `Kind` projection** (§4) — the long pole; design it
-  next. Unions and refs are the hard part; getting them right retires the
-  sentinel-key hacks.
-- **[OPEN] Scoped/declared reads vs. ambient reads** (§3 #5) — the component-
+- **[LEANING] The `Value` ↔ `Kind` row vocabulary** (§4) — design the ~7 `Kind`
+  → field-row shapes (generalizing SM's `field_entries`). Unions and refs are the
+  only non-trivial rows, and the union row retires the sentinel-key hacks. No
+  longer a "long pole" — a bounded checklist.
+- **[OPEN] The read visitor's exact shape** (§4) — the callback protocol the
+  `editable` derive emits for the read walk (scalar / list-begin/end /
+  union-variant) and the `Reader` trait it drives, plus what the host's
+  `Value`-building visitor looks like. Concrete enough to hand to whoever writes
+  the derive.
+- **[OPEN] Scoped/declared reads vs. ambient reads** (§3 #4) — the component-
   isolation benefit collides with the moddability value. Separable from the
   state-model decision; decide on its own.
-- **[OPEN] Ogham-facing trait facade over `editable`** (§4) — naming, and whether
-  `OghamRead`/`OghamWrite` (or similar) layered on `Editable` cleans up the seam.
-  Must preserve the layering invariant (domain types derive only the pure leaf;
-  a bridge adds the Ogham capability via blanket impl).
+- **[RESOLVED 2026-06-07] Ogham-facing trait facade over `editable`** — dropped.
+  Read lives in `editable`'s own derive (visitor-based) and the host builds the
+  `Value`; no `OghamRead` / `OghamWrite` traits and no capability crate. Revisit
+  only if a shared host helper later wants a named trait.
 - **[OPEN] Cut sequencing** — order the safe-immediate cuts vs. the
   decision-gated ones (portal migration); confirm nothing in the "safe" list has
   a hidden consumer.
@@ -348,5 +393,6 @@ sentinels at the same time — it pays double.
   radically simplifying the identity machinery behind it.
 - **Eventually:** translate the [DECIDED] items into `INTENT.md` tenets
   (identity/scope tenet; `Surface`-as-isolation rewrite of §6; the host/local
-  state-discipline tenet). **Not yet** — that's the end of the workshop, not the
-  middle.
+  state-discipline tenet; the generic-editing seam — one `editable` derive,
+  read+write, no serde in the UI path). **Not yet** — that's the end of the
+  workshop, not the middle.
