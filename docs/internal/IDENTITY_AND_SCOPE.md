@@ -346,38 +346,78 @@ and stays a serde-only leaf. Ogham stays domain-agnostic. The host composes the
 two by supplying the `Value`-building visitor. Domain types still derive **only**
 `editable`.
 
-### The `Value` ↔ `Kind` mapping: a row vocabulary, not a theory  [LEANING]
+### The `Value` ↔ `Kind` mapping: a nested node vocabulary  [DECIDED — shape LEANING]
 
-The once-"hard" projection is just *what row does each `Kind` produce?* — a small
-checklist generalizing shapes SM's `field_entries` already hand-writes:
+The projection is *what node does each `Kind` produce?* — and the read emits a
+**nested tree** that mirrors the struct exactly, **not** a flattened row list.
 
-| `Kind` | row `kind` | widget |
-|---|---|---|
-| `Str` / `Int` / `Bool` | `text` / `number` / `bool` | input / checkbox *(exists)* |
-| `Text` | `textarea` | multiline |
-| `Ref(table)` | `ref:<table>` | picker — value is the id; the candidate list is the one genuinely host-supplied bit |
-| `List` / `Optional` | `list` | child rows + add/remove ops |
-| `Union` | `union` | variant selector + current variant's payload rows (`kind` discriminant) |
-| `Map` | `map` | keyed entries + add/remove (rare; data-driven host state) |
+> **[DECIDED] Nested, true to the structure — never flatten.** A flat-with-depth
+> row list (as `backstory_rows_value` hand-builds today) is *itself a second,
+> derived representation* layered over the real shape — precisely the kind of
+> rival description that drifts, which this whole doc kills elsewhere (serde, §4;
+> `OghamState`, §1). Flattening also bakes in assumptions that break when a new
+> schema nests differently. The read mirrors the data structure 1:1; any
+> flattening for display is a *rendering* choice made later in `.ogh`, never baked
+> into the projection.
 
-Fixing this vocabulary is what makes the read derive writable and retires the
-hand-built inspectors. Unions and refs are the only non-trivial rows; the union
-row (`kind` discriminant + payload recursion) is also what retires the `__add` /
-`__objdel` sentinel-key hacks — it pays double.
+> **[DECIDED] `Ref` candidates ride a sibling channel.** A `ref` node carries only
+> `{ kind: "ref", table, value: <id> }`. The candidate lists live **once** in a
+> separate host-state map keyed by table (`refs.<table>`), not inline per node —
+> one copy, looked up by the picker.
+
+The node shape (a recursive `Value::Map`; **field names LEANING**, structure
+decided). Every node carries `{ key (label), path, kind, editable }`, plus:
+
+| `Kind` | `kind` | extra node fields | write op |
+|---|---|---|---|
+| `Str`/`Int`/`Float` | `text`/`number` | `value` (string) | `Set` |
+| `Bool` | `bool` | `value` | `Set` |
+| `Text` | `textarea` | `value` | `Set` |
+| `Enum(v)` | `enum` | `value`, `options` | `Set` |
+| `Formula` | `formula` | `value` (+ host validity) | `Set` |
+| `Ref(t)` | `ref` | `table`, `value` (id) — candidates via `refs.<t>` | `Set` |
+| `Record`/`Tuple` | `group` | `children: [node…]` | — |
+| `List(T)` | `list` | `items: [node…]` (each `path…​.N`) | `AddListItem` / `RemoveListItem` / `MoveListItem` |
+| `Optional(T)` | `list` (cap 1) | `items` (0 or 1) | `AddListItem` / `RemoveListItem(0)` |
+| `Map(T)` | `map` | `entries: [{ key, node }…]` | `AddMapEntry{key}` / `RemoveMapEntry{key}` |
+| `Union(v)` | `union` | `variant`, `variants` (names), `payload: [node…]` | `Set` on `…​.kind` (re-defaults payload) |
+
+**Container ops map 1:1 onto `FieldOp`** — that correspondence is what retires the
+`__add` / `__objdel` sentinel-key hacks: a `list` node exposes real add/remove/move
+events instead of smuggling them through magic keys. Keep the node vocabulary and
+`FieldOp` in lockstep — they're one list seen from two ends.
+
+**Two consequences fall out of "nested":**
+- The `Reader` trait is a **structured (begin/end) visitor**, not a flat row
+  emitter: `scalar` / `begin_record…end_record` / `begin_list…item…end_list` /
+  `begin_union(variant)…` callbacks. (Resolves the direction of the §5 "Reader
+  shape" item; only the exact callback names remain open.)
+- `.ogh` renders with a **recursive `field_node` component** that `match`es
+  `node.kind` and recurses into `children`/`items`/`payload`/`entries` via `for`.
+  Each child is **keyed by its `path`** — the dotted path is a naturally stable
+  identity, so reconcile-by-key (INTENT §3/§5) and path-based hook identity
+  (INTENT §9) make the recursive tree animate and preserve state correctly.
+
+**Smaller decisions (settled):** `value` is a **string** in every node (symmetric
+with `FieldOp::Set`, which parses); **labels** default to the field name with an
+`#[editable(label = "…")]` override; **`editable`** is per-field via
+`#[editable(readonly)]`, and Flow B (player UI) is whole-pane read-only.
 
 ---
 
 ## 5. Open questions for future sessions
 
-- **[LEANING] The `Value` ↔ `Kind` row vocabulary** (§4) — design the ~7 `Kind`
-  → field-row shapes (generalizing SM's `field_entries`). Unions and refs are the
-  only non-trivial rows, and the union row retires the sentinel-key hacks. No
-  longer a "long pole" — a bounded checklist.
-- **[OPEN] The read visitor's exact shape** (§4) — the callback protocol the
-  `editable` derive emits for the read walk (scalar / list-begin/end /
-  union-variant) and the `Reader` trait it drives, plus what the host's
-  `Value`-building visitor looks like. Concrete enough to hand to whoever writes
-  the derive.
+- **[RESOLVED 2026-06-07] Nested vs. flat projection** (§4) — **nested**, true to
+  the data structure; flattening is a rival representation that drifts and breaks
+  on new schemas. `Ref` candidates ride a sibling `refs.<table>` channel.
+- **[LEANING] The `Value` ↔ `Kind` node vocabulary** (§4) — structure decided
+  (nested node per `Kind`, ops 1:1 with `FieldOp`, retiring the sentinel hacks);
+  what remains is finalizing node *field names* (`children`/`items`/`payload`/
+  `entries`) and the `.ogh` `field_node` component.
+- **[OPEN, direction set] The read visitor's exact shape** (§4) — a **structured
+  (begin/end) `Reader`** is decided (nested demands it); the open part is the
+  exact callback names and the host's `Value`-building visitor. Concrete enough to
+  hand to whoever writes the derive.
 - **[OPEN] Scoped/declared reads vs. ambient reads** (§3 #4) — the component-
   isolation benefit collides with the moddability value. Separable from the
   state-model decision; decide on its own.
