@@ -73,22 +73,23 @@ user code.
 **Why this matters:** the asymmetry is what keeps the runtime
 re-entrant. The VM never has to reason about handlers writing
 state mid-execution and triggering a rerender from inside a
-rerender. Mutations (`mutation("name").trigger`) provide the
-request/response shape *without* breaking the asymmetry: the
-trigger fires synchronously and the result is staged on the
-mutation handle, but the VM still observes it on the *next*
-render, not via a return value.
+rerender. Edits never write host state from `.ogh`; they leave as
+`event(name, ...)` calls carrying the change — for schema-described
+state, a `(path, op)` the host applies via `editable::apply()` (see
+§12) — and the VM observes the result on the *next* render, not via
+a return value.
 
 **Drift indicators:**
 - A new `OpCode::SetHostState` (or any opcode that writes
   `runtime.host_state` from user code).
 - An event handler whose return value is consumed synchronously
-  by the VM at the call site (today, the VM discards the
-  `event()` result and only mutations carry it forward).
+  by the VM at the call site (the VM discards the `event()`
+  result).
 - A `widget::Widget` that calls back into the runtime mid-render
   to push host state.
 - Adding a synchronous `request_host_value(name)` primitive in
-  `.ogh` code rather than going through `state` + `mutation`.
+  `.ogh` code rather than reading host state ambiently and emitting
+  an event.
 
 ---
 
@@ -131,10 +132,9 @@ reset to the new target with zero velocity, and authors see a
 Layout, style transitions, hover, exit lifecycle, scroll, and
 hit-testing all live on `FlexWidget`. `PresenceWidget` wraps a
 `FlexWidget` and adds generation-keyed sequencing. `GridWidget`
-specializes the layout. `TextWidget`, `TextInputWidget`,
-`SvgWidget`, and `ImageWidget` are leaves that re-implement
-*their own* style and event handling, but they don't try to be
-flex containers.
+specializes the layout. `TextWidget`, `TextInputWidget`, and
+`ImageWidget` are leaves that re-implement *their own* style and
+event handling, but they don't try to be flex containers.
 
 **Why this matters:** Flex is 2700+ lines for a reason —
 flexbox-with-wrap is hard, exit ghosts interact with reorder
@@ -196,26 +196,28 @@ the React lesson re-learned.
 
 Layout, hit-testing, animation, and reconciliation are
 backend-agnostic and live in `widget/`. Only paint goes through
-the `Surface` + `RenderContext` traits. The Skia implementation
-is one consumer; custom backends are free to ship their own.
-Logical (pre-DPI) coordinates flow through the widget tree;
-backends multiply by their own DPI scale.
+the `Surface` + `RenderContext` traits, of which the Skia
+implementation is the only one. Logical (pre-DPI) coordinates flow
+through the widget tree; backends multiply by their own DPI scale.
 
-**Why this matters:** "we tightly couple the rendered output to
-Skia" is exactly the failure mode the README warns against.
-Today's drift risks come from convenience: a widget that wants
-`skia_safe::Color` directly instead of `widget::style::Color`,
-or a layout pass that calls `skia_safe::textlayout` for
-measurement bypassing `LayoutContext`. Each one of those locks
-out non-Skia backends.
+**Why this matters:** the seam is **not** kept for backend
+portability — Skia is the only impl and GPU/tile-baking lives
+*outside* Ogham, so there is no second backend coming
+(IDENTITY_AND_SCOPE §2). It survives as a **paint-isolation + test
+seam**: it keeps `skia_safe` out of `widget/` so layout, hit-test,
+and animation stay backend-pure and unit-testable, and it blocks
+the convenience drift where a widget reaches for `skia_safe::Color`
+instead of `widget::style::Color`, or a layout pass calls
+`skia_safe::textlayout` for measurement bypassing `LayoutContext`.
+The test seam is the live reason; portability is a lapsed one.
 
 **Drift indicators:**
 - `use skia_safe::` outside of `src/skia.rs`,
-  `src/widget/text_widget.rs`, `src/widget/text_input_widget.rs`,
-  and `src/widget/svg_widget.rs`. (Text and SVG widgets
-  currently *do* depend on Skia for measurement / parsing —
-  this is a known seam-leak; document it as drift if it spreads
-  further.)
+  `src/widget/text_widget.rs`, and
+  `src/widget/text_input_widget.rs`. (Text widgets currently *do*
+  depend on Skia for measurement — the one known seam-leak;
+  document it as drift if it spreads further. `svg` is cut, so
+  `svg_widget.rs` is gone.)
 - A `Widget::layout` implementation whose return depends on a
   Skia-specific helper.
 - A `Surface` impl that mutates the widget tree (Surface should
@@ -232,12 +234,9 @@ When the file watcher fires, the runtime is rebuilt from disk and
 a fresh widget tree is constructed by the builder. The live UI
 then `reconcile`s against it. Same-key, same-shape widgets
 preserve animation/hover/scroll state; structural changes drop
-state silently. The runtime's component-state map and the
-lifecycle-hook registry are **not** preserved across a reload —
-`Ogham::reload` swaps in a brand-new `Runtime` and calls
-`UI::clear_lifecycle_state` to scrub any pending drain queues on
-the UI side. Host-injected state is re-applied from
-`RuntimeConfig`.
+state silently. The runtime's component-state map is **not**
+preserved across a reload — `Ogham::reload` swaps in a brand-new
+`Runtime`. Host-injected state is re-applied from `RuntimeConfig`.
 
 **Why this matters:** hot reload exists to be cheap and
 convenient, not to be a checkpoint system. Trying to preserve
@@ -249,15 +248,12 @@ visible UI snaps where the *new* program disagrees with the old.
 
 **Drift indicators:**
 - A code path that copies the old runtime's `state.component_state`
-  or the lifecycle-hook registry into a new runtime on reload.
+  into a new runtime on reload.
 - A reload that bypasses `UI::reconcile` and rebuilds the tree
   from scratch — that would also drop animation/hover state on
   every reload, defeating the cheapness.
 - A reload that *does* preserve state but silently coerces values
   across type changes.
-- A reload path that skips `UI::clear_lifecycle_state` and lets
-  the previous module's pending drain queues fire against the
-  new module's hook registry.
 
 ---
 
@@ -290,14 +286,19 @@ AST interpreter" in comments are historical.
 
 ## 9. Hook identity is path-based, not order-based.
 
-`state` cells, `on_mount` / `on_unmount` blocks, and `effect` /
-`cleanup` blocks all key onto the call-stack path of the
-declaring function plus a per-block hook ID. Re-rendering a
-function from the same call site finds its hooks at the same
-slot; calling the function from a *different* parent gets a
-fresh slot. There is **no** "must be called in the same order
-every render" rule — a hook inside an `if` is legal (just
-warned, since whether it registers shifts identity).
+`state` cells key onto the call-stack path of the declaring
+function plus a per-cell ID. Re-rendering a function from the same
+call site finds its cells at the same slot; calling the function
+from a *different* parent gets a fresh slot. There is **no** "must
+be called in the same order every render" rule — a `state` inside
+an `if` is legal (just warned, since whether it registers shifts
+identity).
+
+> Lifecycle hooks (`on_mount` / `on_unmount` / `effect` / `cleanup`)
+> are **cut** (IDENTITY_AND_SCOPE §2), so this identity now serves
+> only `state`. The path-based *mechanism* stays — it is load-bearing
+> for component-state independence and reorder survival; do not
+> simplify it away on the grounds that only one consumer remains.
 
 **Why this matters:** React's rules-of-hooks problem is what
 breaks when hook identity is order-based — a developer who puts
@@ -326,3 +327,118 @@ share a single discipline.
 - A new `Call` opcode variant that calls a closure without
   pushing a path frame; would silently fold callee hooks into
   the caller's identity space.
+
+---
+
+## 10. Ogham is a UI framework for Rust applications, not a standalone app platform.
+
+The host (a Rust program) owns all state and logic; Ogham is a
+projection surface over it — `.ogh` renders host state and emits
+events. Ogham is *not* a JavaScript/React replacement or a
+standalone application runtime. The four-pass pipeline (§1, §8) is
+kept as real option value toward richer in-language logic later; the
+standalone-app surface is not.
+
+**Why this matters:** revealed preference across the real consumers
+(small_mercies, untold_lore) is decisive — the render + language
+core is heavily used while the standalone-app surface (typed
+bindings, `mutation`, lifecycle, `client`-as-platform) was near-dead,
+maintained, drifting code. Premature breadth is how challengers lose;
+the way to displace an incumbent is to dominate one embedded niche
+first. Conflating "UI for Rust apps" with "JS killer" made both worse
+(IDENTITY_AND_SCOPE §1).
+
+**Drift indicators:**
+- New surface that presupposes "Ogham *is* the application" rather
+  than a projection over a Rust host.
+- A rival typed-host-state layer reappearing (the `OghamState` /
+  `OghamMsg` shape) instead of the single `editable` vocabulary
+  (§11, §12).
+- `client` treated as a shipping platform rather than a dev
+  previewer.
+- Building toward the standalone-browser ambition on the game
+  projects' budget instead of giving it its own roadmap.
+
+---
+
+## 11. Generically-edited host state is schema-described; everything else is plain; local state is ephemeral.
+
+Three disciplines, divided by **who names the state into existence**:
+
+- **Schema-described host state** — content that gets *generically*
+  edited (e.g. small_mercies `Scene` / `Character`): described once
+  via `#[derive(editable)]`, read and written through that one schema
+  (§12).
+- **Plain host state** — everything else the host wants on screen:
+  injected as a `Value` directly (read in, events out, §2); no schema.
+- **Local state** — view-invented, ephemeral (a mod's custom tabs,
+  hover, an in-progress input buffer): a `state` cell (§9), *never*
+  schema'd, because the host cannot name it.
+
+Schema is **opt-in** for the generic-editing case, not a tax on every
+screen.
+
+**Why this matters:** the boundary keeps save/deep-link-relevant
+state where it can be persisted (host-defined → host state) while
+letting moddable UI invent its own structure (view-defined → local).
+Universalizing the schema was tried and rejected — it turned a
+bounded editor tool into a framework-wide tax (IDENTITY_AND_SCOPE §3).
+One schema vocabulary (`editable`) avoids the rival-typed-state drift
+that killed `OghamState`.
+
+**Drift indicators:**
+- Host-defined semantic state (current character, save-relevant
+  selection) living in a local `state` cell — saves and deep-links
+  silently lose it.
+- A second schema / description system standing up beside `editable`.
+- Schema-described state mutated in place from `.ogh` instead of via
+  events the host applies (violates §2).
+- A push to schema *all* host state "for uniformity."
+
+---
+
+## 12. Generic editing is one `editable` derive: read mirrors write, no serde in the UI path.
+
+A `#[derive(editable)]` Rust struct round-trips through §2's
+host-state-in / events-out with no per-type hand-written glue:
+
+- **Read** projects `&T` into a *nested* `Value` node tree — true to
+  the struct's structure, never flattened — that a recursive `.ogh`
+  `field_node` renders; every container nests under a uniform
+  `children`.
+- **Write** leaves as a `(path, op)` event the host applies via
+  `editable::apply()`.
+- **Read and write come from the same derive** — read is the
+  structural mirror of `apply`, so their paths agree by construction.
+  Read is a structured `Reader` visitor with self-describing leaves
+  (`scalar(&Kind, &str)`); **serde is never in the UI read path**. The
+  union discriminant is the `$variant` sigil.
+
+`editable` stays a pure leaf (serde only, no Ogham); Ogham stays
+domain-agnostic; the **host composes** the two (the `Value`-building
+visitor lives host-side). No second crate, no `OghamRead` /
+`OghamWrite`.
+
+**Why this matters:** the consumers proved the need by building
+`editable` *outside* Ogham when the renderer-coupled typed layer
+failed them (IDENTITY_AND_SCOPE §1). One derive driving both
+directions is what prevents the read/write drift that recurs whenever
+a second description of the same data exists (serde tagging vs. the
+discriminant; `OghamState` vs. the renderer). A nested,
+true-to-structure projection means new schemas just work without a
+bespoke flattening.
+
+**Drift indicators:**
+- serde (`Serialize` / `serde_json::Value`) on the UI *read* path —
+  a rival description that drifts from `apply` (the live example was
+  the flat `schema_form.rs`).
+- A second derive or schema system for the read (e.g. `OghamRead` /
+  `OghamWrite` traits over `editable`).
+- A flattened node projection (depth-tagged rows) instead of the
+  nested tree.
+- A `SetHostState`-style write path instead of events + host
+  `apply()` (violates §2).
+- `editable` gaining a dependency on the Ogham crate (the coupling
+  that killed `OghamState`).
+- Sentinel keys (`__add` / `__objdel`) reappearing instead of
+  explicit container ops mapped 1:1 to `FieldOp`.
