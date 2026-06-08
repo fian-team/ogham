@@ -14,7 +14,10 @@
 >
 > First drafted: 2026-06-07. Revised 2026-06-07 (the generic-editing reckoning:
 > §3 de-universalized; §4 reframed around reading/writing Rust structs from one
-> `editable` derive, with no second crate and no serde in the UI path).
+> `editable` derive, with no second crate and no serde in the UI path). Revised
+> 2026-06-08 (seam fully specified: nested node tree with uniform `children`, the
+> `Reader` mirror of `apply`, the `$variant` discriminant, ambient reads, and the
+> cut/build/migrate execution sequence — see §5).
 
 ---
 
@@ -365,8 +368,10 @@ The projection is *what node does each `Kind` produce?* — and the read emits a
 > separate host-state map keyed by table (`refs.<table>`), not inline per node —
 > one copy, looked up by the picker.
 
-The node shape (a recursive `Value::Map`; **field names LEANING**, structure
-decided). Every node carries `{ key (label), path, kind, editable }`, plus:
+The node shape (a recursive `Value::Map`). Every node carries
+`{ key (label), path, kind, editable }`; **every container nests its child nodes
+under a single uniform `children: [node…]`** (so `field_node` is one
+`for node.children` loop), with kind-specific metadata alongside:
 
 | `Kind` | `kind` | extra node fields | write op |
 |---|---|---|---|
@@ -376,28 +381,62 @@ decided). Every node carries `{ key (label), path, kind, editable }`, plus:
 | `Enum(v)` | `enum` | `value`, `options` | `Set` |
 | `Formula` | `formula` | `value` (+ host validity) | `Set` |
 | `Ref(t)` | `ref` | `table`, `value` (id) — candidates via `refs.<t>` | `Set` |
-| `Record` | `group` | `children: [node…]` (named) | — |
-| `Tuple` | `group` | `children: [node…]` (positional `.0`/`.1`) | — |
-| `List(T)` | `list` | `items: [node…]` (each `path…​.N`) | `AddListItem` / `RemoveListItem` / `MoveListItem` |
-| `Optional(T)` | `option` | `inner: node \| none` | `AddListItem` (set) / `RemoveListItem(0)` (clear) |
-| `Map(T)` | `map` | `entries: [{ key, node }…]` | `AddMapEntry{key}` / `RemoveMapEntry{key}` |
-| `Union(v)` | `union` | `variant`, `variants` (names), `payload: [node…]` | `Set` on `…​.kind` (re-defaults payload) |
+| `Record` | `group` | `children` (named) | — |
+| `Tuple` | `group` | `children` (positional `.0`/`.1`) | — |
+| `List(T)` | `list` | `children` (each `path…​.N`) | `AddListItem` / `RemoveListItem` / `MoveListItem` |
+| `Optional(T)` | `option` | `children` (0 or 1) | `AddListItem` (set) / `RemoveListItem(0)` (clear) |
+| `Map(T)` | `map` | `children` (each carries `map_key`) | `AddMapEntry{key}` / `RemoveMapEntry{key}` |
+| `Union(v)` | `union` | `variant`, `variants`, `children` (active payload) | `Set` on `…​.$variant` (re-defaults payload) |
 
 **Container ops map 1:1 onto `FieldOp`** — that correspondence is what retires the
 `__add` / `__objdel` sentinel-key hacks: a `list` node exposes real add/remove/move
 events instead of smuggling them through magic keys. Keep the node vocabulary and
 `FieldOp` in lockstep — they're one list seen from two ends.
 
-**Two consequences fall out of "nested":**
-- The `Reader` trait is a **structured (begin/end) visitor**, not a flat row
-  emitter: `scalar` / `begin_record…end_record` / `begin_list…item…end_list` /
-  `begin_union(variant)…` callbacks. (Resolves the direction of the §5 "Reader
-  shape" item; only the exact callback names remain open.)
-- `.ogh` renders with a **recursive `field_node` component** that `match`es
-  `node.kind` and recurses into `children`/`items`/`payload`/`entries`/`inner` via
-  `for`. Each child is **keyed by its `path`** — the dotted path is a naturally
-  stable identity, so reconcile-by-key (INTENT §3/§5) and path-based hook identity
-  (INTENT §9) make the recursive tree animate and preserve state correctly.
+**The `.ogh` render consequence:** a **recursive `field_node` component** that
+`match`es `node.kind` and recurses **uniformly into `node.children`** via `for`.
+Each child is **keyed by its `path`** — the dotted path is a naturally stable
+identity, so reconcile-by-key (INTENT §3/§5) and path-based hook identity (INTENT
+§9) make the recursive tree animate and preserve state correctly.
+
+### The read walk: a `Reader` mirror of `apply`  [DECIDED — names LEANING]
+
+The derived read is the **structural mirror of the generated `apply`** — same
+derive, same field idents, same `#[serde(rename)]` logic — so read paths and write
+paths agree *by construction*. Where `apply` consumes a path top-down and routes
+into the live value to write, the read walks the live value top-down and emits its
+structure:
+
+| derive case | `apply` (write) | read (mirror) |
+|---|---|---|
+| named struct | route segment → `field.apply` | `begin_group; field(name); …; end_group` |
+| tuple struct/variant | route index → `self.i.apply` | `begin_group; index(i); …; end_group` |
+| union | discriminant-switch / route variant | `begin_union(variant, variants); …; end_union` |
+| `Vec<T>` | index → element | `begin_list(len); index(i); …; end_list` |
+| `Option<T>` | unwrap | `begin_option(present); …; end_option` |
+| scalar leaf | `Set` parses | `scalar(kind, value)` |
+
+Three properties pin it:
+
+- **Self-describing leaves — no `schema()` at render time.** The derive knows each
+  leaf's `Kind` at codegen (including the `#[editable(ref/text/formula)]`
+  promotions — `field_schema_tokens`), so the single leaf callback is
+  `scalar(&Kind, &str)`: the `Kind` carries ref-table and enum-options, the string
+  is the instance value. One walk yields structure + kinds + values; `schema()`
+  survives only for the LSP manifest.
+- **The visitor owns the path.** The derive fires `field(name)` / `index(i)` to
+  name the next child and stays path-agnostic; the host visitor accumulates the
+  dotted path. That visitor is a small SAX→tree stack machine — and it is the
+  **surviving core of the replaced `schema_form.rs`** (the *walk* moves into the
+  derive; this visitor + the `refs` channel is all that stays host-side).
+- **`Reader` lives in `editable`, depending only on `editable::Kind`** — purity
+  intact; it never names an Ogham type.
+
+Callback set (shape fixed, names at implementation): `scalar(&Kind,&str)`,
+`begin_group`/`end_group`, `begin_list(len)`/`end_list`,
+`begin_option(present)`/`end_option`, `begin_map`/`end_map`,
+`begin_union(variant,variants)`/`end_union`, and `field(name)` / `index(i)` to
+name the next child.
 
 **Positional vs. named labels (the `"0"` rule).** Structure is *always* faithful —
 a tuple/newtype variant's fields are real children at `.0`, `.1`, …, never
@@ -416,11 +455,18 @@ names instead of `0`/`1`? Use a struct variant — that's the nudge.
 2. **[DECIDED] `Optional` is its own `option` kind** (set/clear), not a cap-1
    `list`. Eight `Scene` fields are `Option`; "+ Add / clear" reads far better
    than list chrome.
-3. **[OPEN] A domain field literally named `kind`** (`Transition.kind`) shadows
-   `editable`'s reserved union discriminant. Harmless today (the special-case only
-   fires on unions; `Transition` is a record) but a latent footgun — and it is
-   *why* `Effect` is externally serde-tagged (`schema.rs:916`). Noted, not fixed;
-   revisit whether the discriminant should be a non-colliding token.
+3. **[DECIDED] The union discriminant moves to the sigil `$variant`.** Today
+   `editable`'s discriminant is `kind`, and the derive *rejects at compile time*
+   any union-variant field named `kind` (`editable-derive/lib.rs:360`) — safe but
+   restrictive: it reserves a legal, reasonable field name (a *record* field like
+   `Transition.kind` is fine, since the special-case only fires on unions). A
+   `$`-sigil can never be a Rust field, so the restriction disappears and the path
+   grammar gains a clean invariant — `$`-prefixed segments are *control* (the
+   variant selector), everything else is *data*. It also de-conflates from serde's
+   on-disk `#[serde(tag = "kind")]`, which stays `kind` (**no content migration**).
+   Change `DISCRIMINANT` in both crates (`editable/lib.rs:53`,
+   `editable-derive/lib.rs:38`) and delete the now-vacuous field-name rejection;
+   `parse_path` / `schema()` need no change (runtime edit-paths only).
 
 ### Worked example: `Scene` (the buildable target)
 
@@ -437,7 +483,7 @@ Scene                                   group  []
 │     ├ advance  Advance       union    [beats.N.advance]     auto|click|either
 │     │   └ (auto) f32         number   [beats.N.advance.0]   sole positional → unlabeled
 │     ├ transition Transition  group    [beats.N.transition]
-│     │   ├ kind  TransitionKind enum   [beats.N.transition.kind]   ⚠ field named "kind"
+│     │   ├ kind  TransitionKind enum   [beats.N.transition.kind]   (record field — fine; discriminant is $variant)
 │     │   └ duration_secs f32  number   [beats.N.transition.duration_secs]
 │     └ on_enter Vec<Effect>   list     [beats.N.on_enter]
 │        └ ⟨M⟩ Effect          union    [beats.N.on_enter.M]  15 variants
@@ -500,40 +546,65 @@ with `FieldOp::Set`, which parses); **labels** default to the field name with an
 
 ---
 
-## 5. Open questions for future sessions
+## 5. Decisions log & remaining open work
 
-- **[RESOLVED 2026-06-07] Nested vs. flat projection** (§4) — **nested**, true to
-  the data structure; flattening is a rival representation that drifts and breaks
-  on new schemas. `Ref` candidates ride a sibling `refs.<table>` channel.
-- **[LEANING] The `Value` ↔ `Kind` node vocabulary** (§4) — structure, kinds, ops,
-  the `option` kind, and the positional-label (`"0"`) rule are decided (worked end
-  to end on `Scene`); what remains is finalizing node *field names*
-  (`children`/`items`/`payload`/`entries`/`inner`) and writing the `.ogh`
+**Resolved (workshop sessions 2026-06-07/08):**
+
+- **[RESOLVED] Nested vs. flat projection** (§4) — **nested**, true to the data
+  structure; flattening is a rival representation that drifts and breaks on new
+  schemas. `Ref` candidates ride a sibling `refs.<table>` channel.
+- **[RESOLVED] Node vocabulary** (§4) — kinds, ops, the `option` kind, the
+  positional-label (`"0"`) rule, and **uniform `children`** (every container nests
+  under one key; `field_node` is a single `for node.children` loop) are decided,
+  worked end to end on `Scene`. Remaining is *implementation*: the `.ogh`
   `field_node` component.
-- **[DECIDED — execution pending] Retire the flat/serde editor machinery** (§4
-  "What the derived read retires") — replace `schema_form.rs`; delete `FieldKind`,
-  `InspectorField`, the `*_value` projections, the `§list` marker, the
-  `__add`/`__objdel`/`__add_kind` sentinels, and `MAX_NESTED_DEPTH`. Sequence this
-  with the cut-sequencing item below.
-- **[OPEN, direction set] The read visitor's exact shape** (§4) — a **structured
-  (begin/end) `Reader`** is decided (nested demands it); the open part is the
-  exact callback names and the host's `Value`-building visitor. Concrete enough to
-  hand to whoever writes the derive.
-- **[OPEN] Scoped/declared reads vs. ambient reads** (§3 #4) — the component-
-  isolation benefit collides with the moddability value. Separable from the
-  state-model decision; decide on its own.
-- **[RESOLVED 2026-06-07] Ogham-facing trait facade over `editable`** — dropped.
-  Read lives in `editable`'s own derive (visitor-based) and the host builds the
-  `Value`; no `OghamRead` / `OghamWrite` traits and no capability crate. Revisit
-  only if a shared host helper later wants a named trait.
-- **[OPEN] Cut sequencing** — order the safe-immediate cuts vs. the
-  decision-gated ones (portal migration); confirm nothing in the "safe" list has
-  a hidden consumer.
-- **[LEANING] Local-state machinery slimming** — with lifecycle hooks cut, the
-  path-based hook identity (§9) serves only `state`. Keep the cell; consider
-  radically simplifying the identity machinery behind it.
+- **[RESOLVED] The read walk / `Reader`** (§4) — a structured begin/end visitor
+  that mirrors `apply` (same derive); self-describing leaves (`scalar(&Kind,&str)`,
+  no `schema()` at render); the visitor owns the path; lives in `editable`. Only
+  the exact callback *names* remain (implementation).
+- **[RESOLVED] Union discriminant → `$variant` sigil** (§4 wart 3) — frees the
+  field name `kind`, gives the path grammar a control/data split, de-conflates from
+  serde's disk tag; no content migration.
+- **[RESOLVED] Reads stay ambient** (§3 #4) — plain identifiers fall through to the
+  host bag. Scoped/declared reads cost threading and fight moddability (a core
+  value), and the isolation benefit only matters at a scale we don't have. Revisit
+  only on concrete isolation pain, as an opt-in that leaves ambient undisturbed.
+- **[RESOLVED] Ogham-facing trait facade** — dropped. Read lives in `editable`'s
+  own derive; the host builds the `Value`; no `OghamRead`/`OghamWrite`, no
+  capability crate.
+- **[RESOLVED] Local-state slimming** (INTENT §9) — *consequential to the lifecycle
+  cut*, not a redesign: when lifecycle/effects go, delete `EffectSlot` /
+  `RegisterEffect` / the drain queues / `cancel_unmount_for_prefix`. The `state`
+  cell and its path-based identity are **untouched** (load-bearing for
+  component-state independence and reorder survival).
+
+**Execution sequence** (cut/build/migrate order — keeps two inspectors from ever
+coexisting):
+
+1. **Now — Ogham-core safe-immediate cuts** (independent, 0–1 sites; grep-verify no
+   hidden consumer first): `OghamState`/`OghamMsg`/typed-bindings/`ogham check`/the
+   typed half of `ogham-derive`; lifecycle/effects + machinery (the slimming
+   above); `mutation`; `svg`; dead scaffolding. Fold in the `compile_increment`
+   upvalue-bug fix.
+2. **Build** — the `editable` derive `Reader` + the host `Value`-visitor +
+   `field_node` + the `refs.<table>` channel + the `option` kind + the `$variant`
+   discriminant.
+3. **Migrate** the panes onto the derived read, one at a time.
+4. **Then delete** the flat/serde editor machinery (§4 "What the derived read
+   retires"): `schema_form.rs`, `FieldKind`, `InspectorField`, the `*_value`
+   projections, the `§list` marker, the `__add`/`__objdel`/`__add_kind` sentinels,
+   `MAX_NESTED_DEPTH`, the flat `field_row` — only after the last pane migrates.
+
+Core cuts (1) are independent and go first; editor deletion (4) is gated on the
+derive existing, (2)+(3). **Portal is keep — there is no portal migration**; the
+earlier draft's mention of one was stale.
+
+**Still open / not active:**
+
+- **[PARKED] Scoped/declared reads** (§3 #4) — superseded by the ambient decision;
+  listed only so a future isolation pain has a home.
 - **Eventually:** translate the [DECIDED] items into `INTENT.md` tenets
-  (identity/scope tenet; `Surface`-as-isolation rewrite of §6; the host/local
-  state-discipline tenet; the generic-editing seam — one `editable` derive,
-  read+write, no serde in the UI path). **Not yet** — that's the end of the
-  workshop, not the middle.
+  (identity/scope; `Surface`-as-isolation rewrite of §6; host/local state
+  discipline; the generic-editing seam — one `editable` derive, read+write, no
+  serde, `$variant` discriminant, ambient reads). With every seam question now
+  settled, this is the natural next action — the workshop has reached its end.
