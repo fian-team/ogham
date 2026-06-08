@@ -570,28 +570,41 @@ names instead of `0`/`1`? Use a struct variant — that's the nudge.
    is *automatic at runtime* — the derived `apply` routes the discriminant via
    `::editable::DISCRIMINANT` (`editable-derive/lib.rs:439`), so every union's
    variant-switch follows the const. **No content migration** holds: serde's
-   on-disk `#[serde(tag = "kind")]` is untouched, no `.ogh` file references the
-   discriminant, and the only non-`editable` reader of the const is the
-   to-be-deleted `schema_form.rs`. **But** every *string-literal* `.edit("…kind…")`
-   path must be hand-audited, because `kind` is overloaded and the two senses sit
-   side by side: `beats.0.advance.kind` (`Advance` is a union → becomes
-   `…advance.$variant`) vs. `beats.0.transition.kind` (`Transition` is a record
-   with a `kind: TransitionKind` field → **stays `kind`**). A blind
-   `s/.kind/.$variant/` corrupts the second. Affected sites are **test-only, zero
-   production** — **23 total, verified site-by-site**:
-   - **11 in `lorekeeper/editable`** (4 in `tests.rs`, 7 in `derive_tests.rs`) —
-     *all 11 are union discriminants* (`Effect`/`Tricky`/`Act`); none are
-     record-field `.kind`, so this crate's audit is mechanical.
-   - **12 in `small_mercies/content-core`** (10 in `schema.rs`, 2 in `action.rs`,
-     incl. the `action.rs:562` test) — of which **9 are union discriminants** (flip
-     to `$variant`) and **3 are record-field `.kind` traps that must NOT flip**:
-     `water_source.0.kind` (`WaterSource.kind: String`, `schema.rs:1247`),
-     `stats.0.kind` (`StatDef.kind: StatKind`), and `beats.0.transition.kind`
-     (`Transition.kind: TransitionKind`, `schema.rs:764`). These three are the live
-     proof of the overload — `advance.kind` and `transition.kind` are string-identical
-     yet resolve oppositely.
-   These edits must land **in the same commit as the const flip** (else those suites
-   break), each judged against the schema, not sed'd.
+   on-disk `#[serde(tag = "kind")]` is untouched and no `.ogh` file references the
+   discriminant (both verified). **But** every *string-literal* edit-path whose
+   segment is exactly `kind` must be hand-audited.
+
+   **[DONE 2026-06-08c — flipped & migrated; the pre-flip estimate was wrong, this
+   records what was actually true.]** The operative rule is sharper than "parent is
+   a union → flip": **flip a `kind` segment iff it reaches `editable::apply`.** Two
+   things the pre-flip count (a guessed "23, two crates") missed:
+   - **Scope is four crates, ~40 sites — not two crates, 23.** The audit also covers
+     `lorekeeper/ruleset` (5 union paths in `effects.rs` tests — `Action`/`Duration`;
+     omitted by the plan but in the path-dep blast radius) and the whole
+     `small_mercies/editor` crate (`content-core` had **13** sites, not 12 —
+     `schema.rs:1475` was uncounted). Flipped, all editable-routed: 11 in
+     `editable`, 5 in `ruleset`, 13 in `content-core`, and the `schema_form.rs`
+     editable-apply test paths. Record-field traps left as `kind`:
+     `water_source.0.kind` (`WaterSource.kind: String`), `stats.0.kind`
+     (`StatDef.kind: StatKind`), `beats.0.transition.kind`
+     (`Transition.kind: TransitionKind`).
+   - **The editor panes do NOT reach `editable::apply`** — and so DON'T flip. The
+     frozen panes (`companion_reactions`/`scenes`/`backstory`/`abilities`/…) route
+     edits through *hand-rolled serde patchers* (`effects::set_field`, keyed on the
+     literal `field == "kind"`), a parallel write path that is serde's tag, not the
+     editable discriminant. ~40 pane `.kind` paths correctly stay `kind`. These die
+     with the flat model in step 5; until then they coexist untouched.
+   - **One genuine production consequence** (the plan said "zero"): `schema_form.rs`
+     used `DISCRIMINANT` both to build an editable apply path (`child(path, …)`, line
+     356 — correctly → `$variant`) AND to read a variant tag out of a *serde* map
+     (`map.get`/`contains_key`, lines 439/460). The flip de-conflates these: 439/460
+     now use the literal serde tag `"kind"`. This kept the doomed `schema_form.rs`
+     green through steps 2–4.
+
+   A blind `s/.kind/.$variant/` would have corrupted all three classes (record
+   traps, serde-patcher panes, the serde-read in `schema_form`). Every edit was
+   judged against the schema and the write path, not sed'd; all four affected crates
+   are green (`editable` 35, `ruleset` 64, `content-core` 185, `editor` 182).
 
 ### Worked example: `Scene` (the buildable target)
 
@@ -728,9 +741,11 @@ step is tagged with where it lands and what gates it:
    caveat); lifecycle/effects + machinery (the slimming above); `mutation`; `svg`;
    dead scaffolding. Fold in the `compile_increment` upvalue-bug fix. *Gate: none.*
 2. **[`lorekeeper`] — the `editable` seam, leaf side.** (a) Flip `$variant` in both
-   crates + delete the field-name rejection + migrate the 23 test edit-paths in the
-   *same commit* — but only the 20 union-discriminant ones flip; the 3 record-field
-   `.kind` traps in `content-core` stay (§4 wart 3). (b) Add the pure `Reader` trait + `Editable::read` + the
+   crates + delete the field-name rejection + migrate the editable-routed test
+   edit-paths in the *same commit* — flip a `kind` segment iff it reaches
+   `editable::apply` (~29 across `editable`/`ruleset`/`content-core`/`schema_form`);
+   the record-field traps and the editor's serde-patcher panes stay `kind`; de-conflate
+   `schema_form`'s serde-read (§4 wart 3). **[DONE 2026-06-08c.]** (b) Add the pure `Reader` trait + `Editable::read` + the
    ~6 hand leaf impls (`editable`), and the `read` codegen in `editable-derive`
    (Design C promotion at the field site) — parity-tested against the hand impls.
    *Gate: (b) independent of step 1; ~2 days.*
