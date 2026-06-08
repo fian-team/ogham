@@ -45,6 +45,7 @@ pub mod rect;
 pub mod style;
 /// Text input field widget.
 pub mod text_input_widget;
+pub mod text_layout;
 /// Text rendering widget.
 pub mod text_widget;
 
@@ -399,6 +400,34 @@ impl UI {
             }
             handled
         } else {
+            // Focus-traversal keys are handled at the UI level, but only while
+            // an input is focused — so Tab / Escape pass through to the host
+            // (game hotkeys etc.) when the user isn't in a field. Mirrors the
+            // character-key gate (`consumes_character_key`).
+            if self.focused.is_some() {
+                if let Some(kb) = event
+                    .keyboard_data
+                    .as_ref()
+                    .filter(|_| event.name == "keydown")
+                {
+                    match kb.key_code {
+                        // Tab / Shift-Tab → move focus through the ring.
+                        Some(9) => {
+                            self.focus_next(kb.modifiers.shift);
+                            self.mark_needs_repaint();
+                            return true;
+                        }
+                        // Escape → blur the focused field.
+                        Some(27) => {
+                            self.focused = None;
+                            self.mark_needs_repaint();
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             // For non-click events, pass the focused widget to the context
             // so widgets can check if they're focused
             let mut ctx = EventContext::with_focused(self.focused.clone());
@@ -1069,6 +1098,54 @@ impl UI {
         true
     }
 
+    /// Move keyboard focus to the next (`reverse = false`) or previous
+    /// (`reverse = true`) focusable widget in tree order, wrapping around.
+    /// Returns `true` if focus moved.
+    ///
+    /// Tab order is the live tree walked pre-order. When a `focus_trap` portal
+    /// is active, traversal is confined to that portal's subtree (the top of
+    /// `focus_stack`); otherwise it ranges over the base tree. Inputs inside a
+    /// non-trapping portal are not yet reachable by Tab — a known limitation.
+    pub fn focus_next(&mut self, reverse: bool) -> bool {
+        let root = match self.focus_stack.last() {
+            Some(top) => top.portal.clone(),
+            None => self.root.clone(),
+        };
+        let mut focusables = Vec::new();
+        collect_focusables(&root, &mut focusables);
+        if focusables.is_empty() {
+            return false;
+        }
+
+        let current = self.focused.as_ref().and_then(|f| {
+            focusables
+                .iter()
+                .position(|w| Arc::ptr_eq(w, f))
+        });
+
+        let n = focusables.len();
+        let next_idx = match current {
+            Some(i) => {
+                if reverse {
+                    (i + n - 1) % n
+                } else {
+                    (i + 1) % n
+                }
+            }
+            // Nothing in the ring is focused yet: Tab → first, Shift-Tab → last.
+            None => {
+                if reverse {
+                    n - 1
+                } else {
+                    0
+                }
+            }
+        };
+
+        let target = focusables[next_idx].clone();
+        self.try_set_focus(target)
+    }
+
     /// Phase 2 M4: reconcile `focus_stack` with the current
     /// `portal_layer`. Pushes restoration entries for newly-
     /// open focus_trap portals; pops entries for portals that
@@ -1653,6 +1730,13 @@ pub trait Widget: Downcast {
         false
     }
 
+    /// Whether this widget participates in keyboard focus traversal
+    /// (Tab / Shift-Tab). Default `false`; `TextInputWidget` overrides → true.
+    /// Used by `UI::focus_next` to build the tab-order ring in tree order.
+    fn is_focusable(&self) -> bool {
+        false
+    }
+
     /// Phase 2 lifecycle: the call-stack path at which this widget
     /// was constructed. Used to identify which paths a draining
     /// widget "owns" — when the widget is removed from the tree
@@ -1750,4 +1834,20 @@ fn widget_subtree_contains(root: &WidgetRef, target: &WidgetRef) -> bool {
         }
     }
     false
+}
+
+/// Pre-order DFS collecting every focusable widget under `node` (inclusive)
+/// into `out`, in tree (declaration) order. This is the tab-order ring for
+/// `UI::focus_next`.
+fn collect_focusables(node: &WidgetRef, out: &mut Vec<WidgetRef>) {
+    let children = {
+        let g = node.lock().expect("widget lock poisoned");
+        if g.is_focusable() {
+            out.push(node.clone());
+        }
+        g.get_children()
+    };
+    for child in &children {
+        collect_focusables(child, out);
+    }
 }

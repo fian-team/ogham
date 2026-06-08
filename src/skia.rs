@@ -1,19 +1,15 @@
 //! Skia rendering backend: draws the widget tree to a Skia surface.
 
 use skia_safe::{
-    font_style::{Slant, Weight, Width},
-    textlayout::{
-        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as SkiaTextAlign, TextStyle,
-    },
-    Color, FontMgr, FontStyle, Paint, PaintStyle, PathBuilder, Point, RRect, Rect,
-    Surface as SkiaSurface,
+    textlayout::{FontCollection, ParagraphBuilder, ParagraphStyle, TextStyle},
+    Color, FontMgr, Paint, PaintStyle, PathBuilder, Point, RRect, Rect, Surface as SkiaSurface,
 };
 use std::sync::Arc;
 
 use crate::widget::{
     flex_widget::FlexWidget,
     image::ImageCache,
-    style::{Border, BorderSide, CornerShape, Corners, FontWeight, InnerGlow, TextAlign},
+    style::{Border, BorderSide, CornerShape, Corners, InnerGlow},
     RenderContext, Surface, WidgetRef, UI,
 };
 
@@ -178,30 +174,17 @@ impl SkiaEnv {
             .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
         self.text_style.set_foreground_paint(&self.paint);
         let scaled_font_size = self.scale_font_size(style.get_size());
-        self.text_style.set_font_size(scaled_font_size);
-        self.text_style.set_font_style(FontStyle::new(
-            match style.get_weight() {
-                FontWeight::Normal => Weight::NORMAL,
-                FontWeight::SemiBold => Weight::SEMI_BOLD,
-                FontWeight::Bold => Weight::BOLD,
-                FontWeight::Light => Weight::LIGHT,
-            },
-            Width::NORMAL,
-            Slant::Upright,
-        ));
-        if let Some(ref family) = style.font {
-            self.text_style.set_font_families(&[family.as_str()]);
-        } else if let Some(ref default) = self.default_font {
-            self.text_style.set_font_families(&[default.as_str()]);
-        } else {
-            self.text_style.set_font_families(&[] as &[&str]);
-        }
-        self.paragraph_style
-            .set_text_align(match style.get_align() {
-                TextAlign::Left => SkiaTextAlign::Left,
-                TextAlign::Center => SkiaTextAlign::Center,
-                TextAlign::Right => SkiaTextAlign::Right,
-            });
+        // Geometry mapping (family / size / weight / alignment) is shared with
+        // the measurement path so paint and layout can't drift — see
+        // `crate::widget::text_layout::configure_geometry`. Paint is applied
+        // above; this only touches geometry.
+        crate::widget::text_layout::configure_geometry(
+            &mut self.text_style,
+            &mut self.paragraph_style,
+            style,
+            scaled_font_size,
+            self.default_font.as_deref(),
+        );
         scaled_font_size
     }
 

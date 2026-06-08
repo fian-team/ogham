@@ -1187,6 +1187,12 @@ fn create_text_input_widget(
         runtime,
         "on_change",
     )?;
+    register_event_listener_with_arg(
+        &mut text_input.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "on_submit",
+    )?;
     register_event_listener(
         &mut text_input.event_listeners,
         &descriptor.properties,
