@@ -538,15 +538,83 @@ let main = fn () { apply(double, 7) };
 }
 
 #[test]
-#[should_panic(expected = "UndefinedVariable")]
-fn recursive_function_not_supported() {
+fn recursive_function_factorial() {
+    // Direct self-recursion: `fact` refers to itself by its binding name.
+    // The callee occupies slot 0 of its own frame, bound to `fact`, so the
+    // recursive call resolves to slot 0 rather than failing to resolve.
     let source = r#"
 let fact = fn (n: int): int {
     if (n <= 1) { return 1; } else { return n * fact(n - 1); }
 };
 let main = fn () { fact(5) };
 "#;
-    run(source);
+    assert_eq!(run(source), Value::Integer(120));
+}
+
+#[test]
+fn recursive_function_fibonacci() {
+    // Two recursive paths in a single body (`fib(n-1) + fib(n-2)`), each a
+    // self-reference resolving to the callee slot.
+    let source = r#"
+let fib = fn (n: int): int {
+    if (n < 2) { return n; } else { return fib(n - 1) + fib(n - 2); }
+};
+let main = fn () { fib(10) };
+"#;
+    assert_eq!(run(source), Value::Integer(55));
+}
+
+#[test]
+fn recursive_parameter_shadows_callee() {
+    // A parameter named the same as the function shadows the callee slot:
+    // params are declared *after* slot 0 and local resolution is
+    // most-recent-first, so inside the body `n` is the parameter, not the
+    // closure. The call below therefore returns the argument unchanged.
+    let source = r#"
+let n = fn (n: int): int { return n; };
+let main = fn () { n(42) };
+"#;
+    assert_eq!(run(source), Value::Integer(42));
+}
+
+#[test]
+fn recursive_nested_function() {
+    // Self-recursion works for a `fn` nested inside another `fn`. The inner
+    // `countdown` refers to itself; resolution finds its own slot 0 (a local)
+    // before consulting the enclosing frame for an upvalue.
+    let source = r#"
+let main = fn () {
+    let countdown = fn (n: int): int {
+        if (n <= 0) { return 0; } else { return countdown(n - 1) + 1; }
+    };
+    countdown(7)
+};
+"#;
+    assert_eq!(run(source), Value::Integer(7));
+}
+
+#[test]
+fn recursive_function_captures_upvalue() {
+    // A named recursive `fn` that *also* captures an enclosing variable.
+    // The self-reference (`sum_to`) resolves to its own slot 0 (a local),
+    // while `base` is captured as an upvalue from `make` — confirming the
+    // self-reference does not collide with the upvalue-capture path. The
+    // binding name (`let sum_to = fn ...`) is what is threaded to slot 0, so
+    // the recursive call must be written against that name.
+    let source = r#"
+let make = fn (base: int) {
+    let sum_to = fn (n: int): int {
+        if (n <= 0) { return base; } else { return sum_to(n - 1) + n; }
+    };
+    return sum_to;
+};
+let main = fn () {
+    let f = make(100);
+    f(4)
+};
+"#;
+    // base(100) + 4 + 3 + 2 + 1 == 110
+    assert_eq!(run(source), Value::Integer(110));
 }
 
 #[test]

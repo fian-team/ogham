@@ -718,7 +718,18 @@ impl Compiler {
             }
             Statement::Declare(decl) => {
                 let name = decl.get_identifier_value();
-                self.compile_expression(&decl.get_value())?;
+                // When the initializer is a function literal, thread the
+                // binding name into the function so its body can refer to
+                // itself (self-recursion). The binding name is bound to the
+                // callee's slot 0; see `compile_function`.
+                match decl.get_value() {
+                    Expression::Literal(Literal::Function(func)) => {
+                        self.compile_function(&func, &name)?;
+                    }
+                    value => {
+                        self.compile_expression(&value)?;
+                    }
+                }
                 self.add_local(name, false);
             }
             Statement::DeclareState(state_decl) => {
@@ -1306,7 +1317,14 @@ impl Compiler {
         // parameters must start at slot 1. We use add_param_local because
         // these values are pre-existing on the stack (placed by the caller),
         // not pushed by any emit() in this child compiler.
-        child.add_param_local(String::new());
+        //
+        // Binding this slot to the function's own `name` is what enables
+        // self-recursion: a reference to `name` inside the body resolves to
+        // slot 0 (the executing closure). For named bindings (`let fact = fn
+        // ...`) the caller threads the binding name through; for anonymous
+        // `fn` literals `name` is the keyword `"fn"`, which can never appear
+        // as a user identifier, so the slot stays effectively unreferenceable.
+        child.add_param_local(name.to_string());
 
         // Declare parameters as locals in the child scope.
         for param in &func.arguments {
