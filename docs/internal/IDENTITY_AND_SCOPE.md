@@ -477,6 +477,31 @@ Each child is **keyed by its `path`** — the dotted path is a naturally stable
 identity, so reconcile-by-key (INTENT §3/§5) and path-based hook identity (INTENT
 §9) make the recursive tree animate and preserve state correctly.
 
+> **[DECIDED 2026-06-08c — Ogham gains function self-recursion; `field_node` is
+> interim-tiered until it lands.]** Building step 3 surfaced that Ogham's kept core
+> *deliberately* lacks function self-recursion (the explicit `recursive_function_not_supported`
+> test, `tests/language.rs:542`; `effects.ogh` already works around it with manually
+> unrolled depth tiers). So a *truly* recursive `field_node` is impossible **today**,
+> and the shipped step-3 component is unrolled into **9 depth tiers** (the established
+> `effects.ogh` pattern). That is a stopgap, not the design: it merely *raises* the
+> `MAX_NESTED_DEPTH` display cap (from the old 3 to 9) instead of *eliminating* it as
+> this doc intends — and the content schema permits **unbounded** nesting (`Action.on_success:
+> Vec<Action>` is self-recursive), so deep instances still bottom out at the tier floor
+> (data round-trips at any depth; only live *editing* past depth 9 is bounded).
+>
+> **Decision: add function self-recursion to the Ogham core.** The enabling change
+> looks small — `compile_function` (`src/runtime/compiler.rs:1297`) already reserves
+> **slot 0 for the callee** (the executing closure on the stack); it currently binds
+> that slot to an empty name (`String::new()`, ~line 1309). Binding it to the
+> function's own `name` makes a self-reference resolve to slot 0 → recursion. This
+> reverses the deliberate "not supported" decision, so it must be done carefully:
+> cover closures that capture themselves, nested function-components, and the upvalue
+> path; replace `recursive_function_not_supported` with positive recursion tests.
+> Once it lands, `field_node` collapses to the clean recursive component above, the
+> 9-tier unroll (and ideally `effects.ogh`'s tiers) disappears, and the depth cap is
+> genuinely gone. **Status: DECIDED, not yet implemented** — a prerequisite for
+> finalizing step 4's `field_node`.
+
 ### The read walk: a `Reader` mirror of `apply`  [DECIDED — names LEANING]
 
 The derived read is the **structural mirror of the generated `apply`** — same
@@ -664,9 +689,12 @@ rival inspectors, the disease this doc exists to kill:
 - **Sentinel keys `__add` / `__objdel` / `__add_kind`** (`characters.rs:647/685`,
   `items.rs:197`) and their `.ogh` arms (`characters.ogh:93-96`,
   `add_control_row` / `obj_del_row`) → explicit container ops.
-- **`MAX_NESTED_DEPTH` + the "edit in JSON" leaf** → gone with nesting. No cycle
+- **`MAX_NESTED_DEPTH` + the "edit in JSON" leaf** → goes with nesting. No cycle
   guard replaces it: the read walks a finite instance and terminates on the data
-  (see the read-walk section); `Kind::Named` never reaches the renderer.
+  (see the read-walk section); `Kind::Named` never reaches the renderer. *(Interim:
+  until Ogham gains function self-recursion (decided, above), `field_node` is
+  9-tier-unrolled, so the cap is raised 3→9 rather than removed; it vanishes for
+  real once recursion lands.)*
 - **Per-pane hand-written inspector projections** (`scenes.rs` / `characters.rs` /
   `abilities.rs` / …) → the migration `schema_form` started, completed onto the
   nested derived read.
@@ -693,26 +721,27 @@ with `FieldOp::Set`, which parses); **labels** default to the field name with an
 - **[RESOLVED] Nested vs. flat projection** (§4) — **nested**, true to the data
   structure; flattening is a rival representation that drifts and breaks on new
   schemas. `Ref` candidates ride a sibling `refs.<table>` channel.
-- **[RESOLVED] Node vocabulary** (§4) — kinds, ops, the `option` kind, the
+- **[RESOLVED + BUILT] Node vocabulary** (§4) — kinds, ops, the `option` kind, the
   positional-label (`"0"`) rule, and **uniform `children`** (every container nests
   under one key; `field_node` is a single `for node.children` loop) are decided,
-  worked end to end on `Scene`. Remaining is *implementation*: the `.ogh`
-  `field_node` component.
+  worked end to end on `Scene`, and **implemented in step 3** (`inspector/node_tree.rs`
+  visitor + `field_node.ogh`, parity-tested against a live `Scene`). The `.ogh`
+  `field_node` is interim-tiered until the recursion enablement (step 3.5).
 - **[RESOLVED] Write wire format** (§4) — **six named, typed events** (not a generic
   op-map). Four exist and are proven in the frozen panes; the nested model adds only
   `add_map_entry` / `remove_map_entry`; `$variant` and `option` reuse `set_field` /
   `add_list_item` / `remove_list_item`. The marker-path / sentinel hacks retire with
   the flat channel. The `PaneAction`→`FieldOp` decode is the write-side survivor —
   extract before deleting `schema_form.rs`.
-- **[RESOLVED] The read walk / `Reader`** (§4) — a structured begin/end visitor
-  that mirrors `apply` (same derive); leaves emit `scalar(&Kind,&str)` (no
-  `schema()` at render); the visitor owns the path; lives in `editable`. Scoped to
-  ~2 days (pure `Reader` + `read` leaf impls in `editable`; `read` codegen in
-  `editable-derive`, parity-tested). **Design C [DECIDED]:** `#[editable(...)]`
-  promotions are emitted inline at the field site (not threaded as a `Kind` arg),
-  since a leaf can't self-describe its promotion. No read-walk cycle guard (finite
-  instance). `map_key(&str)` added to the callback set. Only the exact callback
-  *names* remain (implementation).
+- **[RESOLVED + BUILT] The read walk / `Reader`** (§4, step 2b) — a structured
+  begin/end visitor that mirrors `apply` (same derive); leaves emit
+  `scalar(&Kind,&str)` (no `schema()` at render); the visitor owns the path; lives
+  in `editable`. Shipped: pure `Reader` + `read` leaf impls + `read` codegen, 7
+  parity tests (`editable` 35→42). **Design C [DECIDED + BUILT]:** `#[editable(...)]`
+  promotions emitted inline at the field site via `wrap_semantic_read`. No read-walk
+  cycle guard (finite instance). `map_key(&str)` in the callback set. One
+  implementation correction: `Option` emits `index(0)` before its present inner so
+  read paths equal `apply`'s `Seg::Index(0)`.
 - **[RESOLVED] Union discriminant → `$variant` sigil** (§4 wart 3) — frees the
   field name `kind`, gives the path grammar a control/data split, de-conflates from
   serde's disk tag; no content migration.
@@ -732,15 +761,24 @@ with `FieldOp::Set`, which parses); **labels** default to the field name with an
 **Execution sequence** (cut/build/migrate order — keeps two inspectors from ever
 coexisting). This spans **three repos** — `ogham`, `lorekeeper` (the `editable` /
 `editable-derive` leaf crates), and `small_mercies` (the editor host) — so each
-step is tagged with where it lands and what gates it:
+step is tagged with where it lands and what gates it.
 
-1. **[`ogham`] — safe-immediate cuts** (independent, 0–1 sites; grep-verify no
+> **Progress (2026-06-08c):** Steps **1, 2a, 2b, 3 are DONE and committed** across
+> all three repos, each reviewed and green (`ogham` 522 tests; `editable` 42,
+> `ruleset` 64; `content-core` 185, `editor` 198). **Remaining:** the Ogham
+> function-recursion enablement (new step **3.5**, decided §4), then **4** (migrate
+> panes) and **5** (delete the flat machinery). Two notable as-built deviations are
+> recorded where they occurred: the `$variant` blast radius was ~3× the estimate and
+> spanned four crates (§4 wart 3); `field_node` is interim-tiered pending recursion
+> (§4, the render-consequence note).
+
+1. **[`ogham`] — safe-immediate cuts** ✅ **[DONE]** (independent, 0–1 sites; grep-verify no
    hidden consumer first): the `OghamState`/`OghamMsg` traits + manifest matching +
    `ogham check` + the typed half of `ogham-derive` (**split, not delete** — keep
    the `.ogh`-source `ModuleSchema` + `parser/typed_bindings.rs` parser per §2's
    caveat); lifecycle/effects + machinery (the slimming above); `mutation`; `svg`;
    dead scaffolding. Fold in the `compile_increment` upvalue-bug fix. *Gate: none.*
-2. **[`lorekeeper`] — the `editable` seam, leaf side.** (a) Flip `$variant` in both
+2. **[`lorekeeper`] — the `editable` seam, leaf side.** ✅ **[DONE — 2a & 2b]** (a) Flip `$variant` in both
    crates + delete the field-name rejection + migrate the editable-routed test
    edit-paths in the *same commit* — flip a `kind` segment iff it reaches
    `editable::apply` (~29 across `editable`/`ruleset`/`content-core`/`schema_form`);
@@ -749,13 +787,21 @@ step is tagged with where it lands and what gates it:
    ~6 hand leaf impls (`editable`), and the `read` codegen in `editable-derive`
    (Design C promotion at the field site) — parity-tested against the hand impls.
    *Gate: (b) independent of step 1; ~2 days.*
-3. **[`small_mercies`] — the host seam.** The `Value`-building visitor (the SAX→tree
-   stack machine surviving from `schema_form.rs`) + `field_node` + the `refs.<table>`
-   channel + the `option` kind rendering + the two new write events (`add_map_entry`
-   / `remove_map_entry`). Extract the `PaneAction`→`FieldOp` decode out of
-   `schema_form.rs` so step 5's delete can't take it. *Gate: step 2b (needs `Reader`).*
+3. **[`small_mercies`] — the host seam.** ✅ **[DONE]** The `Value`-building visitor (the SAX→tree
+   stack machine surviving from `schema_form.rs`, now `inspector/node_tree.rs`) +
+   `field_node` (interim 9-tier; see below) + the `refs.<table>` channel
+   (`inspector/refs.rs`; 13 catalogued tables wired, 5 asset tables TODO'd) + the
+   `option` kind rendering + the two new write events (`add_map_entry` /
+   `remove_map_entry`). The `PaneAction`→`FieldOp` decode extracted into
+   `editor/src/edit_apply.rs`. *Gate: step 2b — met.*
+3.5. **[`ogham`] — function self-recursion** ⏳ **[DECIDED, TODO]** Bind the
+   callee slot to the function name in `compile_function` (§4 render-consequence
+   note); replace `recursive_function_not_supported` with positive tests; cover
+   self-capturing closures + nested components. *Gate: none (independent core change);
+   prerequisite for finalizing step 4's `field_node` as true recursion and removing
+   the depth cap.*
 4. **[`small_mercies`] — migrate** the panes onto the derived read, one at a time.
-   *Gate: step 3.*
+   *Gate: step 3 (met) + step 3.5 (for the un-tiered `field_node`).*
 5. **[`small_mercies`] — then delete** the flat/serde editor machinery (§4 "What the
    derived read retires"): `schema_form.rs`, `FieldKind`, `InspectorField`, the
    `*_value` projections, the `§list` marker, the `__add`/`__objdel`/`__add_kind`
