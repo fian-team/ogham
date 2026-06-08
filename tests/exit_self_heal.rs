@@ -60,7 +60,6 @@ fn stranded_root_exit_is_healed_on_next_reconcile() {
     // Settle the exit; the drained child is dropped from the tree.
     for _ in 0..600 {
         ogham.get_ui_mut().tick_animations(1.0 / 60.0);
-        ogham.process_drain_queues();
         if ogham.is_exit_complete_root() {
             break;
         }

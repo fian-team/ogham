@@ -127,18 +127,6 @@ impl SkiaEnv {
         self.path.quad_to((cpx, cpy), (x, y));
     }
 
-    #[allow(dead_code)]
-    #[inline]
-    pub fn bezier_curve_to(&mut self, cp1x: f32, cp1y: f32, cp2x: f32, cp2y: f32, x: f32, y: f32) {
-        self.path.cubic_to((cp1x, cp1y), (cp2x, cp2y), (x, y));
-    }
-
-    #[allow(dead_code)]
-    #[inline]
-    pub fn close_path(&mut self) {
-        self.path.close();
-    }
-
     #[inline]
     pub fn begin_path(&mut self) {
         let path = self.path.detach();
@@ -573,22 +561,6 @@ impl RenderContext for SkiaEnv {
         self.stroke();
     }
 
-    fn draw_svg_dom(&mut self, dom: &skia_safe::svg::Dom, x: f32, y: f32, w: f32, h: f32) {
-        let sx = self.scale_coord(x);
-        let sy = self.scale_coord(y);
-        let sw = self.scale_dim(w);
-        let sh = self.scale_dim(h);
-
-        self.save();
-        self.translate(sx, sy);
-
-        let mut dom_mut = dom.clone();
-        dom_mut.set_container_size((sw, sh));
-        dom_mut.render(self.canvas());
-
-        self.canvas().restore();
-    }
-
     fn push_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
         let sx = self.scale_coord(x);
         let sy = self.scale_coord(y);
@@ -917,8 +889,6 @@ impl Surface for SkiaEnv {
             }
             // Layer-policy backdrop. Block policy gets a
             // translucent backdrop drawn before any entry.
-            // Dim is currently treated as None (TODO; no
-            // layer defaults to Dim).
             if layer.default_backdrop() == crate::widget::portal_layer::BackdropPolicy::Block {
                 Self::paint_layer_backdrop(self, viewport_size);
             }

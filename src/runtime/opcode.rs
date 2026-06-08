@@ -119,11 +119,6 @@ pub enum OpCode {
     /// Pop value and log it.
     Log,
 
-    // -- Mutations ----------------------------------------------------------
-    /// Pop an event-name string and push a fresh `Value::Mutation` in the
-    /// `Idle` state. Paired with `state` so status persists across renders.
-    CreateMutation,
-
     // -- Context ------------------------------------------------------------
     /// Pop (value, name) from the stack and push them onto the runtime's
     /// context stack. Emitted by the compiler around the `children` evaluation
@@ -144,32 +139,6 @@ pub enum OpCode {
     // -- Import -------------------------------------------------------------
     /// Import a module. The constant-pool index points to import metadata.
     Import(u16),
-
-    // -- Lifecycle hooks (Phase 2 — declared in M0; VM handlers in M1/M2) ---
-    /// Pop a closure from the stack. If the current call-stack path
-    /// is not in `previous_active_paths` (i.e. newly mounted this
-    /// frame), push `(path, hook_id, closure)` onto
-    /// `pending_mounts`. Otherwise drop the closure.
-    /// Mount has no persistent registry — it queues inline.
-    RegisterMountHook(u16),
-    /// Pop a closure. Insert into `unmount_hooks` keyed by
-    /// `(current_path, hook_id)`, overwriting any prior entry.
-    /// Re-registered every render so the closure's upvalues
-    /// always reflect the most recent render's scope.
-    RegisterUnmountHook(u16),
-    /// Pop `dep_count` values then a closure. Compare deps to
-    /// `effects[(path, hook_id)].previous_deps`; if changed (or
-    /// first run), schedule cleanup-then-fire via the pending
-    /// queues. Always update the slot's `closure` so the body
-    /// reflects current scope.
-    RegisterEffect {
-        hook_id: u16,
-        dep_count: u8,
-    },
-    /// Pop a closure. Attach as the pending-cleanup for the
-    /// currently-executing effect. Compile-time error if used
-    /// outside an `effect` body.
-    RegisterEffectCleanup,
 
     // -- For-loop expression (collect results into array) -------------------
     /// Begin a for-loop expression that collects results.

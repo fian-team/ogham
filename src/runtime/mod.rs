@@ -15,7 +15,7 @@ use crate::runtime::compiler::Compiler;
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::environment::Environment;
 use crate::runtime::error::{RuntimeError, VMError};
-use crate::runtime::opcode::{FunctionProto, VMClosure};
+use crate::runtime::opcode::FunctionProto;
 use crate::runtime::value::Value;
 use crate::runtime::vm::VM;
 use crate::scanner::Scanner;
@@ -48,55 +48,14 @@ let rgb = fn (r: int, g: int, b: int) { { r: r, g: g, b: b, a: 255 } };
 let rgba = fn (r: int, g: int, b: int, a: int) { { r: r, g: g, b: b, a: a } };
 "#;
 
-/// Per-effect slot stored in `StateManager.effects`. `previous_deps`
-/// is `None` until the first fire; `pending_cleanup` is set by an
-/// `effect` body that registers a `cleanup` block, and consumed at
-/// the next dep change or path unmount.
-#[allow(dead_code)] // M0 declares the shape; M2 reads previous_deps + closure.
-pub(crate) struct EffectSlot {
-    pub previous_deps: Option<Vec<Value>>,
-    pub pending_cleanup: Option<Rc<VMClosure>>,
-    pub closure: Rc<VMClosure>,
-}
-
-/// Manages component state, the call stack used for state key
-/// generation, and Phase 2 lifecycle bookkeeping.
-///
-/// Phase 2 (lifecycle hooks + Portal) adds:
-/// - `previous_active_paths`: snapshot of `active_state_paths` from
-///   the previous render, used to compute mount/unmount diffs.
-/// - `unmount_hooks` / `effects`: persistent registries keyed by
-///   `(path, hook_id)`. Mount has no persistent map — it queues
-///   inline at opcode time.
-/// - `pending_*` queues: per-frame work items drained at pre-layout
-///   (unmounts, effect cleanups) or post-layout (mounts, effect
-///   fires) by the renderer.
-/// - `candidate_unmounts`: paths that have stopped being visited
-///   but whose owning widget is still in the tree (ghost during
-///   exit animation). Resolved when `drain_exited_children` removes
-///   the widget — see `Widget::flush_lifecycle_on_drain`.
+/// Manages component state and the call stack used for state key
+/// generation.
 pub(crate) struct StateManager {
     pub(crate) component_state: HashMap<String, Value>,
     pub(crate) call_stack: Vec<String>,
     pub(crate) active_state_paths: HashSet<String>,
     pub(crate) has_branched: bool,
     pub(crate) call_counters: HashMap<String, usize>,
-
-    // -- Phase 2 lifecycle --
-    // Pending queues carry the closure with each entry rather
-    // than just the key. This means flush_for_path_prefix can
-    // remove the entry from the persistent map AND queue it for
-    // drain in one step — the drainer doesn't need to keep the
-    // map entry alive while it consumes the queue.
-    pub(crate) previous_active_paths: HashSet<String>,
-    pub(crate) unmount_hooks: HashMap<(String, u16), Rc<VMClosure>>,
-    pub(crate) effects: HashMap<(String, u16), EffectSlot>,
-    pub(crate) pending_mounts: Vec<(String, u16, Rc<VMClosure>)>,
-    pub(crate) pending_unmounts: Vec<(String, u16, Rc<VMClosure>)>,
-    #[allow(dead_code)]
-    pub(crate) pending_effect_fires: Vec<(String, u16)>,
-    pub(crate) pending_effect_cleanups: Vec<(String, u16, Rc<VMClosure>)>,
-    pub(crate) candidate_unmounts: HashSet<String>,
 }
 
 impl StateManager {
@@ -107,88 +66,7 @@ impl StateManager {
             active_state_paths: HashSet::new(),
             has_branched: false,
             call_counters: HashMap::new(),
-
-            previous_active_paths: HashSet::new(),
-            unmount_hooks: HashMap::new(),
-            effects: HashMap::new(),
-            pending_mounts: Vec::new(),
-            pending_unmounts: Vec::new(),
-            pending_effect_fires: Vec::new(),
-            pending_effect_cleanups: Vec::new(),
-            candidate_unmounts: HashSet::new(),
         }
-    }
-
-    /// Rotate the active-paths set: move current → previous and
-    /// clear current. Called at frame start in `Runtime::rerender`.
-    /// The diff `mounted = current − previous`, `unmounted =
-    /// previous − current` is computed by callers as needed.
-    pub(crate) fn rotate_active_paths(&mut self) {
-        std::mem::swap(
-            &mut self.active_state_paths,
-            &mut self.previous_active_paths,
-        );
-        self.active_state_paths.clear();
-    }
-
-    /// Phase 2 lifecycle: invoked when a widget owning the given
-    /// path prefix has fully drained from the tree (after any exit
-    /// animation has settled). Walks the persistent registries
-    /// (`unmount_hooks`, `effects`) and queues any matching entries
-    /// onto the pending drain queues for the next frame's
-    /// pre-layout step. Removes the entries from the persistent
-    /// maps so they don't fire again.
-    ///
-    /// Empty prefix is a no-op — the empty-string prefix would
-    /// match every entry, which is never what a drain should do.
-    ///
-    /// M0 ships this helper and the synthetic-state tests; M1
-    /// wires it into `drain_exited_children` once hook
-    /// registration is in place.
-    pub(crate) fn flush_for_path_prefix(&mut self, prefix: &str) {
-        if prefix.is_empty() {
-            return;
-        }
-        let unmount_keys: Vec<(String, u16)> = self
-            .unmount_hooks
-            .keys()
-            .filter(|(p, _)| path_matches_prefix(p, prefix))
-            .cloned()
-            .collect();
-        for key in unmount_keys {
-            if let Some(closure) = self.unmount_hooks.remove(&key) {
-                self.pending_unmounts.push((key.0, key.1, closure));
-            }
-        }
-        let effect_keys: Vec<(String, u16)> = self
-            .effects
-            .keys()
-            .filter(|(p, _)| path_matches_prefix(p, prefix))
-            .cloned()
-            .collect();
-        for key in effect_keys {
-            if let Some(slot) = self.effects.remove(&key) {
-                if let Some(cleanup) = slot.pending_cleanup {
-                    self.pending_effect_cleanups.push((key.0, key.1, cleanup));
-                }
-            }
-        }
-        self.candidate_unmounts
-            .retain(|p| !path_matches_prefix(p, prefix));
-    }
-
-    /// Phase 2 lifecycle: cancel a widget's pending unmount when
-    /// `cancel_exit` re-mounts it. Removes any candidate_unmount
-    /// entries whose path starts with the given prefix.
-    ///
-    /// M0 ships this helper; M1 wires it into `cancel_exit`.
-    #[allow(dead_code)]
-    pub(crate) fn cancel_unmount_for_prefix(&mut self, prefix: &str) {
-        if prefix.is_empty() {
-            return;
-        }
-        self.candidate_unmounts
-            .retain(|p| !path_matches_prefix(p, prefix));
     }
 
     /// Get the current call stack path as a string.
@@ -332,61 +210,6 @@ pub struct Runtime {
     ///
     /// Transient — cleared at the start of every module execution.
     pub(crate) context_stack: Vec<(String, Value)>,
-    /// Phase 2 lifecycle: `true` if the compiled module emits any
-    /// of the lifecycle opcodes (RegisterMountHook /
-    /// RegisterUnmountHook / RegisterEffect /
-    /// RegisterEffectCleanup) anywhere in its bytecode tree. Set
-    /// by the bytecode scan in `set_compiled_module`. Used by the
-    /// VM `Call` opcode handler to gate the per-call path-marking
-    /// — modules without hooks pay zero per-call overhead.
-    pub(crate) lifecycle_active: bool,
-    /// Phase 2 lifecycle: per-frame log of stringified errors
-    /// from hook bodies. Hook errors are logged and execution
-    /// continues with the next hook in the queue (per design's
-    /// "log-and-continue" policy). Capacity-bounded ring buffer
-    /// (oldest entries dropped at LIFECYCLE_LOG_CAPACITY).
-    /// Cleared at frame start.
-    pub(crate) lifecycle_error_log: Vec<String>,
-    /// Phase 2 (M2): set to `Some((path, hook_id))` while an
-    /// effect closure is firing. Used by the
-    /// RegisterEffectCleanup opcode handler to attach the
-    /// just-built cleanup closure to the right effect slot.
-    /// Cleared back to None after the closure call returns.
-    pub(crate) current_firing_effect: Option<(String, u16)>,
-}
-
-/// Maximum number of hook-error entries retained in
-/// `Runtime::lifecycle_error_log`. Per impl-plan decision #4
-/// (M0 kickoff), 100 is the default and not configurable in M1.
-pub(crate) const LIFECYCLE_LOG_CAPACITY: usize = 100;
-
-/// Phase 2: tight prefix-match for path-keyed lifecycle
-/// registries. `path` matches `prefix` when either:
-///
-/// - they are equal, or
-/// - `path` starts with `prefix + "/"` (i.e. `path` is a child
-///   path under `prefix`).
-///
-/// Plain `str::starts_with` would have a false positive on
-/// path components that share a numeric prefix — e.g.
-/// `"fn@10".starts_with("fn@1")` is true. Path components are
-/// always `name@call_index`, joined with `/`, so the only
-/// safe way to express "this prefix terminates a component"
-/// is to require an explicit `/` separator after.
-pub(crate) fn path_matches_prefix(path: &str, prefix: &str) -> bool {
-    if path == prefix {
-        return true;
-    }
-    if path.len() > prefix.len() {
-        let mut bytes = path.bytes();
-        for pb in prefix.bytes() {
-            if bytes.next() != Some(pb) {
-                return false;
-            }
-        }
-        return bytes.next() == Some(b'/');
-    }
-    false
 }
 
 impl Runtime {
@@ -404,230 +227,11 @@ impl Runtime {
             widget_registry: WidgetRegistry::with_defaults(),
             screen_height: 0.0,
             context_stack: Vec::new(),
-            lifecycle_active: false,
-            lifecycle_error_log: Vec::new(),
-            current_firing_effect: None,
         }
     }
 
-    /// Phase 2: number of hook-body errors logged in the current
-    /// frame. Reset to 0 at frame start. Hosts can surface this
-    /// in debug overlays (UL audit OQ#1 use case).
-    pub fn lifecycle_error_count(&self) -> usize {
-        self.lifecycle_error_log.len()
-    }
-
-    /// Phase 2: a snapshot of the current frame's hook-body
-    /// error messages. Latest at the end. Capped at
-    /// LIFECYCLE_LOG_CAPACITY entries.
-    pub fn lifecycle_error_log(&self) -> &[String] {
-        &self.lifecycle_error_log
-    }
-
-    /// Phase 2: append an error to the per-frame log, dropping
-    /// the oldest entry if capacity is reached.
-    pub(crate) fn log_lifecycle_error(&mut self, msg: impl Into<String>) {
-        if self.lifecycle_error_log.len() >= LIFECYCLE_LOG_CAPACITY {
-            self.lifecycle_error_log.remove(0);
-        }
-        self.lifecycle_error_log.push(msg.into());
-    }
-
-    /// Phase 2: drain `pending_unmounts` and
-    /// `pending_effect_cleanups` from this frame, calling each
-    /// closure with the runtime's current scope. Errors are
-    /// logged to `lifecycle_error_log` (one entry per failure)
-    /// and execution continues with the next entry. Order:
-    /// unmounts deepest-first (sorted by path length descending),
-    /// then effect cleanups in registration order (M2 cares
-    /// about ordering; M1 has none of these to drain).
-    ///
-    /// Hosts call this *before* `UI::layout()`. M1's caller is
-    /// `Ogham::tick()` (in lib.rs), which sequences the new
-    /// per-frame lifecycle dispatch around the existing
-    /// reconcile→tick_animations→layout pipeline.
-    pub fn pre_layout_drain(&mut self) {
-        // Sort deepest-first so a parent's unmount fires after
-        // its children's. Path length is a stand-in for depth
-        // (paths are joined with "/" so depth = number of "/" + 1
-        // — but the byte length grows monotonically with depth
-        // for any single tree, which is sufficient for ordering
-        // siblings vs. parents).
-        self.state
-            .pending_unmounts
-            .sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-        let unmounts = std::mem::take(&mut self.state.pending_unmounts);
-        for (path, hook_id, closure) in unmounts {
-            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
-                self.log_lifecycle_error(format!("on_unmount at {}#{}: {:?}", path, hook_id, e));
-            }
-        }
-        // M1: pending_effect_cleanups is always empty (effects
-        // ship in M2). Drain unconditionally so the M2 wiring
-        // is just "fill the queue."
-        let cleanups = std::mem::take(&mut self.state.pending_effect_cleanups);
-        for (path, hook_id, closure) in cleanups {
-            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
-                self.log_lifecycle_error(format!(
-                    "effect cleanup at {}#{}: {:?}",
-                    path, hook_id, e
-                ));
-            }
-        }
-    }
-
-    /// Phase 2: drain `pending_mounts` and `pending_effect_fires`
-    /// from this frame, calling each closure with the runtime's
-    /// current scope. Mounts run parents-first (sorted by path
-    /// length ascending) so a parent's `on_mount` can read state
-    /// its children populated.
-    ///
-    /// Hosts call this *after* `UI::layout()` so mount bodies
-    /// can read post-layout sizes (per design §"Hook firing
-    /// timing").
-    pub fn post_layout_drain(&mut self) {
-        self.state
-            .pending_mounts
-            .sort_by(|a, b| a.0.len().cmp(&b.0.len()));
-        let mounts = std::mem::take(&mut self.state.pending_mounts);
-        for (path, hook_id, closure) in mounts {
-            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
-                self.log_lifecycle_error(format!("on_mount at {}#{}: {:?}", path, hook_id, e));
-            }
-        }
-        // Phase 2 M2: fire each scheduled effect. The
-        // current_firing_effect side channel lets
-        // RegisterEffectCleanup attach to the right slot.
-        let fires = std::mem::take(&mut self.state.pending_effect_fires);
-        for (path, hook_id) in fires {
-            let key = (path.clone(), hook_id);
-            // Look up the closure (clone the Rc so we can drop
-            // the borrow before calling — calling the closure
-            // re-enters the runtime).
-            let closure = match self.state.effects.get(&key) {
-                Some(slot) => slot.closure.clone(),
-                None => continue, // slot was removed (path unmounted mid-frame)
-            };
-            self.current_firing_effect = Some(key.clone());
-            if let Err(e) = self.call_bytecode_closure(&closure, &[]) {
-                self.log_lifecycle_error(format!("effect at {}#{}: {:?}", path, hook_id, e));
-            }
-            self.current_firing_effect = None;
-        }
-    }
-
-    /// Phase 2: M1 path-disappear → M3 candidate-staging.
-    /// After VM execution, walk paths in `previous_active_paths`
-    /// that are no longer in `active_state_paths`. For each one,
-    /// register a candidate_unmount entry rather than flushing
-    /// immediately — drain-time semantics defer the actual
-    /// unmount until the owning widget drains (or is dropped
-    /// without an exit animation, which the widget tree
-    /// signals via `UpdateResult.drained_path_prefixes`).
-    ///
-    /// Cancelled exits (re-mount mid-exit) clear matching
-    /// candidates via [`StateManager::cancel_unmount_for_prefix`].
-    ///
-    /// Backward-compat note: callers that exercise `Runtime`
-    /// directly (no UI) won't see unmounts fire automatically
-    /// any more; they need to call
-    /// [`Runtime::flush_remaining_unmount_candidates`] to
-    /// drain whatever the widget tree didn't claim. The
-    /// `Ogham::update` helper handles this automatically.
-    pub(crate) fn queue_disappeared_unmounts(&mut self) {
-        let disappeared: Vec<String> = self
-            .state
-            .previous_active_paths
-            .difference(&self.state.active_state_paths)
-            .cloned()
-            .collect();
-        for path in disappeared {
-            self.state.candidate_unmounts.insert(path);
-        }
-        // Phase 3 M3: paths that were candidates from a prior
-        // disappear but became active again this render are
-        // implicitly cancelled — remove their candidate so a
-        // later flush_remaining doesn't fire a stale unmount.
-        let reappeared: Vec<String> = self.state.active_state_paths.iter().cloned().collect();
-        for path in &reappeared {
-            self.state.candidate_unmounts.remove(path);
-        }
-    }
-
-    /// Phase 3 M3: flush every remaining `candidate_unmount`
-    /// path that wasn't claimed by a widget drain or
-    /// cancellation. Acts as the path-disappear fallback for
-    /// hosts that exercise `Runtime` directly without going
-    /// through the widget reconcile path. `Ogham::update`
-    /// calls this after `process_drain_queues` so any
-    /// candidates left over (paths whose hooks weren't
-    /// claimed by a drain because the widget tree had nothing
-    /// to drain) still get flushed.
-    pub fn flush_remaining_unmount_candidates(&mut self) {
-        let remaining: Vec<String> = self.state.candidate_unmounts.iter().cloned().collect();
-        for path in remaining {
-            self.state.flush_for_path_prefix(&path);
-        }
-    }
-
-    /// Phase 3 M3: drain-time unmount processing. Consumes the
-    /// path prefixes the previous frame's `tick_animations`
-    /// surfaced on `UI` and flushes the matching unmount hooks
-    /// + effect cleanups.
-    ///
-    /// `drained_path_prefixes` come from widgets whose
-    /// `is_exit_complete()` flipped true and got dropped by
-    /// `drain_exited_children`. They identify subtrees whose
-    /// exit animation has settled — the canonical drain-time
-    /// unmount moment.
-    ///
-    /// `cancelled_unmount_prefixes` come from
-    /// `reconcile_children`'s exit-cancel path: an exiting
-    /// ghost whose key reappeared in the new child set has its
-    /// exit reverted; any pending unmount queued for that
-    /// subtree must be cleared so the cleanup doesn't run.
-    ///
-    /// Cancellation is processed first — if a path is in both
-    /// vecs in the same frame, the cancel wins (matches the
-    /// "cancel-then-re-exit fires unmount on the second
-    /// drain" semantics in the design).
-    pub fn process_drain_queues(&mut self, ui: &mut crate::widget::UI) {
-        for prefix in ui.take_cancelled_unmount_prefixes() {
-            self.state.cancel_unmount_for_prefix(&prefix);
-        }
-        for prefix in ui.take_drained_prefixes() {
-            self.state.flush_for_path_prefix(&prefix);
-        }
-    }
-
-    /// Phase 2: walk a compiled FunctionProto (and its sub-protos
-    /// recursively) and return `true` if any of the four lifecycle
-    /// opcodes appears anywhere. Called by `set_compiled_module`
-    /// to compute `lifecycle_active`.
-    fn bytecode_uses_lifecycle(proto: &FunctionProto) -> bool {
-        for op in &proto.chunk.code {
-            match op {
-                opcode::OpCode::RegisterMountHook(_)
-                | opcode::OpCode::RegisterUnmountHook(_)
-                | opcode::OpCode::RegisterEffect { .. }
-                | opcode::OpCode::RegisterEffectCleanup => return true,
-                _ => {}
-            }
-        }
-        for sub in &proto.protos {
-            if Self::bytecode_uses_lifecycle(sub) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Phase 2: cache the compiled module and update the
-    /// lifecycle_active flag based on its bytecode. Use this
-    /// instead of assigning `compiled_module` directly so the
-    /// flag stays in sync with the compiled artifact.
+    /// Cache the compiled module so rerenders skip recompilation.
     fn set_compiled_module(&mut self, proto: FunctionProto) {
-        self.lifecycle_active = Self::bytecode_uses_lifecycle(&proto);
         self.compiled_module = Some(proto);
     }
 
@@ -752,11 +356,6 @@ impl Runtime {
         self.module = Some(module);
         // Invalidate cached bytecode so the next execution recompiles.
         self.compiled_module = None;
-        // Reset lifecycle_active too — it'll be recomputed when the
-        // new module compiles. Without this, swapping from a
-        // hook-using module to a hookless one would leave the flag
-        // stuck at true.
-        self.lifecycle_active = false;
     }
 
     pub fn get_module(&self) -> Option<&Function> {
@@ -778,26 +377,16 @@ impl Runtime {
         }
         self.needs_rerender = false;
         self.environment = Environment::new();
-        self.state.rotate_active_paths();
+        self.state.active_state_paths.clear();
         self.state.call_stack.clear();
         self.state.call_counters.clear();
-        // Phase 2: clear the per-frame error log. Previous frame's
-        // hook errors are no longer relevant.
-        self.lifecycle_error_log.clear();
         let result = self.execute_module_cached();
-        // Phase 2: compute disappeared paths and queue their
-        // unmount hooks for drain. Then drain all pending hook
-        // queues. M1 path-disappear semantics; M3+ refines to
-        // drain-time once Portal needs it for focus stack.
-        self.queue_disappeared_unmounts();
-        self.pre_layout_drain();
-        self.post_layout_drain();
         self.state.cleanup_unmounted_state();
         result
     }
 
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
-        self.state.rotate_active_paths();
+        self.state.active_state_paths.clear();
         self.state.call_stack.clear();
         self.state.call_counters.clear();
         self.imports.loading_stack.clear();
@@ -809,21 +398,12 @@ impl Runtime {
             cached.clone()
         } else {
             let proto = Compiler::compile_module(module)?;
-            // set_compiled_module also updates lifecycle_active.
             self.set_compiled_module(proto.clone());
             proto
         };
 
-        // Phase 2: clear the per-frame error log so first-render
-        // hook errors are surfaced cleanly.
-        self.lifecycle_error_log.clear();
-
         let mut vm = VM::new();
         let result = vm.run(&proto, self);
-        // Phase 2: same drain ordering as rerender.
-        self.queue_disappeared_unmounts();
-        self.pre_layout_drain();
-        self.post_layout_drain();
         self.state.cleanup_unmounted_state();
         result
     }
@@ -1236,299 +816,6 @@ let main = fn () {
         assert_eq!(result, Value::Integer(5));
     }
 
-    // -----------------------------------------------------------------
-    // Phase 2 — M0 lifecycle plumbing tests
-    // -----------------------------------------------------------------
-
-    use crate::runtime::opcode::{Chunk, OpCode, VMClosure};
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    /// Build a minimal closure for use as a hook stand-in. Real hook
-    /// closures are produced by the Closure opcode at runtime;
-    /// these synthetic ones are only used to populate the
-    /// registries for plumbing tests.
-    fn dummy_closure(name: &str, path: Vec<String>) -> Rc<VMClosure> {
-        let proto = FunctionProto::new(name.to_string(), 0);
-        Rc::new(VMClosure {
-            proto: Rc::new(proto),
-            upvalues: Vec::new(),
-            captured_path: path,
-        })
-    }
-
-    /// Build a synthetic FunctionProto that emits a single opcode,
-    /// for testing the bytecode_uses_lifecycle scan.
-    fn proto_with_op(op: OpCode) -> FunctionProto {
-        let mut chunk = Chunk::new();
-        chunk.emit(op, 1);
-        chunk.emit(OpCode::Return, 1);
-        let mut proto = FunctionProto::new("synthetic".to_string(), 0);
-        proto.chunk = chunk;
-        proto
-    }
-
-    #[test]
-    fn rotate_active_paths_swaps_current_into_previous() {
-        let mut sm = StateManager::new();
-        sm.active_state_paths.insert("frame_n_path".to_string());
-        sm.previous_active_paths.insert("stale".to_string());
-
-        sm.rotate_active_paths();
-
-        assert!(
-            sm.active_state_paths.is_empty(),
-            "current should be cleared after rotation"
-        );
-        assert!(
-            sm.previous_active_paths.contains("frame_n_path"),
-            "previous should now hold frame N's paths"
-        );
-        assert!(
-            !sm.previous_active_paths.contains("stale"),
-            "previous's prior contents should be discarded"
-        );
-    }
-
-    #[test]
-    fn rotate_active_paths_preserves_diff_across_renders() {
-        let mut sm = StateManager::new();
-        sm.active_state_paths.insert("a".to_string());
-        sm.active_state_paths.insert("b".to_string());
-
-        sm.rotate_active_paths();
-        // simulate frame N+1: only "a" gets visited
-        sm.active_state_paths.insert("a".to_string());
-
-        // mounted = current − previous = {} (a was already active)
-        let mounted: HashSet<&String> = sm
-            .active_state_paths
-            .difference(&sm.previous_active_paths)
-            .collect();
-        assert!(mounted.is_empty(), "no newly-mounted paths");
-
-        // unmounted = previous − current = {"b"}
-        let unmounted: HashSet<&String> = sm
-            .previous_active_paths
-            .difference(&sm.active_state_paths)
-            .collect();
-        assert_eq!(unmounted.len(), 1);
-        assert!(unmounted.contains(&"b".to_string()));
-    }
-
-    #[test]
-    fn lifecycle_active_false_for_module_without_hooks() {
-        let proto = proto_with_op(OpCode::Void);
-        assert!(!Runtime::bytecode_uses_lifecycle(&proto));
-    }
-
-    #[test]
-    fn lifecycle_active_true_for_each_hook_opcode() {
-        for op in [
-            OpCode::RegisterMountHook(0),
-            OpCode::RegisterUnmountHook(0),
-            OpCode::RegisterEffect {
-                hook_id: 0,
-                dep_count: 0,
-            },
-            OpCode::RegisterEffectCleanup,
-        ] {
-            let proto = proto_with_op(op);
-            assert!(
-                Runtime::bytecode_uses_lifecycle(&proto),
-                "opcode should mark module as lifecycle-active"
-            );
-        }
-    }
-
-    #[test]
-    fn lifecycle_active_recurses_into_sub_protos() {
-        let inner = proto_with_op(OpCode::RegisterMountHook(0));
-        let mut outer = proto_with_op(OpCode::Void);
-        outer.protos.push(inner);
-        assert!(
-            Runtime::bytecode_uses_lifecycle(&outer),
-            "scan should recurse into sub-protos"
-        );
-    }
-
-    #[test]
-    fn lifecycle_active_resets_on_set_module() {
-        let mut runtime = Runtime::new();
-        runtime.lifecycle_active = true;
-        // Use the public set_module which should clear the flag.
-        let source = "let main = fn () { return 1; };";
-        let mut scanner = Scanner::new(source.to_string());
-        let mut parser = Parser::new(scanner.scan());
-        let module = parser.parse().expect("parse");
-        runtime.set_module(module);
-        assert!(
-            !runtime.lifecycle_active,
-            "set_module should reset lifecycle_active to false"
-        );
-    }
-
-    #[test]
-    fn flush_for_path_prefix_queues_unmount_hooks() {
-        let mut sm = StateManager::new();
-        sm.unmount_hooks.insert(
-            ("panel".to_string(), 0),
-            dummy_closure("h", vec!["panel".to_string()]),
-        );
-        sm.unmount_hooks.insert(
-            ("other".to_string(), 0),
-            dummy_closure("h", vec!["other".to_string()]),
-        );
-
-        sm.flush_for_path_prefix("panel");
-
-        assert_eq!(sm.pending_unmounts.len(), 1);
-        assert_eq!(sm.pending_unmounts[0].0, "panel");
-        assert!(
-            !sm.unmount_hooks.contains_key(&("panel".to_string(), 0)),
-            "hook should be removed from persistent map"
-        );
-        assert!(
-            sm.unmount_hooks.contains_key(&("other".to_string(), 0)),
-            "non-matching prefix should be untouched"
-        );
-    }
-
-    #[test]
-    fn flush_for_path_prefix_removes_effect_slots() {
-        let mut sm = StateManager::new();
-        sm.effects.insert(
-            ("panel".to_string(), 0),
-            EffectSlot {
-                previous_deps: None,
-                pending_cleanup: Some(dummy_closure("c", vec!["panel".to_string()])),
-                closure: dummy_closure("e", vec!["panel".to_string()]),
-            },
-        );
-        sm.effects.insert(
-            ("other".to_string(), 0),
-            EffectSlot {
-                previous_deps: None,
-                pending_cleanup: None,
-                closure: dummy_closure("e", vec!["other".to_string()]),
-            },
-        );
-
-        sm.flush_for_path_prefix("panel");
-
-        assert_eq!(
-            sm.pending_effect_cleanups.len(),
-            1,
-            "effect with pending_cleanup should be queued"
-        );
-        assert!(
-            !sm.effects.contains_key(&("panel".to_string(), 0)),
-            "effect slot should be removed from persistent map"
-        );
-        assert!(
-            sm.effects.contains_key(&("other".to_string(), 0)),
-            "non-matching prefix should be untouched"
-        );
-    }
-
-    #[test]
-    fn flush_for_empty_prefix_is_noop() {
-        let mut sm = StateManager::new();
-        sm.unmount_hooks.insert(
-            ("any".to_string(), 0),
-            dummy_closure("h", vec!["any".to_string()]),
-        );
-        sm.flush_for_path_prefix("");
-        assert_eq!(
-            sm.unmount_hooks.len(),
-            1,
-            "empty prefix must not match anything"
-        );
-        assert!(sm.pending_unmounts.is_empty());
-    }
-
-    #[test]
-    fn flush_for_path_prefix_does_not_match_numeric_siblings() {
-        // Regression for the prefix-matching bug:
-        // "fn@10".starts_with("fn@1") returns true, but a flush
-        // for "fn@1" should NOT pull in "fn@10". Path components
-        // end at "/" — match must respect the boundary.
-        let mut sm = StateManager::new();
-        sm.unmount_hooks.insert(
-            ("fn@1".to_string(), 0),
-            dummy_closure("h", vec!["fn@1".to_string()]),
-        );
-        sm.unmount_hooks.insert(
-            ("fn@10".to_string(), 0),
-            dummy_closure("h", vec!["fn@10".to_string()]),
-        );
-        sm.unmount_hooks.insert(
-            ("fn@1/inner@1".to_string(), 0),
-            dummy_closure("h", vec!["fn@1/inner@1".to_string()]),
-        );
-
-        sm.flush_for_path_prefix("fn@1");
-
-        // fn@1 itself is matched (exact).
-        assert!(!sm.unmount_hooks.contains_key(&("fn@1".to_string(), 0)));
-        // fn@1/inner@1 is matched (proper child path).
-        assert!(!sm
-            .unmount_hooks
-            .contains_key(&("fn@1/inner@1".to_string(), 0)));
-        // fn@10 must NOT be matched (numeric-prefix false positive
-        // is the bug we're guarding against).
-        assert!(
-            sm.unmount_hooks.contains_key(&("fn@10".to_string(), 0)),
-            "fn@10 must not be flushed by a fn@1 prefix"
-        );
-        // Two pending unmounts queued (fn@1, fn@1/inner@1).
-        assert_eq!(sm.pending_unmounts.len(), 2);
-    }
-
-    #[test]
-    fn path_matches_prefix_boundary_cases() {
-        // Exact match.
-        assert!(path_matches_prefix("fn@1", "fn@1"));
-        // Proper child path.
-        assert!(path_matches_prefix("fn@1/inner@1", "fn@1"));
-        assert!(path_matches_prefix("fn@1/inner@1/leaf@1", "fn@1"));
-        // Numeric-prefix false positive is rejected.
-        assert!(!path_matches_prefix("fn@10", "fn@1"));
-        assert!(!path_matches_prefix("fn@11", "fn@1"));
-        // Different name with same byte prefix is rejected.
-        assert!(!path_matches_prefix("fnordo@1", "fn@1"));
-        // Shorter path can't match a longer prefix.
-        assert!(!path_matches_prefix("fn", "fn@1"));
-        // Empty prefix is rejected by callers (early-return);
-        // here we just verify the helper alone doesn't barf.
-        assert!(path_matches_prefix("", ""));
-    }
-
-    #[test]
-    fn cancel_unmount_for_prefix_clears_candidates() {
-        let mut sm = StateManager::new();
-        sm.candidate_unmounts.insert("panel".to_string());
-        sm.candidate_unmounts.insert("other".to_string());
-
-        sm.cancel_unmount_for_prefix("panel");
-
-        assert!(!sm.candidate_unmounts.contains("panel"));
-        assert!(sm.candidate_unmounts.contains("other"));
-    }
-
-    #[test]
-    fn pending_queues_initially_empty_in_new_state_manager() {
-        let sm = StateManager::new();
-        assert!(sm.pending_mounts.is_empty());
-        assert!(sm.pending_unmounts.is_empty());
-        assert!(sm.pending_effect_fires.is_empty());
-        assert!(sm.pending_effect_cleanups.is_empty());
-        assert!(sm.unmount_hooks.is_empty());
-        assert!(sm.effects.is_empty());
-        assert!(sm.previous_active_paths.is_empty());
-        assert!(sm.candidate_unmounts.is_empty());
-    }
-
     #[test]
     fn widget_descriptor_captures_owned_path_at_vm_time() {
         // Regression test: widget descriptors must capture
@@ -1567,9 +854,10 @@ let main  = fn () { panel() };
     }
 
     #[test]
-    fn call_opcode_skips_path_marking_when_lifecycle_inactive() {
-        // Hookless module: lifecycle_active stays false; the Call
-        // opcode should not insert paths into active_state_paths.
+    fn call_opcode_does_not_mark_paths_without_state_declarations() {
+        // A function call alone must not populate active_state_paths;
+        // only a `state` declaration (DeclareState) marks a path as
+        // active. With no `state` here, the set stays empty.
         let source = r#"
 let inner = fn () { return 1; };
 let main  = fn () { return inner(); };
@@ -1579,20 +867,8 @@ let main  = fn () { return inner(); };
         let _ = runtime.execute_module(&module).expect("execute");
 
         assert!(
-            !runtime.lifecycle_active,
-            "module without lifecycle opcodes should leave flag false"
-        );
-        // Note: without lifecycle_active, active_state_paths is only
-        // populated by DeclareState — no `state` declarations here,
-        // so it should be empty.
-        assert!(
             runtime.state.active_state_paths.is_empty(),
-            "Call opcode must not mark paths when lifecycle_active=false"
+            "function calls without `state` must not mark active paths"
         );
     }
-
-    // Suppress dead-code warnings for the synthetic helpers when
-    // future merges rearrange the test set.
-    #[allow(dead_code)]
-    fn _silence_unused_warnings(_: RefCell<()>) {}
 }

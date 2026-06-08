@@ -624,22 +624,6 @@ impl VM {
                             runtime.state.call_stack.push(unique_id);
                             runtime.state.has_branched = false;
 
-                            // Phase 2 lifecycle: when the module
-                            // uses any lifecycle hooks, mark every
-                            // function-call's path as visited so
-                            // the per-render diff can identify
-                            // newly-mounted/unmounted paths even
-                            // for hookless functions. Modules
-                            // without hooks pay one branch-
-                            // predicted bool check and skip the
-                            // allocation.
-                            if runtime.lifecycle_active {
-                                let path = runtime.state.get_call_stack_path();
-                                if !path.is_empty() {
-                                    runtime.state.active_state_paths.insert(path);
-                                }
-                            }
-
                             self.call_vm_closure(&closure, arg_count)?;
 
                             // Store restore info on the new frame so
@@ -650,35 +634,6 @@ impl VM {
                                 .expect("frame should exist after call_vm_closure");
                             new_frame.saved_call_stack = Some(old_call_stack);
                             new_frame.saved_has_branched = Some(old_has_branched);
-                        }
-                        Value::BoundTrigger(mutation) => {
-                            // Pop args off the stack.
-                            let ac = arg_count as usize;
-                            let start = self.stack.len() - ac;
-                            let args: Vec<Value> = self.stack[start..].to_vec();
-                            self.stack.truncate(start);
-                            // Pop the callee (the BoundTrigger itself).
-                            self.pop()?;
-
-                            let event_name = mutation.borrow().event_name.clone();
-                            mutation.borrow_mut().status =
-                                crate::runtime::value::MutationStatus::Pending;
-                            match runtime.emit_event(&event_name, &args) {
-                                Ok(data) => {
-                                    let mut m = mutation.borrow_mut();
-                                    m.status = crate::runtime::value::MutationStatus::Success;
-                                    m.data = data;
-                                    m.error.clear();
-                                }
-                                Err(msg) => {
-                                    let mut m = mutation.borrow_mut();
-                                    m.status = crate::runtime::value::MutationStatus::Error;
-                                    m.data = Value::Void;
-                                    m.error = msg;
-                                }
-                            }
-                            runtime.request_rerender();
-                            self.push(Value::Void)?;
                         }
                         _ => {
                             return Err(VMError::TypeMismatch(
@@ -767,25 +722,6 @@ impl VM {
                                     name
                                 ))
                             })?;
-                            self.push(val)?;
-                        }
-                        Value::Mutation(m) => {
-                            let val = match name.as_str() {
-                                "trigger" => Value::BoundTrigger(m.clone()),
-                                other => {
-                                    let s = m.borrow();
-                                    match other {
-                                        "status" => Value::String(s.status.as_str().to_string()),
-                                        "pending" => Value::Boolean(
-                                            s.status
-                                                == crate::runtime::value::MutationStatus::Pending,
-                                        ),
-                                        "data" => s.data.clone(),
-                                        "error" => Value::String(s.error.clone()),
-                                        _ => Value::Void,
-                                    }
-                                }
-                            };
                             self.push(val)?;
                         }
                         _ => {
@@ -906,7 +842,7 @@ impl VM {
                         }
                     };
                     // Fire-and-forget: `event()` always yields Void regardless
-                    // of handler result. Tracked flows go through mutations.
+                    // of handler result.
                     let _ = runtime.emit_event(&event_name, &all_args[1..]);
                     self.push(Value::Void)?;
                 }
@@ -914,22 +850,6 @@ impl VM {
                     let val = self.pop()?;
                     eprintln!("[ogham] {}", val);
                     self.push(Value::Void)?;
-                }
-                OpCode::CreateMutation => {
-                    let name_val = self.pop()?;
-                    let name = match name_val {
-                        Value::String(s) => s,
-                        other => {
-                            return Err(VMError::TypeMismatch(format!(
-                                "mutation() expects a string event name, got {:?}",
-                                other
-                            )))
-                        }
-                    };
-                    let state = std::rc::Rc::new(std::cell::RefCell::new(
-                        crate::runtime::value::MutationState::new(name),
-                    ));
-                    self.push(Value::Mutation(state))?;
                 }
                 OpCode::PushContext => {
                     // Stack: ..., name, value
@@ -1038,155 +958,6 @@ impl VM {
                             "SpreadForExpr: no collector array found".to_string(),
                         ));
                     }
-                }
-
-                // -- Lifecycle hooks (Phase 2) -------------------------------
-                // RegisterMountHook (M1): pop closure; queue for
-                // post-layout fire IF the path is newly mounted
-                // this frame (i.e. not in previous_active_paths).
-                // Otherwise drop the closure — mount fires once
-                // per path-lifetime.
-                OpCode::RegisterMountHook(hook_id) => {
-                    let closure_value = self.pop()?;
-                    let closure = match closure_value {
-                        Value::BytecodeClosure(c) => c,
-                        other => {
-                            return Err(VMError::InvalidOperation(format!(
-                                "RegisterMountHook expected closure on stack, got {:?}",
-                                other
-                            )));
-                        }
-                    };
-                    let path = runtime.state.get_call_stack_path();
-                    if !path.is_empty() && !runtime.state.previous_active_paths.contains(&path) {
-                        runtime.state.pending_mounts.push((path, hook_id, closure));
-                    }
-                    // Else: path was already active last frame, OR
-                    // we're at module top-level (empty path). Drop.
-                }
-                // RegisterUnmountHook (M1): pop closure; insert
-                // into the persistent map at (path, hook_id),
-                // overwriting any prior entry. Re-registration
-                // every render keeps the closure's upvalues fresh.
-                OpCode::RegisterUnmountHook(hook_id) => {
-                    let closure_value = self.pop()?;
-                    let closure = match closure_value {
-                        Value::BytecodeClosure(c) => c,
-                        other => {
-                            return Err(VMError::InvalidOperation(format!(
-                                "RegisterUnmountHook expected closure on stack, got {:?}",
-                                other
-                            )));
-                        }
-                    };
-                    let path = runtime.state.get_call_stack_path();
-                    if !path.is_empty() {
-                        runtime.state.unmount_hooks.insert((path, hook_id), closure);
-                    }
-                    // Top-level (path == "") unmount hooks would
-                    // fire only on runtime shutdown; out of scope.
-                }
-                // RegisterEffect (M2): pop dep_count values + a
-                // closure. Compare deps to the slot's
-                // previous_deps; on first run or change, schedule
-                // cleanup-then-fire.
-                OpCode::RegisterEffect { hook_id, dep_count } => {
-                    // Stack layout (top-down): closure, dep_n,
-                    // ..., dep_1. Pop closure first, then deps in
-                    // reverse so they end up in source order.
-                    let closure_value = self.pop()?;
-                    let closure = match closure_value {
-                        Value::BytecodeClosure(c) => c,
-                        other => {
-                            return Err(VMError::InvalidOperation(format!(
-                                "RegisterEffect expected closure on stack, got {:?}",
-                                other
-                            )));
-                        }
-                    };
-                    let mut current_deps = Vec::with_capacity(dep_count as usize);
-                    for _ in 0..dep_count {
-                        current_deps.push(self.pop()?);
-                    }
-                    current_deps.reverse();
-
-                    let path = runtime.state.get_call_stack_path();
-                    if path.is_empty() {
-                        // Top-level effect: out of scope (no path
-                        // identity). Drop without scheduling.
-                        continue;
-                    }
-                    let key = (path.clone(), hook_id);
-                    let should_fire = match runtime.state.effects.get(&key) {
-                        None => true, // first run
-                        Some(slot) => match &slot.previous_deps {
-                            None => true, // never fired (shouldn't happen — slot has previous_deps after first fire)
-                            Some(prev) => prev != &current_deps,
-                        },
-                    };
-
-                    if should_fire {
-                        // Schedule cleanup-then-fire. Move any
-                        // existing pending_cleanup onto the queue.
-                        if let Some(slot) = runtime.state.effects.get_mut(&key) {
-                            if let Some(cleanup) = slot.pending_cleanup.take() {
-                                runtime.state.pending_effect_cleanups.push((
-                                    key.0.clone(),
-                                    key.1,
-                                    cleanup,
-                                ));
-                            }
-                        }
-                        runtime
-                            .state
-                            .pending_effect_fires
-                            .push((key.0.clone(), key.1));
-                    }
-
-                    // Insert / update the slot regardless. The
-                    // closure is always refreshed so it reflects
-                    // the most recent render's upvalues.
-                    runtime.state.effects.insert(
-                        key,
-                        crate::runtime::EffectSlot {
-                            previous_deps: Some(current_deps),
-                            pending_cleanup: runtime
-                                .state
-                                .effects
-                                .get(&(path.clone(), hook_id))
-                                .and_then(|s| s.pending_cleanup.clone()),
-                            closure,
-                        },
-                    );
-                }
-                // RegisterEffectCleanup (M2): pop closure;
-                // attach as pending_cleanup for the
-                // currently-firing effect. Recorded via
-                // runtime.current_firing_effect.
-                OpCode::RegisterEffectCleanup => {
-                    let closure_value = self.pop()?;
-                    let closure = match closure_value {
-                        Value::BytecodeClosure(c) => c,
-                        other => {
-                            return Err(VMError::InvalidOperation(format!(
-                                "RegisterEffectCleanup expected closure, got {:?}",
-                                other
-                            )));
-                        }
-                    };
-                    if let Some(key) = runtime.current_firing_effect.clone() {
-                        if let Some(slot) = runtime.state.effects.get_mut(&key) {
-                            slot.pending_cleanup = Some(closure);
-                        }
-                        // If the slot was removed mid-fire (path
-                        // unmounted), drop the cleanup quietly.
-                    }
-                    // If no current_firing_effect is set, we're
-                    // running outside an effect body. The compiler
-                    // already rejects this case with a strict-mode
-                    // error, so reaching here is a bug — but
-                    // tolerate it (drop the closure) rather than
-                    // panic.
                 }
             }
         }

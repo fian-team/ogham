@@ -7,7 +7,6 @@ use crate::widget::{
     image_widget::ImageWidget,
     presence_widget::PresenceWidget,
     style::*,
-    svg_widget::SvgWidget,
     text_input_widget::TextInputWidget,
     text_widget::TextWidget,
     WidgetRef,
@@ -47,7 +46,6 @@ impl WidgetRegistry {
         reg.register("textinput", |_reg, rt, desc| {
             create_text_input_widget(rt, desc)
         });
-        reg.register("svg", |_reg, rt, desc| create_svg_widget(rt, desc));
         reg.register("image", |_reg, rt, desc| create_image_widget(rt, desc));
         reg.register("grid", |reg, rt, desc| create_grid_widget(reg, rt, desc));
         reg.register("presence", |reg, rt, desc| {
@@ -1232,66 +1230,6 @@ fn create_text_input_widget(
     }
 
     Ok(Arc::new(Mutex::new(text_input)))
-}
-
-fn create_svg_widget(
-    _runtime: &Arc<Mutex<Runtime>>,
-    descriptor: &WidgetDescriptor,
-) -> Result<WidgetRef, BridgeError> {
-    let style_props = optional_style_map(descriptor);
-
-    // Get required properties
-    let path_value = descriptor
-        .properties
-        .get("path")
-        .ok_or_else(|| BridgeError::MissingProperty("path".to_string()))?;
-    let path = match path_value {
-        Value::String(s) => s.clone(),
-        _ => {
-            return Err(BridgeError::InvalidPropertyType(
-                "path".to_string(),
-                "Expected String".to_string(),
-            ))
-        }
-    };
-
-    let width_value = descriptor
-        .properties
-        .get("width")
-        .ok_or_else(|| BridgeError::MissingProperty("width".to_string()))?;
-    let width = match width_value {
-        Value::Float(f) => *f as f32,
-        Value::Integer(i) => *i as f32,
-        _ => {
-            return Err(BridgeError::InvalidPropertyType(
-                "width".to_string(),
-                "Expected Float or Integer".to_string(),
-            ))
-        }
-    };
-
-    let height_value = descriptor
-        .properties
-        .get("height")
-        .ok_or_else(|| BridgeError::MissingProperty("height".to_string()))?;
-    let height = match height_value {
-        Value::Float(f) => *f as f32,
-        Value::Integer(i) => *i as f32,
-        _ => {
-            return Err(BridgeError::InvalidPropertyType(
-                "height".to_string(),
-                "Expected Float or Integer".to_string(),
-            ))
-        }
-    };
-
-    // Optional color
-    let color = style_props
-        .and_then(|m| m.get("color"))
-        .and_then(parse_color_value);
-
-    let svg_widget = SvgWidget::new(path, width, height, color);
-    Ok(Arc::new(Mutex::new(svg_widget)))
 }
 
 fn create_image_widget(

@@ -43,8 +43,6 @@ pub mod event;
 pub mod point;
 pub mod rect;
 pub mod style;
-/// SVG rendering widget.
-pub mod svg_widget;
 /// Text input field widget.
 pub mod text_input_widget;
 /// Text rendering widget.
@@ -1249,7 +1247,6 @@ pub trait RenderContext {
     );
     fn draw_text(&mut self, text: &str, style: &TextStyle, x: f32, y: f32, width: f32);
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: &Color);
-    fn draw_svg_dom(&mut self, dom: &skia_safe::svg::Dom, x: f32, y: f32, w: f32, h: f32);
 
     /// Push a clip rectangle. All subsequent drawing is clipped to this rect
     /// until `pop_clip_rect()` is called. Uses save/restore semantics.

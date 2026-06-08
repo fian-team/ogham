@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/ogham-derive"]
+members = ["."]
 resolver = "2"
 
 [package]
@@ -21,17 +21,13 @@ path = "src/client/main.rs"
 name = "ogham-lsp"
 path = "src/lsp/main.rs"
 
-[[bin]]
-name = "ogham"
-path = "src/cli/main.rs"
-
 [lib]
 name = "ogham"
 path = "src/lib.rs"
 
 [dependencies]
 downcast-rs = "2.0.1"
-skia-safe = { version = "0.91.0", features = ["gl", "textlayout", "svg"] }
+skia-safe = { version = "0.91.0", features = ["gl", "textlayout"] }
 lodepng = "3.12.1"
 winit = "0.30.2"
 glutin = { version = "0.32.0", features = ["egl", "glx", "wgl"] }
@@ -43,9 +39,5 @@ rfd = "0.14"
 notify = "6.1"
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-cargo_metadata = "0.18"
-ogham-derive = { path = "crates/ogham-derive" }
 
 [dev-dependencies]

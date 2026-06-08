@@ -18,7 +18,6 @@ use crate::runtime::value::Value;
 /// can read the same list.
 pub(crate) const BUILTINS: &[&str] = &[
     "event",
-    "mutation",
     "use_context",
     "rgb",
     "rgba",
@@ -75,26 +74,6 @@ pub struct Compiler {
     /// ownership headaches. `None` means loose mode — the compiler
     /// emits the same bytecode it always has.
     schema: Option<Arc<ModuleSchema>>,
-    /// Phase 2: per-kind hook counter, used to assign hook_id
-    /// (1-indexed, source-order) within this function. Each
-    /// `on_mount` block in source order gets the next mount id;
-    /// likewise for `on_unmount`. Reset on entering a child
-    /// compiler (nested fn restarts at 1).
-    next_mount_hook_id: u16,
-    next_unmount_hook_id: u16,
-    next_effect_hook_id: u16,
-    /// Phase 2: set true while compiling the body of an
-    /// `effect (deps) { body }` block. Cleanup statements are
-    /// only legal in this context — outside an effect body,
-    /// `Statement::Cleanup` triggers a compile-time error.
-    in_effect_body: bool,
-    /// Phase 2: names of let-bindings whose RHS is a function
-    /// literal. Used by `compile_effect` to reject fn refs as
-    /// effect deps (per design diagnostic #2: deps must be
-    /// primitive or record values). Function values can't be
-    /// compared structurally, so they have no defined identity
-    /// for dep-equality purposes.
-    fn_typed_locals: std::collections::HashSet<String>,
 }
 
 impl Compiler {
@@ -110,11 +89,6 @@ impl Compiler {
             current_line: 0,
             stack_depth: 0,
             schema: None,
-            next_mount_hook_id: 1,
-            next_unmount_hook_id: 1,
-            next_effect_hook_id: 1,
-            in_effect_body: false,
-            fn_typed_locals: std::collections::HashSet::new(),
         }
     }
 
@@ -124,11 +98,6 @@ impl Compiler {
     /// resolution applies inside nested closures too.
     fn child(self, name: String, arity: u8) -> Self {
         let schema = self.schema.clone();
-        // Phase 2: child inherits parent's fn_typed_locals so
-        // effect dep-type checking sees the enclosing fn-typed
-        // bindings. The child can add its own; conservative
-        // for v1 (no shadow handling).
-        let inherited_fn_typed = self.fn_typed_locals.clone();
         Self {
             function: FunctionProto::new(name, arity),
             locals: Vec::new(),
@@ -138,12 +107,6 @@ impl Compiler {
             current_line: 0,
             stack_depth: 0,
             schema,
-            // Per-function hook id: each function starts at 1.
-            next_mount_hook_id: 1,
-            next_unmount_hook_id: 1,
-            next_effect_hook_id: 1,
-            in_effect_body: false,
-            fn_typed_locals: inherited_fn_typed,
         }
     }
 
@@ -433,22 +396,12 @@ impl Compiler {
             // Pop n args (including name), push Void
             OpCode::EmitEvent(n) => -(*n as i32 - 1),
 
-            // Pop event-name, push Mutation (net 0)
-            OpCode::CreateMutation => 0,
-
             // Pop (name, value), no push
             OpCode::PushContext => -2,
             // No stack effect — pops from the runtime side-channel
             OpCode::PopContext => 0,
             // Push the looked-up context value
             OpCode::GetContext(_) => 1,
-
-            // Lifecycle (Phase 2): each pops a closure (and effect
-            // additionally pops dep_count values).
-            OpCode::RegisterMountHook(_)
-            | OpCode::RegisterUnmountHook(_)
-            | OpCode::RegisterEffectCleanup => -1,
-            OpCode::RegisterEffect { dep_count, .. } => -(*dep_count as i32 + 1),
         }
     }
 
@@ -765,18 +718,6 @@ impl Compiler {
             }
             Statement::Declare(decl) => {
                 let name = decl.get_identifier_value();
-                // Phase 2: record fn-typed lets so compile_effect
-                // can reject them as deps. We detect direct fn
-                // literals; chained fns (`let f = g;` where `g`
-                // is a fn) escape detection at compile time but
-                // are caught at runtime by best-effort checks
-                // (M2 ships the literal-only check).
-                if matches!(
-                    decl.get_value(),
-                    crate::parser::Expression::Literal(crate::parser::Literal::Function(_))
-                ) {
-                    self.fn_typed_locals.insert(name.clone());
-                }
                 self.compile_expression(&decl.get_value())?;
                 self.add_local(name, false);
             }
@@ -852,32 +793,6 @@ impl Compiler {
             | Statement::HostStateDeclaration(_)
             | Statement::EventsDeclaration(_) => {
                 // Intentionally empty.
-            }
-            Statement::OnMount(hook) => {
-                self.compile_lifecycle_hook(hook, /* is_mount */ true)?;
-            }
-            Statement::OnUnmount(hook) => {
-                self.compile_lifecycle_hook(hook, /* is_mount */ false)?;
-            }
-            Statement::Effect(effect) => {
-                self.compile_effect(effect)?;
-            }
-            Statement::Cleanup(hook) => {
-                if self.in_effect_body {
-                    self.compile_cleanup_inside_effect(hook)?;
-                } else {
-                    return Err(VMError::StrictMode(
-                        crate::parser::SyntaxError::new(
-                            statement.span().start_line,
-                            statement.span().start_column,
-                            "cleanup can only appear inside an effect block",
-                        )
-                        .with_help(
-                            "move this cleanup into the body of an \
-                             `effect (...) { ... }` block",
-                        ),
-                    ));
-                }
             }
         }
         Ok(())
@@ -1253,8 +1168,10 @@ impl Compiler {
             self.emit(OpCode::GetUpvalue(uv));
             self.emit_constant(Value::Integer(1));
             self.emit(OpCode::Add);
-            let name_const = self.chunk().add_constant(Value::String(name.clone()));
-            self.emit(OpCode::SetState(name_const));
+            if self.is_local_state(&name) {
+                let name_const = self.chunk().add_constant(Value::String(name.clone()));
+                self.emit(OpCode::SetState(name_const));
+            }
             self.emit(OpCode::SetUpvalue(uv));
             if prefix {
                 self.emit(OpCode::GetUpvalue(uv));
@@ -1377,205 +1294,6 @@ impl Compiler {
     // Function / closure compilation
     // -----------------------------------------------------------------------
 
-    /// Compile an `on_mount` or `on_unmount` block. The body is
-    /// emitted as a parameterless sub-FunctionProto (mirrors the
-    /// `compile_function` shape but skips the parameter loop and
-    /// uses a synthetic name). The parent function emits
-    /// `Closure(idx)` then `RegisterMountHook(id)` /
-    /// `RegisterUnmountHook(id)`. Per-function `next_*_hook_id`
-    /// counter assigns 1-indexed source-order ids.
-    fn compile_lifecycle_hook(
-        &mut self,
-        hook: &crate::parser::LifecycleHookStatement,
-        is_mount: bool,
-    ) -> Result<(), VMError> {
-        // Allocate the hook id from the right counter.
-        let hook_id = if is_mount {
-            let id = self.next_mount_hook_id;
-            self.next_mount_hook_id += 1;
-            id
-        } else {
-            let id = self.next_unmount_hook_id;
-            self.next_unmount_hook_id += 1;
-            id
-        };
-
-        // Compile the body as a parameterless child function.
-        let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
-        let synthetic_name = if is_mount {
-            "<on_mount>"
-        } else {
-            "<on_unmount>"
-        };
-        let mut child = parent.child(synthetic_name.to_string(), 0);
-        // Reserve slot 0 for the callee, same as compile_function.
-        child.add_param_local(String::new());
-        // Compile the body block.
-        child.compile_block(&hook.body)?;
-        let (mut restored_parent, proto) = child.finish_child();
-
-        // Stash proto in the parent's protos table.
-        restored_parent.function.protos.push(proto);
-        let closure_idx = (restored_parent.function.protos.len() - 1) as u16;
-
-        // Emit Closure to put the closure on the stack, then the
-        // appropriate Register opcode to consume it.
-        restored_parent.emit(OpCode::Closure(closure_idx));
-        restored_parent.emit(if is_mount {
-            OpCode::RegisterMountHook(hook_id)
-        } else {
-            OpCode::RegisterUnmountHook(hook_id)
-        });
-
-        // Restore self.
-        *self = *restored_parent;
-        Ok(())
-    }
-
-    /// Compile an `effect (dep_a, dep_b) { body }` statement.
-    /// Emits each dep expression in source order (leaves
-    /// dep_count values on the stack), then compiles the body
-    /// as a sub-FunctionProto (with `in_effect_body = true` so
-    /// nested cleanup statements emit RegisterEffectCleanup),
-    /// then emits Closure(idx) + RegisterEffect.
-    fn compile_effect(&mut self, effect: &crate::parser::EffectStatement) -> Result<(), VMError> {
-        // Allocate hook id BEFORE the dep + body compile. This
-        // guarantees stable ordering even if a dep expression
-        // somehow contains a nested fn that has its own effects
-        // (those go to the child compiler's counter).
-        let hook_id = self.next_effect_hook_id;
-        self.next_effect_hook_id += 1;
-        let dep_count: u8 = effect.deps.len().try_into().map_err(|_| {
-            VMError::InvalidOperation("effect cannot have more than 255 deps".to_string())
-        })?;
-
-        // Phase 2 design diagnostic #2: deps must be primitive
-        // or record values. Function refs have no defined
-        // structural equality and would either always-compare-
-        // equal-by-pointer or always-compare-different — neither
-        // is useful, so we reject at compile time. We catch
-        // direct fn literals and identifier references to known
-        // fn-typed lets; chained (`let f = g`) cases escape
-        // detection.
-        for dep in &effect.deps {
-            self.check_dep_type(dep, hook_id)?;
-        }
-
-        // Compile deps in source order. Each leaves one value
-        // on the stack; the VM pops `dep_count` of them in
-        // RegisterEffect.
-        for dep in &effect.deps {
-            self.compile_expression(dep)?;
-        }
-
-        // Compile body as a parameterless sub-FunctionProto with
-        // in_effect_body = true so nested cleanup statements emit
-        // RegisterEffectCleanup.
-        let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
-        let mut child = parent.child("<effect>".to_string(), 0);
-        child.in_effect_body = true;
-        child.add_param_local(String::new());
-        child.compile_block(&effect.body)?;
-        let (mut restored_parent, proto) = child.finish_child();
-
-        // Push proto, emit Closure + RegisterEffect.
-        restored_parent.function.protos.push(proto);
-        let closure_idx = (restored_parent.function.protos.len() - 1) as u16;
-        restored_parent.emit(OpCode::Closure(closure_idx));
-        restored_parent.emit(OpCode::RegisterEffect { hook_id, dep_count });
-
-        *self = *restored_parent;
-        Ok(())
-    }
-
-    /// Phase 2: reject effect deps that are obviously
-    /// function-typed. Catches direct fn literals and
-    /// identifier references to lets bound to fn literals.
-    /// Identifier chains and call-result deps escape detection
-    /// — runtime equality on those values would be undefined
-    /// but not a panic, so we accept them silently for v1.
-    fn check_dep_type(&self, dep: &crate::parser::Expression, hook_id: u16) -> Result<(), VMError> {
-        use crate::parser::{Expression, Literal};
-        let bad_name: Option<&str> = match dep {
-            Expression::Literal(Literal::Function(_)) => Some("fn"),
-            Expression::Literal(Literal::Identifier(ident)) => {
-                let name = ident.get();
-                if self.fn_typed_locals.contains(&name) {
-                    // Identifier resolves to a fn-typed local —
-                    // we recorded the binding earlier. Borrow
-                    // checker requires we leak the name string;
-                    // accept the small alloc.
-                    return Err(VMError::StrictMode(
-                        crate::parser::SyntaxError::new(
-                            ident.span.start_line,
-                            ident.span.start_column,
-                            format!(
-                                "effect deps must be primitive or \
-                                 record values; '{}' is a function",
-                                name
-                            ),
-                        )
-                        .with_help(
-                            "Functions have no structural equality, \
-                             so they can't drive a dep comparison. \
-                             Use a primitive value (a counter, a \
-                             flag, a record field) instead.",
-                        ),
-                    ));
-                }
-                None
-            }
-            _ => None,
-        };
-        if let Some(kind) = bad_name {
-            let span = match dep {
-                Expression::Literal(Literal::Function(f)) => f.span,
-                _ => return Ok(()), // unreachable given the match
-            };
-            return Err(VMError::StrictMode(
-                crate::parser::SyntaxError::new(
-                    span.start_line,
-                    span.start_column,
-                    format!(
-                        "effect dep #{} must be a primitive or \
-                         record value; got a {} literal",
-                        hook_id, kind
-                    ),
-                )
-                .with_help(
-                    "Functions have no structural equality, so they \
-                     can't drive a dep comparison. Move the fn out \
-                     of the dep position; use a primitive value \
-                     instead.",
-                ),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Compile a `cleanup { body }` statement appearing inside
-    /// an effect body. Emits the body as a parameterless
-    /// sub-FunctionProto, then Closure(idx) + RegisterEffectCleanup.
-    /// Caller must have verified `self.in_effect_body == true`.
-    fn compile_cleanup_inside_effect(
-        &mut self,
-        hook: &crate::parser::LifecycleHookStatement,
-    ) -> Result<(), VMError> {
-        let parent = std::mem::replace(self, Compiler::new("<dummy>".to_string(), 0));
-        let mut child = parent.child("<cleanup>".to_string(), 0);
-        // Cleanup body itself is NOT inside an effect body for
-        // its own purposes (no nested cleanup-in-cleanup).
-        child.add_param_local(String::new());
-        child.compile_block(&hook.body)?;
-        let (mut restored_parent, proto) = child.finish_child();
-        restored_parent.function.protos.push(proto);
-        let closure_idx = (restored_parent.function.protos.len() - 1) as u16;
-        restored_parent.emit(OpCode::Closure(closure_idx));
-        restored_parent.emit(OpCode::RegisterEffectCleanup);
-        *self = *restored_parent;
-        Ok(())
-    }
-
     fn compile_function(&mut self, func: &Function, name: &str) -> Result<(), VMError> {
         let arity = func.arguments.len() as u8;
 
@@ -1667,20 +1385,6 @@ impl Compiler {
                     self.compile_expression(arg)?;
                 }
                 self.emit(OpCode::EmitEvent(call.arguments.len() as u8));
-                return Ok(());
-            }
-        }
-
-        // Special-case: mutation("event_name")
-        if let Expression::Literal(Literal::Identifier(ident)) = &*call.callee {
-            if ident.get() == "mutation" {
-                if call.arguments.len() != 1 {
-                    return Err(VMError::InvalidOperation(
-                        "mutation() takes exactly one string argument".to_string(),
-                    ));
-                }
-                self.compile_expression(&call.arguments[0])?;
-                self.emit(OpCode::CreateMutation);
                 return Ok(());
             }
         }
@@ -1802,4 +1506,67 @@ pub fn deserialize_import_meta(s: &str) -> Option<ImportMeta> {
         Some(parts[2].split(',').map(|s| s.to_string()).collect())
     };
     Some(ImportMeta { names, path })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+    use crate::scanner::Scanner;
+
+    fn compile(source: &str) -> FunctionProto {
+        let tokens = Scanner::new(source.to_string()).scan();
+        let module = Parser::new(tokens).parse().expect("parse");
+        Compiler::compile_module(&module).expect("compile")
+    }
+
+    /// Recursively test whether any proto in the tree emits the
+    /// given predicate over its opcodes.
+    fn any_op(proto: &FunctionProto, pred: &impl Fn(&OpCode) -> bool) -> bool {
+        proto.chunk.code.iter().any(pred) || proto.protos.iter().any(|p| any_op(p, pred))
+    }
+
+    /// Regression: `++`/`--` on a *captured non-state* upvalue must
+    /// NOT emit a spurious `SetState` (which would write a bogus
+    /// component-state entry). The local branch already guards
+    /// `SetState` behind `is_local_state`; the upvalue branch must
+    /// do the same.
+    #[test]
+    fn increment_on_captured_non_state_upvalue_emits_no_setstate() {
+        // `n` is a plain `let` captured by the inner closure, which
+        // increments it. It is not `state`, so no SetState should
+        // be emitted anywhere.
+        let proto = compile(
+            r#"
+let main = fn () {
+    let n = 0;
+    let bump = fn () { ++n };
+    bump()
+};
+"#,
+        );
+        assert!(
+            !any_op(&proto, &|op| matches!(op, OpCode::SetState(_))),
+            "increment on a captured non-state upvalue must not emit SetState"
+        );
+    }
+
+    /// Companion: `++` on an actual `state` local still emits
+    /// `SetState` (the guard must not over-suppress).
+    #[test]
+    fn increment_on_state_local_emits_setstate() {
+        let proto = compile(
+            r#"
+let main = fn () {
+    state count = 0;
+    ++count;
+    count
+};
+"#,
+        );
+        assert!(
+            any_op(&proto, &|op| matches!(op, OpCode::SetState(_))),
+            "increment on a state local must still emit SetState"
+        );
+    }
 }

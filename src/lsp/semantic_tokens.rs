@@ -73,11 +73,7 @@ fn collect_from_token_stream(tokens: &[Token], out: &mut Vec<RawToken>) {
             | TokenType::In
             | TokenType::Match
             | TokenType::Import
-            | TokenType::From
-            | TokenType::OnMount
-            | TokenType::OnUnmount
-            | TokenType::Effect
-            | TokenType::Cleanup => (TT_KEYWORD, token.length as u32),
+            | TokenType::From => (TT_KEYWORD, token.length as u32),
             TokenType::Plus
             | TokenType::Minus
             | TokenType::Multiply
@@ -203,22 +199,6 @@ fn collect_from_statement(stmt: &Statement, out: &mut Vec<RawToken>, ctx: &mut A
         Statement::RecordDeclaration(_)
         | Statement::HostStateDeclaration(_)
         | Statement::EventsDeclaration(_) => {}
-        // Phase 2 lifecycle hooks: keyword highlighting comes
-        // from the OnMount/OnUnmount TokenType match in the
-        // top-level keyword arm. Body content recurses for normal
-        // identifier/literal token coverage.
-        Statement::OnMount(hook) | Statement::OnUnmount(hook) => {
-            collect_from_block(&hook.body, out, ctx);
-        }
-        Statement::Effect(effect) => {
-            for dep in &effect.deps {
-                collect_from_expression(dep, out, ctx);
-            }
-            collect_from_block(&effect.body, out, ctx);
-        }
-        Statement::Cleanup(hook) => {
-            collect_from_block(&hook.body, out, ctx);
-        }
     }
 }
 

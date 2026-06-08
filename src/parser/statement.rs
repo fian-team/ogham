@@ -18,24 +18,6 @@ pub enum Statement {
     HostStateDeclaration(HostStateDecl),
     /// `events { ... };` — top-level only, at most one per module.
     EventsDeclaration(EventsDecl),
-    /// `on_mount { ... };` — Phase 2 lifecycle hook. Body runs
-    /// once when the surrounding fn's call-stack path first
-    /// becomes active. Legal only inside an fn body.
-    OnMount(LifecycleHookStatement),
-    /// `on_unmount { ... };` — Phase 2 lifecycle hook. Body
-    /// runs at drain-time when the surrounding fn's call-stack
-    /// path stops being visited. Legal only inside an fn body.
-    OnUnmount(LifecycleHookStatement),
-    /// `effect (dep_a, dep_b) { body }` — Phase 2 lifecycle.
-    /// Body re-runs whenever any dep changes between renders.
-    /// Empty deps `effect ()` legal (fires once on mount,
-    /// cleanup on unmount). Cleanup blocks inside the body
-    /// run before re-fire and at path unmount.
-    Effect(EffectStatement),
-    /// `cleanup { body }` — Phase 2. Legal ONLY inside an
-    /// effect body. The compiler emits a compile-time error
-    /// for cleanup statements outside an effect.
-    Cleanup(LifecycleHookStatement),
 }
 
 impl Statement {
@@ -121,40 +103,8 @@ impl Statement {
             Statement::RecordDeclaration(s) => s.span,
             Statement::HostStateDeclaration(s) => s.span,
             Statement::EventsDeclaration(s) => s.span,
-            Statement::OnMount(s) => s.span,
-            Statement::OnUnmount(s) => s.span,
-            Statement::Effect(s) => s.span,
-            Statement::Cleanup(s) => s.span,
         }
     }
-}
-
-/// Phase 2 lifecycle hook block: `on_mount { ... }` or
-/// `on_unmount { ... }`. The body is executed by the runtime at
-/// well-defined points in the surrounding fn's path-lifetime.
-/// See `LIFECYCLE_AND_PORTAL.md` §"Hook firing timing".
-#[derive(PartialEq, Clone, Debug)]
-pub struct LifecycleHookStatement {
-    pub body: Block,
-    pub span: Span,
-}
-
-/// Phase 2 effect: `effect (dep_a, dep_b) { body }`. Each dep
-/// is an expression evaluated each render and compared via
-/// structural equality to the previous render's value. The
-/// body re-runs when any dep changes; the body may register
-/// a `cleanup { ... }` that fires before the next re-run and
-/// at path unmount.
-///
-/// `cleanup` blocks live inside the body's statement list as
-/// `Statement::Expression` containing a synthetic
-/// CleanupBlock-marker — for M2 we lift them to a dedicated
-/// AST shape via the parser walker.
-#[derive(PartialEq, Clone, Debug)]
-pub struct EffectStatement {
-    pub deps: Vec<Expression>,
-    pub body: Block,
-    pub span: Span,
 }
 
 #[derive(PartialEq, Clone, Debug)]

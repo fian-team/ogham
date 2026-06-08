@@ -251,116 +251,11 @@ impl Parser {
             scanner::TokenType::Return => self.parse_return(),
             scanner::TokenType::Let => self.parse_let(),
             scanner::TokenType::State => self.parse_state(),
-            scanner::TokenType::OnMount => self.parse_lifecycle_hook(true),
-            scanner::TokenType::OnUnmount => self.parse_lifecycle_hook(false),
-            scanner::TokenType::Effect => self.parse_effect(),
-            scanner::TokenType::Cleanup => self.parse_cleanup(),
             scanner::TokenType::Identifier(_) => self.parse_identifier_statement(),
             scanner::TokenType::Log => self.parse_log(),
             scanner::TokenType::For => self.parse_for_loop_statement(),
             _ => self.parse_expression_statement(),
         }
-    }
-
-    /// Parse `on_mount { ... };` or `on_unmount { ... };`. The
-    /// caller has already peeked at the keyword token and routed
-    /// here; `is_mount` selects which kind to construct. The body
-    /// is a brace-delimited block of statements parsed via
-    /// `parse_block(false)` (imports are not legal inside a hook
-    /// body).
-    fn parse_lifecycle_hook(&mut self, is_mount: bool) -> Result<Statement, SyntaxError> {
-        let start = self.span_start();
-        // Consume the keyword token (OnMount or OnUnmount).
-        self.current += 1;
-        // Expect a `{` for the body block.
-        let lbrace = self.current();
-        let is_lbrace = matches!(
-            lbrace.as_ref().map(|t| &t.token_type),
-            Some(scanner::TokenType::LeftBracket)
-        );
-        if !is_lbrace {
-            let (line, column) = lbrace
-                .as_ref()
-                .map(|t| (t.line, t.column))
-                .unwrap_or((0, 0));
-            return Err(SyntaxError::new(
-                line,
-                column,
-                format!(
-                    "Expected `{{` to begin {} body",
-                    if is_mount { "on_mount" } else { "on_unmount" }
-                ),
-            )
-            .with_help(format!(
-                "Lifecycle hooks take a brace-delimited block: \
-                 `{} {{ /* body */ }};`",
-                if is_mount { "on_mount" } else { "on_unmount" }
-            )));
-        }
-        // parse_block expects to be called *after* the opening
-        // `{` has been consumed (it walks until it sees `}`).
-        self.consume_if(scanner::TokenType::LeftBracket)?;
-        let body = self.parse_block(false)?;
-        self.consume_if(scanner::TokenType::RightBracket)?;
-        // Optional trailing semicolon — convention matches `state`
-        // and `let`. Not strictly required by the grammar.
-        if self.next_is(vec![scanner::TokenType::Semicolon]) {
-            self.consume_if(scanner::TokenType::Semicolon)?;
-        }
-        let span = self.span_from(start);
-        let stmt = LifecycleHookStatement { body, span };
-        Ok(if is_mount {
-            Statement::OnMount(stmt)
-        } else {
-            Statement::OnUnmount(stmt)
-        })
-    }
-
-    /// Parse `effect (dep_a, dep_b, ...) { body }`. Empty deps
-    /// `effect () { ... }` is legal — equivalent to "fires once
-    /// on mount, cleanup on unmount." Deps are arbitrary
-    /// expressions (the compiler later validates that they
-    /// resolve to a value type with structural equality).
-    fn parse_effect(&mut self) -> Result<Statement, SyntaxError> {
-        let start = self.span_start();
-        self.consume_if(scanner::TokenType::Effect)?;
-        // Dep list: parens-delimited, comma-separated, possibly
-        // empty.
-        self.consume_if(scanner::TokenType::LeftParenthesis)?;
-        let mut deps = Vec::new();
-        while !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
-            deps.push(self.expression()?);
-            if self.next_is(vec![scanner::TokenType::Comma]) {
-                self.consume_if(scanner::TokenType::Comma)?;
-            }
-        }
-        self.consume_if(scanner::TokenType::RightParenthesis)?;
-        // Body block.
-        self.consume_if(scanner::TokenType::LeftBracket)?;
-        let body = self.parse_block(false)?;
-        self.consume_if(scanner::TokenType::RightBracket)?;
-        if self.next_is(vec![scanner::TokenType::Semicolon]) {
-            self.consume_if(scanner::TokenType::Semicolon)?;
-        }
-        let span = self.span_from(start);
-        Ok(Statement::Effect(EffectStatement { deps, body, span }))
-    }
-
-    /// Parse `cleanup { body }`. The parser accepts cleanup
-    /// anywhere a statement can appear; the *compiler* rejects
-    /// it outside an effect body (we can't easily check effect-
-    /// nesting at parse time without threading context).
-    fn parse_cleanup(&mut self) -> Result<Statement, SyntaxError> {
-        let start = self.span_start();
-        self.consume_if(scanner::TokenType::Cleanup)?;
-        self.consume_if(scanner::TokenType::LeftBracket)?;
-        let body = self.parse_block(false)?;
-        self.consume_if(scanner::TokenType::RightBracket)?;
-        if self.next_is(vec![scanner::TokenType::Semicolon]) {
-            self.consume_if(scanner::TokenType::Semicolon)?;
-        }
-        let span = self.span_from(start);
-        Ok(Statement::Cleanup(LifecycleHookStatement { body, span }))
     }
 
     fn parse_import(&mut self) -> Result<Statement, SyntaxError> {

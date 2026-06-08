@@ -1,6 +1,5 @@
 //! Runtime value representation for all Ogham types.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
@@ -20,59 +19,12 @@ pub enum Value {
     Array(Vec<Value>),
     Widget(WidgetDescriptor),
     Void,
-    /// A tracked event handle produced by `mutation("name")`. Paired with
-    /// `state` so pending/success/error status persists across renders.
-    Mutation(Rc<RefCell<MutationState>>),
-    /// Transient: produced by `<mutation>.trigger`, consumed by `Call`. Not
-    /// something user code should ever store.
-    BoundTrigger(Rc<RefCell<MutationState>>),
     /// Phase 2.5 M2: an opaque widget identity, produced by
     /// the `focused_widget()` built-in and consumed by
     /// `focus(ref)`. The inner u64 is a per-UI counter
     /// allocated by `WidgetTree`. Identifies a widget
     /// instance within a single UI tree.
     WidgetRef(u64),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MutationStatus {
-    Idle,
-    Pending,
-    Success,
-    Error,
-}
-
-impl MutationStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            MutationStatus::Idle => "idle",
-            MutationStatus::Pending => "pending",
-            MutationStatus::Success => "success",
-            MutationStatus::Error => "error",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct MutationState {
-    pub event_name: String,
-    pub status: MutationStatus,
-    /// Result value from the last `Ok(...)` of the event handler. `Void` if
-    /// never completed successfully.
-    pub data: Value,
-    /// Error message from the last `Err(...)`. Empty string otherwise.
-    pub error: String,
-}
-
-impl MutationState {
-    pub fn new(event_name: String) -> Self {
-        Self {
-            event_name,
-            status: MutationStatus::Idle,
-            data: Value::Void,
-            error: String::new(),
-        }
-    }
 }
 
 impl PartialEq for Value {
@@ -87,11 +39,6 @@ impl PartialEq for Value {
             (Value::Array(a), Value::Array(b)) => a == b,
             (Value::Widget(a), Value::Widget(b)) => a == b,
             (Value::Void, Value::Void) => true,
-            // Mutations are identity-compared via Rc pointer — two separate
-            // mutation() calls produce distinct instances even with the same
-            // event name.
-            (Value::Mutation(a), Value::Mutation(b)) => Rc::ptr_eq(a, b),
-            (Value::BoundTrigger(a), Value::BoundTrigger(b)) => Rc::ptr_eq(a, b),
             (Value::WidgetRef(a), Value::WidgetRef(b)) => a == b,
             _ => false,
         }
@@ -111,16 +58,6 @@ impl fmt::Display for Value {
             Value::Widget(_) => write!(f, "<widget>"),
             Value::Void => write!(f, ""),
             Value::WidgetRef(id) => write!(f, "<widget#{}>", id),
-            Value::Mutation(m) => {
-                let s = m.borrow();
-                write!(
-                    f,
-                    "<mutation {} status={}>",
-                    s.event_name,
-                    s.status.as_str()
-                )
-            }
-            Value::BoundTrigger(_) => write!(f, "<bound trigger>"),
         }
     }
 }

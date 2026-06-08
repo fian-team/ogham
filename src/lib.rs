@@ -23,30 +23,14 @@ use std::sync::{Arc, Mutex};
 use skia_safe::textlayout::FontCollection;
 use skia_safe::{FontMgr, Typeface};
 
-pub mod cli;
-pub mod diagnostics;
 mod file_watcher;
 mod macros;
 pub mod parser;
 pub mod runtime;
 pub mod scanner;
 pub mod skia;
-mod typed;
 pub mod view;
 pub mod widget;
-
-pub use typed::TypedOgham;
-// Re-export the typed-binding derives + the standalone schema check so
-// embedders import everything from the `ogham` facade
-// (`use ogham::{OghamState, OghamMsg, OghamRecord};`) rather than depending on
-// the `ogham-derive` crate directly.
-pub use ogham_derive::{OghamMsg, OghamRecord, OghamState};
-// The matching traits live at `runtime::schema`; re-export them under the same
-// names (serde-style — derive in the macro namespace, trait in the type
-// namespace) so `use ogham::OghamState` brings both the derive and the trait's
-// methods (`ogham_snapshot_into`, `ogham_diff_apply`) into scope.
-pub use runtime::schema::{OghamField, OghamMsg, OghamRecord, OghamState};
-pub use typed::check_schemas_match_path;
 
 /// Top-level Ogham instance that owns the runtime, widget tree, and
 /// optional file watcher.
@@ -435,31 +419,6 @@ impl Ogham {
         self.with_runtime_mut(|rt| rt.set_screen_size(width, height));
     }
 
-    /// Phase 3 M3: process the drain-time unmount queues
-    /// surfaced on `UI`. Drains the path prefixes whose
-    /// owning widgets settled their exit animation last
-    /// frame (firing the corresponding unmount hooks +
-    /// effect cleanups), and clears any cancelled-exit
-    /// prefixes (so a re-mount mid-exit doesn't fire its
-    /// pending unmount).
-    ///
-    /// `update()` calls this automatically after each
-    /// reconcile pass; hosts may call it directly after
-    /// `tick_animations` to drain hooks before the next
-    /// render boundary if they're not also calling
-    /// `update()` that frame.
-    pub fn process_drain_queues(&mut self) {
-        let runtime = self.runtime.clone();
-        let mut rt = runtime.lock().expect("runtime lock poisoned");
-        rt.process_drain_queues(&mut self.ui);
-        // Drain any unmount hooks / effect cleanups the
-        // process_drain_queues call just promoted from
-        // candidate to pending. (rerender's earlier
-        // pre_layout_drain ran with empty queues — drain-time
-        // semantics defer flushing until reconcile completes.)
-        rt.pre_layout_drain();
-    }
-
     /// Begin exiting the entire UI tree. Cascades [`Widget::begin_exit`]
     /// from the root. Returns `true` if at least one widget has an exit
     /// animation in flight (the host should keep ticking this Ogham and
@@ -569,12 +528,6 @@ impl Ogham {
         } else if result.needs_repaint {
             self.ui.mark_needs_repaint();
         }
-        // Phase 3 M3: drain the unmount queues surfaced on UI
-        // — the previous tick may have settled an exit and
-        // queued its prefix; the just-completed reconcile may
-        // have cancelled an in-flight exit. Both run here so
-        // hooks fire / cancel in lockstep with the new tree.
-        self.process_drain_queues();
         Ok(true)
     }
 }

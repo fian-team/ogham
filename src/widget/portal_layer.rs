@@ -160,12 +160,6 @@ impl PortalLayer {
 pub enum BackdropPolicy {
     /// No dimming, lower layers receive clicks normally.
     None,
-    /// Lower layers rendered with reduced opacity (visual
-    /// dimming only); clicks still pass through.
-    /// **NOT YET IMPLEMENTED in M0** — declared in the enum,
-    /// treated as `None` in Pass B. Implement when a use case
-    /// surfaces (currently no layer defaults to Dim).
-    Dim,
     /// Lower layers rendered, pointer events blocked from
     /// reaching them. The renderer paints a viewport-sized
     /// translucent backdrop before the first entry in a

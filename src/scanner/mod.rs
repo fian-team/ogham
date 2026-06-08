@@ -417,12 +417,6 @@ impl Scanner {
             "host_state" => self.create_token(TokenType::HostState),
             "events" => self.create_token(TokenType::Events),
             "Self" => self.create_token(TokenType::SelfTy),
-            // Lifecycle hook keywords (Phase 2). Multi-character
-            // keywords like host_state — single-token scan.
-            "on_mount" => self.create_token(TokenType::OnMount),
-            "on_unmount" => self.create_token(TokenType::OnUnmount),
-            "effect" => self.create_token(TokenType::Effect),
-            "cleanup" => self.create_token(TokenType::Cleanup),
             _ => self.create_token(TokenType::Identifier(value)),
         }
     }

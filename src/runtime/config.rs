@@ -1,9 +1,6 @@
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
-use std::sync::Mutex;
 use std::{collections::HashMap, sync::Arc};
 
-use crate::runtime::schema::OghamMsg;
 use crate::runtime::value::Value;
 use crate::widget::builder::WidgetFactory;
 
@@ -46,36 +43,6 @@ impl RuntimeConfig {
     {
         self.event_handlers.insert(name.into(), Arc::new(handler));
         self
-    }
-
-    /// Wire typed event handlers for `M` onto this config and return the
-    /// receiver the host drains. One handler is registered per event declared
-    /// by `M::ogham_events()`; each decodes its args into the matching `M`
-    /// variant and pushes it onto the channel.
-    ///
-    /// This is the *decoupled* half of [`crate::TypedOgham`]: use it when the
-    /// host owns the `Ogham` instance elsewhere (e.g. a view-tree
-    /// `Application`) and only needs the `Receiver<M>` on the side. Drain it
-    /// after the instance ticks (poll-after-tick).
-    pub fn with_typed_events<M: OghamMsg>(mut self) -> (Self, Receiver<M>) {
-        let (tx, rx) = channel::<M>();
-        // Shared across the per-event handlers so the channel stays open even
-        // as individual handlers are replaced; `Mutex` satisfies `Sync`.
-        let tx = Arc::new(Mutex::new(tx));
-        let event_names: Vec<String> = M::ogham_events().keys().cloned().collect();
-        for name in event_names {
-            let tx_for_handler = tx.clone();
-            let event_name = name.clone();
-            self = self.with_event_handler(name, move |args: &[Value]| {
-                if let Some(msg) = M::try_from_ogham_event(&event_name, args) {
-                    if let Ok(sender) = tx_for_handler.lock() {
-                        let _ = sender.send(msg);
-                    }
-                }
-                Ok(Value::Void)
-            });
-        }
-        (self, rx)
     }
 
     pub fn with_project_root(mut self, path: PathBuf) -> Self {

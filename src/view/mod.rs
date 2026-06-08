@@ -115,19 +115,6 @@ pub enum Phase {
     Exiting,
 }
 
-/// z-order (and, later, layout box) of a layer. Spatial slots are Deferred.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Placement {
-    Overlay { z: u32 },
-}
-
-/// Whether a layer blocks input to (and freezes) layers below it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Gating {
-    Modal,
-    PassThrough,
-}
-
 /// `Fallback` children are shown when a sibling subtree `Failed` (Tenet 10).
 /// A branch that owns a `Fallback` child *is* an error boundary — there is no
 /// separate `ViewBody` variant for boundaries.
@@ -405,14 +392,6 @@ impl<K: Clone + Eq + Hash> View<K> {
         }
     }
 
-    fn process_drain_queues(&mut self) {
-        match &mut self.body {
-            ViewBody::Leaf(LeafState::Mounted(i)) => i.process_drain_queues(),
-            ViewBody::Leaf(LeafState::Pending(_)) => {}
-            ViewBody::Branch(cs) => cs.process_drain_queues_all(),
-        }
-    }
-
     /// Tick this view's subtree by `dt` under `chain` (the scope context this
     /// view lives in). The view extends the chain with its own scope, then:
     ///
@@ -533,13 +512,6 @@ fn build_leaf(
 struct Child<K> {
     view: View<K>,
     phase: Phase,
-    // z-order / layout box and input gating are part of the contract surface
-    // (Tenets 3, 9) but consumed by the render + input-routing steps, not yet
-    // wired. Kept here so the shape is fixed; reads land with those steps.
-    #[allow(dead_code)]
-    placement: Placement,
-    #[allow(dead_code)]
-    gating: Gating,
     role: Role,
 }
 
@@ -571,7 +543,6 @@ impl<K: Clone + Eq + Hash> Child<K> {
 pub struct ChildStack<K> {
     children: Vec<Child<K>>,
     policy: StackPolicy,
-    next_z: u32,
 }
 
 impl<K: Clone + Eq + Hash> ChildStack<K> {
@@ -579,7 +550,6 @@ impl<K: Clone + Eq + Hash> ChildStack<K> {
         Self {
             children: Vec::new(),
             policy,
-            next_z: 0,
         }
     }
 
@@ -624,15 +594,7 @@ impl<K: Clone + Eq + Hash> ChildStack<K> {
     }
 
     fn push_child(&mut self, view: View<K>, phase: Phase, role: Role) {
-        let z = self.next_z;
-        self.next_z += 1;
-        self.children.push(Child {
-            view,
-            phase,
-            placement: Placement::Overlay { z },
-            gating: Gating::PassThrough,
-            role,
-        });
+        self.children.push(Child { view, phase, role });
     }
 
     /// Reconcile the stack against the host's `desired` set, minting any
@@ -846,9 +808,6 @@ impl<K: Clone + Eq + Hash> ChildStack<K> {
         }
         // Promote the frozen *normal* pending once the outgoing exit settles.
         if self.children[ci].phase == Phase::Exiting && self.children[ci].view.is_exit_complete() {
-            // Flush the outgoing child's drain queues before demotion so its
-            // unmount hooks don't fire later against a fresh tree.
-            self.children[ci].view.process_drain_queues();
             self.children.remove(ci);
             if let Some(pi) = self
                 .children
@@ -888,7 +847,6 @@ impl<K: Clone + Eq + Hash> ChildStack<K> {
             }
             if self.children[i].phase == Phase::Exiting && self.children[i].view.is_exit_complete()
             {
-                self.children[i].view.process_drain_queues();
                 drop_idx.push(i);
             }
         }
@@ -967,12 +925,6 @@ impl<K: Clone + Eq + Hash> ChildStack<K> {
     fn restart_entry_all(&mut self) {
         for c in &mut self.children {
             c.view.restart_entry();
-        }
-    }
-
-    fn process_drain_queues_all(&mut self) {
-        for c in &mut self.children {
-            c.view.process_drain_queues();
         }
     }
 

@@ -272,135 +272,9 @@ fn collect_diagnostics(doc: &crate::document::Document) -> Vec<Diagnostic> {
         {
             diagnostics.push(syntax_error_to_diagnostic(&err));
         }
-
-        // 5. Phase 2 conditional-hook warning. Walk the AST for
-        //    `on_mount` / `on_unmount` statements that appear
-        //    inside `if`, `match`, or for-loop bodies — these
-        //    register conditionally and don't behave as authors
-        //    expect. Advisory only.
-        for warning in collect_lifecycle_warnings(&module) {
-            diagnostics.push(syntax_error_to_diagnostic(&warning));
-        }
     }
 
     diagnostics
-}
-
-/// Walk an AST and emit warnings for `on_mount` / `on_unmount`
-/// statements appearing inside `if` branches, `else` blocks, or
-/// for-loop bodies. These register conditionally — at runtime
-/// the hook only registers when its surrounding control-flow
-/// path is taken. Per the design (decision #16), this is legal
-/// at runtime but earns a warning at the LSP because the
-/// semantic almost certainly isn't what the author wanted (use
-/// `effect (cond) { ... }` for "run when the flag changes").
-fn collect_lifecycle_warnings(module: &ogham::parser::Function) -> Vec<ogham::parser::SyntaxError> {
-    let mut warnings = Vec::new();
-    walk_block_for_hooks(&module.body, /* in_conditional */ false, &mut warnings);
-    warnings
-}
-
-fn walk_block_for_hooks(
-    block: &ogham::parser::Block,
-    in_conditional: bool,
-    out: &mut Vec<ogham::parser::SyntaxError>,
-) {
-    for stmt in &block.statement_list {
-        walk_stmt_for_hooks(stmt, in_conditional, out);
-    }
-}
-
-fn walk_stmt_for_hooks(
-    stmt: &ogham::parser::Statement,
-    in_conditional: bool,
-    out: &mut Vec<ogham::parser::SyntaxError>,
-) {
-    use ogham::parser::Statement;
-    match stmt {
-        Statement::OnMount(hook) | Statement::OnUnmount(hook) => {
-            let kind = match stmt {
-                Statement::OnMount(_) => "on_mount",
-                _ => "on_unmount",
-            };
-            if in_conditional {
-                out.push(
-                    ogham::parser::SyntaxError::new(
-                        hook.span.start_line,
-                        hook.span.start_column,
-                        format!(
-                            "{kind} inside a conditional fires only \
-                             if its path is also newly-mounted that \
-                             frame"
-                        ),
-                    )
-                    .with_help(format!(
-                        "for \"run when this flag changes\" use \
-                         `effect (flag) {{ ... }}` instead"
-                    ))
-                    .with_warning(),
-                );
-            }
-            // Recurse into the hook's body — nested hooks (e.g.
-            // an `on_mount` whose body contains a closure that
-            // declares another `on_mount`) follow the same rule.
-            walk_block_for_hooks(&hook.body, in_conditional, out);
-        }
-        Statement::Effect(effect) => {
-            if in_conditional {
-                out.push(
-                    ogham::parser::SyntaxError::new(
-                        effect.span.start_line,
-                        effect.span.start_column,
-                        "effect inside a conditional won't be tracked \
-                         when the condition is false",
-                    )
-                    .with_help(
-                        "consider moving the effect to top-level and \
-                         using `if` inside the body instead",
-                    )
-                    .with_warning(),
-                );
-            }
-            // Recurse into the body. Effects don't reset the
-            // conditional context — a cleanup inside an effect
-            // inside an if is still inside a conditional.
-            walk_block_for_hooks(&effect.body, in_conditional, out);
-        }
-        Statement::Cleanup(hook) => {
-            walk_block_for_hooks(&hook.body, in_conditional, out);
-        }
-        Statement::Conditional(cond) => {
-            for (_test, branch) in &cond.branches {
-                walk_block_for_hooks(branch, /* now in conditional */ true, out);
-            }
-            if let Some(else_block) = &cond.else_block {
-                walk_block_for_hooks(else_block, true, out);
-            }
-        }
-        Statement::ForLoop(for_loop) => {
-            walk_block_for_hooks(&for_loop.body, true, out);
-        }
-        // `let foo = fn () { ... }` — descend into the function
-        // body so hooks declared inside (the common case) are
-        // visited. Without this descent, the warning never
-        // fires in real consumer code: hooks live in fn bodies,
-        // not at module top level.
-        Statement::Declare(d) => {
-            if let ogham::parser::Expression::Literal(ogham::parser::Literal::Function(f)) =
-                &d.value
-            {
-                walk_block_for_hooks(&f.body, in_conditional, out);
-            }
-        }
-        // Other statement kinds don't introduce conditional
-        // contexts and don't contain blocks of statements.
-        // Expression statements *can* contain blocks (match arms
-        // produce expressions), but match-arm bodies live in
-        // Expression, not Statement; lifecycle hooks are
-        // statements, not expressions, so they can't appear
-        // inside a match-arm body anyway.
-        _ => {}
-    }
 }
 
 /// Convert a [`SyntaxError`] into an LSP [`Diagnostic`], rendering
@@ -443,7 +317,7 @@ fn format_diagnostic_message(message: &str, note: Option<&str>, help: Option<&st
 
 #[cfg(test)]
 mod diagnostic_tests {
-    use super::{collect_lifecycle_warnings, format_diagnostic_message};
+    use super::format_diagnostic_message;
 
     #[test]
     fn formats_plain_message_unchanged() {
@@ -471,82 +345,6 @@ mod diagnostic_tests {
         assert_eq!(
             format_diagnostic_message("oops", Some("rule"), Some("fix")),
             "oops\n\nnote: rule\nhelp: fix"
-        );
-    }
-
-    #[test]
-    fn lifecycle_warning_descends_into_fn_bodies() {
-        // Regression for the audit finding: the walker used to
-        // bail at Statement::Declare, so warnings on hooks
-        // declared inside `let main = fn () { ... }` (the
-        // common shape) never fired.
-        let src = r#"
-let main = fn () {
-  if true {
-    on_mount { log "x"; };
-  }
-};
-"#;
-        let mut scanner = ogham::scanner::Scanner::new(src.to_string());
-        let mut parser = ogham::parser::Parser::new(scanner.scan());
-        let module = parser.parse().expect("parse");
-        let warnings = collect_lifecycle_warnings(&module);
-        assert_eq!(warnings.len(), 1, "should warn on the conditional on_mount");
-        assert!(
-            warnings[0]
-                .message
-                .contains("on_mount inside a conditional"),
-            "warning text mismatch: {}",
-            warnings[0].message
-        );
-        assert_eq!(
-            warnings[0].severity,
-            ogham::parser::DiagnosticLevel::Warning
-        );
-    }
-
-    #[test]
-    fn lifecycle_warning_fires_on_effect_inside_for_loop() {
-        // Companion to the previous test — verifies effects also
-        // get the warning, and that for-loops count as
-        // conditional contexts.
-        let src = r#"
-let main = fn () {
-  for (i in 0..3) {
-    effect (i) { log "x"; };
-  }
-};
-"#;
-        let mut scanner = ogham::scanner::Scanner::new(src.to_string());
-        let mut parser = ogham::parser::Parser::new(scanner.scan());
-        let module = parser.parse().expect("parse");
-        let warnings = collect_lifecycle_warnings(&module);
-        assert_eq!(warnings.len(), 1);
-        assert!(
-            warnings[0].message.contains("effect inside a conditional"),
-            "warning text mismatch: {}",
-            warnings[0].message
-        );
-    }
-
-    #[test]
-    fn lifecycle_warning_silent_when_hook_is_top_level_in_fn() {
-        // Hooks at the top of a fn body — the normal, correct
-        // shape — must NOT warn.
-        let src = r#"
-let main = fn () {
-  on_mount { log "ok"; };
-  effect () { log "ok"; };
-};
-"#;
-        let mut scanner = ogham::scanner::Scanner::new(src.to_string());
-        let mut parser = ogham::parser::Parser::new(scanner.scan());
-        let module = parser.parse().expect("parse");
-        let warnings = collect_lifecycle_warnings(&module);
-        assert!(
-            warnings.is_empty(),
-            "hooks at fn top-level should not warn; got {:?}",
-            warnings
         );
     }
 }

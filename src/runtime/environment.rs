@@ -5,14 +5,12 @@ use crate::runtime::value::Value;
 #[derive(Clone, Debug)]
 pub struct Environment {
     variables: HashMap<String, Value>,
-    parent: Option<Box<Environment>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
             variables: HashMap::new(),
-            parent: None,
         }
     }
 
@@ -21,27 +19,10 @@ impl Environment {
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
-        if let Some(value) = self.variables.get(name) {
-            Some(value.clone())
-        } else if let Some(parent) = &self.parent {
-            parent.get(name)
-        } else {
-            None
-        }
+        self.variables.get(name).cloned()
     }
 
-    pub fn assign(&mut self, name: &str, value: Value) -> bool {
-        if self.variables.contains_key(name) {
-            self.variables.insert(name.to_string(), value);
-            true
-        } else if let Some(parent) = &mut self.parent {
-            parent.assign(name, value)
-        } else {
-            false
-        }
-    }
-
-    /// Returns only the variables defined in this environment (not parent).
+    /// Returns only the variables defined in this environment.
     pub fn top_level_variables(&self) -> &HashMap<String, Value> {
         &self.variables
     }

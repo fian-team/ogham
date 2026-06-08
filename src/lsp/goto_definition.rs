@@ -162,15 +162,6 @@ fn def_in_statement(
         Statement::RecordDeclaration(_)
         | Statement::HostStateDeclaration(_)
         | Statement::EventsDeclaration(_) => None,
-        // Phase 2 lifecycle hooks: bodies are sub-blocks; defer
-        // go-to-definition into them by recursing through the
-        // block. M1 ships only keyword-position resolution; the
-        // body content is just a normal block.
-        Statement::OnMount(hook) | Statement::OnUnmount(hook) => {
-            def_in_block(&hook.body, line, col, defs)
-        }
-        Statement::Effect(effect) => def_in_block(&effect.body, line, col, defs),
-        Statement::Cleanup(hook) => def_in_block(&hook.body, line, col, defs),
     }
 }
 
