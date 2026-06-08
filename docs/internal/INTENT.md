@@ -212,12 +212,17 @@ instead of `widget::style::Color`, or a layout pass calls
 The test seam is the live reason; portability is a lapsed one.
 
 **Drift indicators:**
-- `use skia_safe::` outside of `src/skia.rs`,
-  `src/widget/text_widget.rs`, and
-  `src/widget/text_input_widget.rs`. (Text widgets currently *do*
-  depend on Skia for measurement — the one known seam-leak;
-  document it as drift if it spreads further. `svg` is cut, so
-  `svg_widget.rs` is gone.)
+- `use skia_safe::` outside of `src/skia.rs` and the widgets that
+  still depend on Skia for measurement/decode: `text_widget.rs`,
+  `image.rs`, and `svg_widget.rs` (plus the `FontCollection` import
+  and the `draw_svg_dom` trait method in `widget/mod.rs`).
+  `text_input_widget.rs` does **not** leak skia. These are the
+  *known* leaks, not a license for
+  more — document any spread as drift. Note `svg` is **slated to be
+  cut**, not yet gone (IDENTITY_AND_SCOPE §2, step 1); when it goes,
+  `svg_widget.rs`, its `builder.rs` registration, and the
+  `draw_svg_dom` `RenderContext` method go with it, leaving text +
+  image as the standing measurement/decode leaks.
 - A `Widget::layout` implementation whose return depends on a
   Skia-specific helper.
 - A `Surface` impl that mutates the widget tree (Surface should

@@ -17,7 +17,25 @@
 > `editable` derive, with no second crate and no serde in the UI path). Revised
 > 2026-06-08 (seam fully specified: nested node tree with uniform `children`, the
 > `Reader` mirror of `apply`, the `$variant` discriminant, ambient reads, and the
-> cut/build/migrate execution sequence — see §5).
+> cut/build/migrate execution sequence — see §5). Revised 2026-06-08b (codebase
+> reckoning, blockers 1–3: `runtime/schema.rs` / `parser/typed_bindings.rs` are
+> split-not-delete — the `.ogh`-source schema stays; `$variant` blast radius
+> verified — runtime flip is automatic, 23 *test* edit-paths need a schema-aware
+> audit (11 in `editable` all-union, 12 in `content-core` of which 3 are
+> record-field `.kind` traps that must not flip), no production/content change;
+> `Reader` scoped to ~2 days with Design C —
+> promotions inline at the field site, no read-walk cycle guard; execution sequence
+> made repo-explicit across `ogham` / `lorekeeper` / `small_mercies`; write wire
+> format pinned to six named events — four already proven in the frozen panes, +2
+> for maps — with the `PaneAction`→`FieldOp` decode as a write-side survivor).
+> Revised 2026-06-08c (pre-implementation verification pass — every `file:line`
+> claim re-checked against all three repos: confirmed sound except four drifts now
+> corrected — `text_input_widget` does **not** leak skia; the `compile_increment`
+> bug is an *unconditional* `SetState` the local path guards, at `1249-1262`/1257;
+> the `$variant` audit is **23** test paths not ~18, of which 3 `content-core`
+> record-field `.kind` sites must not flip; the `OghamField` trait + a separate
+> `FromOghamValue` belong in the schema.rs cut list. No design change — counts and
+> pointers only. Cleared for implementation.)
 
 ---
 
@@ -87,8 +105,11 @@ breadth is how challengers lose.
 the door open to richer in-language logic later *without a rewrite*. `mutation`, the
 unused dynamism tail, `OghamState`, the standalone-app posture are **not** option
 value — they are depreciating inventory that rots while it waits (proof: the
-`compile_increment`-on-upvalue bug at `compiler.rs:1255-1257` — a feature unused
-long enough to be silently wrong. We *keep* `++`/`--` per §2 because they're
+`compile_increment`-on-upvalue bug at `compiler.rs:1249-1262` — a feature unused
+long enough to be silently wrong: the upvalue branch emits an **unconditional**
+`SetState` (line 1257) that the local branch guards behind `is_local_state`
+(line 1240), so `++`/`--` on a captured non-state upvalue writes a spurious entry
+into the component-state map. We *keep* `++`/`--` per §2 because they're
 cheap and expected, but that bug is the tax of having shipped unexercised
 surface, and fixing it is part of the price of keeping them).
 
@@ -118,7 +139,8 @@ surface, and fixing it is part of the price of keeping them).
   Low cost to retain; keep UL's existing use, no migration.
 - **`++` / `--`** — [DECIDED] keep. Cheap to retain and expected to exist in a
   language. *Caveat:* fix the latent increment-on-upvalue bug
-  (`compiler.rs:1255-1257` emits `SetState` before `SetUpvalue`) as part of
+  (`compiler.rs:1249-1262`: the upvalue branch emits an unconditional `SetState`
+  at 1257 that the local branch guards behind `is_local_state` at 1240) as part of
   keeping them — don't ship the rot.
 - **LSP + structural diagnostics** — [DECIDED] keep. Hover, goto-def, semantic
   tokens, scanner/parser diagnostics genuinely reduce friction for *agents
@@ -132,19 +154,40 @@ surface, and fixing it is part of the price of keeping them).
   It survives as a **paint-isolation + test seam**: it keeps `skia_safe` out of
   `widget/` (layout, hit-test, animation stay backend-pure and unit-testable)
   and prevents the skia-leak drift INTENT §6 warns about. Rewrite §6's *why*
-  accordingly. (With `svg` cut, only `text_widget` still leaks skia, for text
-  measurement.)
+  accordingly. (Current `widget/` skia leaks: `text_widget` for text measurement,
+  `image` for decode, `svg_widget` + the `draw_svg_dom` trait method, and the
+  `FontCollection` import in `widget/mod.rs` — `text_input_widget` does **not**
+  leak skia. The `svg_widget`/`draw_svg_dom` pair goes when `svg` is cut in step 1,
+  leaving `text_widget` + `image` + `FontCollection` as the standing leaks.)
 
 ### Cut — safe immediately (zero consumer entanglement)
 
-- The rival typed layer: `OghamState`/`OghamMsg`, `runtime/schema.rs`,
-  `parser/typed_bindings.rs`, `ogham check`, and the typed half of
-  `ogham-derive`. Superseded by `editable`; 1 site.
+- The rival typed layer: `OghamState`/`OghamMsg`, `ogham check`, the diagnostics
+  manifest-matching (`diagnostics/{check,manifest}.rs`, `cli/check.rs`, `typed.rs`),
+  and the typed half of `ogham-derive` (the `OghamState`/`OghamMsg` derives +
+  `manifest_emit`). Superseded by `editable`; 1 site.
+  - **Caveat — `runtime/schema.rs` and `parser/typed_bindings.rs` are split, not
+    deleted.** Both mix the cut Rust-derive layer with the *kept* `.ogh`-source
+    schema. Cut only the Rust-derive traits: `OghamField` (417), `OghamRecord` (430),
+    `OghamState` (445), `OghamMsg` (458), `HostStateSinkErased` (474) — the 417–482
+    cluster — plus `FromOghamValue` (605), which sits separately after the primitive
+    impls (so it's two excisions, not one contiguous block). **Keep** `ModuleSchema`/
+    `RecordSchema`/`FieldSchema`/`EventSig`/`from_module`/`load_schema*` and the
+    `parser/typed_bindings.rs` parser for the `.ogh` `host_state {}` / `events {}` /
+    `record {}` syntax + the `TypeRef`/`PrimType`/`KeyType`/`SchemaLiteral`
+    vocabulary — they are load-bearing for compiler strict-mode identifier
+    resolution + event validation, the **view layer's Tenet 6 host-state
+    requirements** (`view/mod.rs` `requirements_from_schema`, central to the kept
+    "host-state-in" identity), and LSP hover. A grep listing `runtime/schema.rs` for
+    wholesale deletion in step 1 will break code the kept subsystems compile against.
 - Lifecycle/effects: `effect`/`cleanup`/`on_mount`/`on_unmount`,
   `RegisterEffect`/`EffectSlot`, the mount/unmount drain queues,
   `cancel_unmount_for_prefix`. 0 uses.
 - `mutation()` request/response seam. 0 uses.
-- `svg` widget. 0 uses.
+- `svg` widget. 0 uses — but it is more than one file: cutting it removes
+  `svg_widget.rs`, the `builder.rs:50` `"svg"` registration, the `draw_svg_dom`
+  method on the `RenderContext` trait (`widget/mod.rs:1252`) + its `skia.rs` impl,
+  and the `"svg"` `skia-safe` Cargo feature.
 - Dead scaffolding: the `Environment` tree-walker leftover, `Placement`/`Gating`
   (inert), the `Dim` backdrop policy (TODO stub), `bezier_curve_to`/`close_path`.
 
@@ -393,6 +436,41 @@ under a single uniform `children: [node…]`** (so `field_node` is one
 events instead of smuggling them through magic keys. Keep the node vocabulary and
 `FieldOp` in lockstep — they're one list seen from two ends.
 
+#### The write wire format: six named events  [DECIDED]
+
+The `.ogh`→host edit channel is **named, typed events** (not one generic
+`apply_edit(path, op_map)` — a tagged-union-in-`Value` would be the rival encoding
+this doc kills everywhere else). **Four already exist and are proven in the frozen
+panes** (scenes, companion_reactions; `editor/src/client.rs:840-935` dispatch →
+`schema_form.rs:109-120` `apply_action` decode to `FieldOp`, with the frozen panes
+also hand-decoding in their own `handle()`); the nested model adds **two** for
+maps:
+
+| node action | `.ogh` event | args | `FieldOp` |
+|---|---|---|---|
+| set any scalar leaf | `set_field(path, value)` | `String, String` | `Set(value)` |
+| switch a union variant | `set_field(path + ".$variant", variant)` | `String, String` | `Set` on discriminant |
+| list/option add | `add_list_item(path)` | `String` | `AddListItem` |
+| list remove / option clear | `remove_list_item(path, index)` | `String, Integer` | `RemoveListItem(index)` (option uses `0`) |
+| list reorder | `move_list_item(path, index, delta)` | `String, Integer, Integer` | `MoveListItem{index, delta}` |
+| **map add** *(new)* | `add_map_entry(path, key)` | `String, String` | `AddMapEntry{key}` |
+| **map remove** *(new)* | `remove_map_entry(path, key)` | `String, String` | `RemoveMapEntry{key}` |
+
+`$variant` switch and `option` set/clear need **no new event** — they reuse
+`set_field` / `add_list_item` / `remove_list_item`. The marker-path hacks
+(`.__move.` / `.__remove.` / `__objdel`) exist only because the old `characters`
+pane renders a *flat* string-only channel that can't pass an `Integer` index, so it
+smuggles one into the path; the nested `field_node` passes typed indices natively,
+so the markers evaporate with the flat model — no replacement encoding needed.
+
+> **Write-side survivor (cleanup ordering).** The host-side decode — the
+> `PaneAction`→`FieldOp` match (`schema_form.rs:109-120`) — lives *inside* the file
+> the migration deletes. It is the write-side analogue of the surviving
+> `Value`-building visitor: **extract it before deleting `schema_form.rs`** (step 5),
+> or the event→`FieldOp` decode goes with it. (`content-core`'s `Edit`/`apply_edit`
+> envelope is the *agent* path, table+id+op; it is unaffected — both paths bottom
+> out at `editable::edit`.)
+
 **The `.ogh` render consequence:** a **recursive `field_node` component** that
 `match`es `node.kind` and recurses **uniformly into `node.children`** via `for`.
 Each child is **keyed by its `path`** — the dotted path is a naturally stable
@@ -418,12 +496,30 @@ structure:
 
 Three properties pin it:
 
-- **Self-describing leaves — no `schema()` at render time.** The derive knows each
-  leaf's `Kind` at codegen (including the `#[editable(ref/text/formula)]`
-  promotions — `field_schema_tokens`), so the single leaf callback is
-  `scalar(&Kind, &str)`: the `Kind` carries ref-table and enum-options, the string
-  is the instance value. One walk yields structure + kinds + values; `schema()`
-  survives only for the LSP manifest.
+- **Self-describing leaves — no `schema()` at render time.** The single leaf
+  callback is `scalar(&Kind, &str)`: the `Kind` carries ref-table and enum-options,
+  the string is the instance value. One walk yields structure + kinds + values;
+  `schema()` survives only for the LSP manifest. **Caveat — promotions live at the
+  field site, not the leaf.** A `String` leaf's own `schema()` is always
+  `Kind::Str`; the `#[editable(ref/text/formula)]` upgrade is known only to
+  `field_schema_tokens` *where the field is declared*, not to the leaf. So a plain
+  `String::read` cannot self-describe as `Ref`. **[DECIDED] Design C:** plain fields
+  delegate `self.f.read(v)` (the leaf emits `scalar(&Kind::Str, …)` cheaply from its
+  own `schema()`); a promoted field instead emits its `scalar` *inline at the field
+  site* with the promoted `Kind`, wrapped through any `Option`/`Vec` nesting by
+  reusing the existing `wrap_semantic` (`editable-derive/lib.rs:139`). This keeps
+  the common path allocation-free and puts promotion where the derive already has
+  the metadata. (Rejected: threading a `Kind` argument through every `read` — nested
+  struct fields would build and discard a full `Record`/`Union` `Kind` per render.)
+- **The instance value's string form.** `scalar`'s `&str` is `self.to_string()` for
+  numeric/`bool` scalars, identity for `String`, and the **derive-computed
+  serde-renamed variant name** for a unit enum (not `Display`). Pin float
+  round-trip (`f32::to_string()` → `s.parse::<f32>()`) with a parity test.
+- **No cycle guard in the read walk.** Unlike `schema_of`'s `EXPANDING` thread-local
+  (which exists because *type-level* expansion of a recursive type is infinite),
+  `read` walks a *finite instance* and terminates on the data. `Kind::Named` arises
+  only inside a `Record`/`Union` (→ `begin_group`/`begin_union`), never inside a
+  `scalar`, so a `Reader` never sees it. No depth/cycle handling is needed at render.
 - **The visitor owns the path.** The derive fires `field(name)` / `index(i)` to
   name the next child and stays path-agnostic; the host visitor accumulates the
   dotted path. That visitor is a small SAX→tree stack machine — and it is the
@@ -435,8 +531,10 @@ Three properties pin it:
 Callback set (shape fixed, names at implementation): `scalar(&Kind,&str)`,
 `begin_group`/`end_group`, `begin_list(len)`/`end_list`,
 `begin_option(present)`/`end_option`, `begin_map`/`end_map`,
-`begin_union(variant,variants)`/`end_union`, and `field(name)` / `index(i)` to
-name the next child.
+`begin_union(variant,variants)`/`end_union`, `field(name)` / `index(i)` to name
+the next child, and `map_key(&str)` to name a map entry (keys may be non-`String`,
+e.g. `BTreeMap<u64,[u8;3]>`; `read` surfaces `k.to_string()`, the write path
+recovers it via `FromStr` exactly as `apply` already does).
 
 **Positional vs. named labels (the `"0"` rule).** Structure is *always* faithful —
 a tuple/newtype variant's fields are real children at `.0`, `.1`, …, never
@@ -467,6 +565,33 @@ names instead of `0`/`1`? Use a struct variant — that's the nudge.
    Change `DISCRIMINANT` in both crates (`editable/lib.rs:53`,
    `editable-derive/lib.rs:38`) and delete the now-vacuous field-name rejection;
    `parse_path` / `schema()` need no change (runtime edit-paths only).
+
+   **Blast radius (verified across ogham / lorekeeper / small_mercies).** The flip
+   is *automatic at runtime* — the derived `apply` routes the discriminant via
+   `::editable::DISCRIMINANT` (`editable-derive/lib.rs:439`), so every union's
+   variant-switch follows the const. **No content migration** holds: serde's
+   on-disk `#[serde(tag = "kind")]` is untouched, no `.ogh` file references the
+   discriminant, and the only non-`editable` reader of the const is the
+   to-be-deleted `schema_form.rs`. **But** every *string-literal* `.edit("…kind…")`
+   path must be hand-audited, because `kind` is overloaded and the two senses sit
+   side by side: `beats.0.advance.kind` (`Advance` is a union → becomes
+   `…advance.$variant`) vs. `beats.0.transition.kind` (`Transition` is a record
+   with a `kind: TransitionKind` field → **stays `kind`**). A blind
+   `s/.kind/.$variant/` corrupts the second. Affected sites are **test-only, zero
+   production** — **23 total, verified site-by-site**:
+   - **11 in `lorekeeper/editable`** (4 in `tests.rs`, 7 in `derive_tests.rs`) —
+     *all 11 are union discriminants* (`Effect`/`Tricky`/`Act`); none are
+     record-field `.kind`, so this crate's audit is mechanical.
+   - **12 in `small_mercies/content-core`** (10 in `schema.rs`, 2 in `action.rs`,
+     incl. the `action.rs:562` test) — of which **9 are union discriminants** (flip
+     to `$variant`) and **3 are record-field `.kind` traps that must NOT flip**:
+     `water_source.0.kind` (`WaterSource.kind: String`, `schema.rs:1247`),
+     `stats.0.kind` (`StatDef.kind: StatKind`), and `beats.0.transition.kind`
+     (`Transition.kind: TransitionKind`, `schema.rs:764`). These three are the live
+     proof of the overload — `advance.kind` and `transition.kind` are string-identical
+     yet resolve oppositely.
+   These edits must land **in the same commit as the const flip** (else those suites
+   break), each judged against the schema, not sed'd.
 
 ### Worked example: `Scene` (the buildable target)
 
@@ -524,14 +649,16 @@ rival inspectors, the disease this doc exists to kill:
 - **The `§list` marker hack** (`list_marker`; list chrome encoded as a `Toggle`)
   → real `list` nodes.
 - **Sentinel keys `__add` / `__objdel` / `__add_kind`** (`characters.rs:647/685`,
-  `items.rs:197`) and their `.ogh` arms (`characters.ogh:93-95`,
+  `items.rs:197`) and their `.ogh` arms (`characters.ogh:93-96`,
   `add_control_row` / `obj_del_row`) → explicit container ops.
-- **`MAX_NESTED_DEPTH` + the "edit in JSON" leaf** → gone with nesting (only
-  `Named`-cycle handling remains).
+- **`MAX_NESTED_DEPTH` + the "edit in JSON" leaf** → gone with nesting. No cycle
+  guard replaces it: the read walks a finite instance and terminates on the data
+  (see the read-walk section); `Kind::Named` never reaches the renderer.
 - **Per-pane hand-written inspector projections** (`scenes.rs` / `characters.rs` /
   `abilities.rs` / …) → the migration `schema_form` started, completed onto the
   nested derived read.
-- **The flat `field_row` match** (`common.ogh:183`, 3 arms, no default) → the
+- **The flat `field_row` match** (`common.ogh:183`; the inner `match line.kind` at
+  line 190, 3 arms, no default) → the
   recursive `field_node`.
 
 **Explicitly NOT retired (stays plain host state, never schema'd):** the map-pane
@@ -558,10 +685,21 @@ with `FieldOp::Set`, which parses); **labels** default to the field name with an
   under one key; `field_node` is a single `for node.children` loop) are decided,
   worked end to end on `Scene`. Remaining is *implementation*: the `.ogh`
   `field_node` component.
+- **[RESOLVED] Write wire format** (§4) — **six named, typed events** (not a generic
+  op-map). Four exist and are proven in the frozen panes; the nested model adds only
+  `add_map_entry` / `remove_map_entry`; `$variant` and `option` reuse `set_field` /
+  `add_list_item` / `remove_list_item`. The marker-path / sentinel hacks retire with
+  the flat channel. The `PaneAction`→`FieldOp` decode is the write-side survivor —
+  extract before deleting `schema_form.rs`.
 - **[RESOLVED] The read walk / `Reader`** (§4) — a structured begin/end visitor
-  that mirrors `apply` (same derive); self-describing leaves (`scalar(&Kind,&str)`,
-  no `schema()` at render); the visitor owns the path; lives in `editable`. Only
-  the exact callback *names* remain (implementation).
+  that mirrors `apply` (same derive); leaves emit `scalar(&Kind,&str)` (no
+  `schema()` at render); the visitor owns the path; lives in `editable`. Scoped to
+  ~2 days (pure `Reader` + `read` leaf impls in `editable`; `read` codegen in
+  `editable-derive`, parity-tested). **Design C [DECIDED]:** `#[editable(...)]`
+  promotions are emitted inline at the field site (not threaded as a `Kind` arg),
+  since a leaf can't self-describe its promotion. No read-walk cycle guard (finite
+  instance). `map_key(&str)` added to the callback set. Only the exact callback
+  *names* remain (implementation).
 - **[RESOLVED] Union discriminant → `$variant` sigil** (§4 wart 3) — frees the
   field name `kind`, gives the path grammar a control/data split, de-conflates from
   serde's disk tag; no content migration.
@@ -579,25 +717,39 @@ with `FieldOp::Set`, which parses); **labels** default to the field name with an
   component-state independence and reorder survival).
 
 **Execution sequence** (cut/build/migrate order — keeps two inspectors from ever
-coexisting):
+coexisting). This spans **three repos** — `ogham`, `lorekeeper` (the `editable` /
+`editable-derive` leaf crates), and `small_mercies` (the editor host) — so each
+step is tagged with where it lands and what gates it:
 
-1. **Now — Ogham-core safe-immediate cuts** (independent, 0–1 sites; grep-verify no
-   hidden consumer first): `OghamState`/`OghamMsg`/typed-bindings/`ogham check`/the
-   typed half of `ogham-derive`; lifecycle/effects + machinery (the slimming
-   above); `mutation`; `svg`; dead scaffolding. Fold in the `compile_increment`
-   upvalue-bug fix.
-2. **Build** — the `editable` derive `Reader` + the host `Value`-visitor +
-   `field_node` + the `refs.<table>` channel + the `option` kind + the `$variant`
-   discriminant.
-3. **Migrate** the panes onto the derived read, one at a time.
-4. **Then delete** the flat/serde editor machinery (§4 "What the derived read
-   retires"): `schema_form.rs`, `FieldKind`, `InspectorField`, the `*_value`
-   projections, the `§list` marker, the `__add`/`__objdel`/`__add_kind` sentinels,
-   `MAX_NESTED_DEPTH`, the flat `field_row` — only after the last pane migrates.
+1. **[`ogham`] — safe-immediate cuts** (independent, 0–1 sites; grep-verify no
+   hidden consumer first): the `OghamState`/`OghamMsg` traits + manifest matching +
+   `ogham check` + the typed half of `ogham-derive` (**split, not delete** — keep
+   the `.ogh`-source `ModuleSchema` + `parser/typed_bindings.rs` parser per §2's
+   caveat); lifecycle/effects + machinery (the slimming above); `mutation`; `svg`;
+   dead scaffolding. Fold in the `compile_increment` upvalue-bug fix. *Gate: none.*
+2. **[`lorekeeper`] — the `editable` seam, leaf side.** (a) Flip `$variant` in both
+   crates + delete the field-name rejection + migrate the 23 test edit-paths in the
+   *same commit* — but only the 20 union-discriminant ones flip; the 3 record-field
+   `.kind` traps in `content-core` stay (§4 wart 3). (b) Add the pure `Reader` trait + `Editable::read` + the
+   ~6 hand leaf impls (`editable`), and the `read` codegen in `editable-derive`
+   (Design C promotion at the field site) — parity-tested against the hand impls.
+   *Gate: (b) independent of step 1; ~2 days.*
+3. **[`small_mercies`] — the host seam.** The `Value`-building visitor (the SAX→tree
+   stack machine surviving from `schema_form.rs`) + `field_node` + the `refs.<table>`
+   channel + the `option` kind rendering + the two new write events (`add_map_entry`
+   / `remove_map_entry`). Extract the `PaneAction`→`FieldOp` decode out of
+   `schema_form.rs` so step 5's delete can't take it. *Gate: step 2b (needs `Reader`).*
+4. **[`small_mercies`] — migrate** the panes onto the derived read, one at a time.
+   *Gate: step 3.*
+5. **[`small_mercies`] — then delete** the flat/serde editor machinery (§4 "What the
+   derived read retires"): `schema_form.rs`, `FieldKind`, `InspectorField`, the
+   `*_value` projections, the `§list` marker, the `__add`/`__objdel`/`__add_kind`
+   sentinels, `MAX_NESTED_DEPTH`, the flat `field_row`. *Gate: the **last** pane
+   migrated (step 4 complete) — never before, or two inspectors coexist.*
 
-Core cuts (1) are independent and go first; editor deletion (4) is gated on the
-derive existing, (2)+(3). **Portal is keep — there is no portal migration**; the
-earlier draft's mention of one was stale.
+Step 1 is independent and goes first; the editor deletion (5) is gated on the whole
+build chain (2→3→4). **Portal is keep — there is no portal migration**; the earlier
+draft's mention of one was stale.
 
 **Still open / not active:**
 
