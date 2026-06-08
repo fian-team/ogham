@@ -771,6 +771,34 @@ step is tagged with where it lands and what gates it.
 > recorded where they occurred: the `$variant` blast radius was ~3× the estimate and
 > spanned four crates (§4 wart 3); `field_node` is interim-tiered pending recursion
 > (§4, the render-consequence note).
+>
+> **Progress (2026-06-08d):** Steps **3.5, 4, and 5 are now DONE and committed** —
+> the migration is complete. Each step was built, independently reviewed, and
+> committed (`ogham cbb72c8`; `small_mercies b3253e7`/`579b51d`/`d91d452`/`e82eacd`/
+> `17e1337`). Final state: `ogham` 527 tests; `content-core` 185, `editor` 190.
+> **3.5** — function self-recursion landed (the one-line slot-0 bind needed a
+> companion change: the `let name = fn …` declaration path now threads the binding
+> name through, since function literals don't carry it; anonymous `fn` keep the
+> unreferenceable `"fn"` slot). `field_node` collapsed from 9 tiers to one true
+> recursive component (1581→378 lines), depth cap gone. **4** — all **11**
+> inspector-bearing panes migrated onto the nested read; `editable_default()`-shape
+> shifts and the `Option`/`$variant` two-step gestures are the visible consequences.
+> **5** — ~6k lines of flat/serde machinery deleted (`schema_form.rs`,
+> `widgets/effects.rs`, per-pane flat projections + write handlers). As-built
+> deviations: (a) the doc's retire-list named `InspectorField`/`FieldKind`/
+> `field_row`/`inspector_value` for deletion, but they **survive** — the **Map**
+> pane's Places/Regions inspector (already an §4 carve-out), the **items** add-kind
+> chooser, **conversations** Topics-nav + inline rename, the **backstory** canvas
+> chrome, and **assets** lint rows are legitimate remaining flat consumers; (b) a
+> host-side **prune** (`inspector/prune.rs`) realizes the "editor surfaces a per-tool
+> filter, not `#[editable(skip)]`" tenet for `characters`/`items`/`backstory` (e.g.
+> `characters` drops `dialogue` + runtime state while the full type still
+> round-trips on write); (c) the map-add UX uses a host-stamped `next_key` (the
+> runtime `TextInput` has no submit event). **Open follow-up:** the editable op set
+> has no **`RenameMapEntry`**, so new map entries are stuck at a `key_<n>` placeholder
+> (id-keyed maps like `sheet.stats` can't be author-named through the seam) — add it
+> to `editable` before relying on map authoring in anger. Conversations' gate
+> downgraded from the structured atom buffer to a raw-formula leaf (no data loss).
 
 1. **[`ogham`] — safe-immediate cuts** ✅ **[DONE]** (independent, 0–1 sites; grep-verify no
    hidden consumer first): the `OghamState`/`OghamMsg` traits + manifest matching +
@@ -794,19 +822,26 @@ step is tagged with where it lands and what gates it.
    `option` kind rendering + the two new write events (`add_map_entry` /
    `remove_map_entry`). The `PaneAction`→`FieldOp` decode extracted into
    `editor/src/edit_apply.rs`. *Gate: step 2b — met.*
-3.5. **[`ogham`] — function self-recursion** ⏳ **[DECIDED, TODO]** Bind the
+3.5. **[`ogham`] — function self-recursion** ✅ **[DONE]** Bind the
    callee slot to the function name in `compile_function` (§4 render-consequence
-   note); replace `recursive_function_not_supported` with positive tests; cover
-   self-capturing closures + nested components. *Gate: none (independent core change);
-   prerequisite for finalizing step 4's `field_node` as true recursion and removing
-   the depth cap.*
-4. **[`small_mercies`] — migrate** the panes onto the derived read, one at a time.
-   *Gate: step 3 (met) + step 3.5 (for the un-tiered `field_node`).*
-5. **[`small_mercies`] — then delete** the flat/serde editor machinery (§4 "What the
-   derived read retires"): `schema_form.rs`, `FieldKind`, `InspectorField`, the
-   `*_value` projections, the `§list` marker, the `__add`/`__objdel`/`__add_kind`
-   sentinels, `MAX_NESTED_DEPTH`, the flat `field_row`. *Gate: the **last** pane
-   migrated (step 4 complete) — never before, or two inspectors coexist.*
+   note) **+ thread the binding name through the `let name = fn …` declaration path**
+   (function literals don't carry their name); replaced `recursive_function_not_supported`
+   with positive tests; covered self-capturing closures + nested components. `ogham`
+   527 tests. *Gate: none — was a prerequisite for finalizing step 4's `field_node`.*
+4. **[`small_mercies`] — migrate** the panes onto the derived read. ✅ **[DONE]** All
+   11 inspector-bearing panes migrated (scenes, abilities, ruleset, characters,
+   tuning, assets, winnability, companion_reactions, items, conversations, backstory);
+   `field_node` de-tiered to true recursion; `characters`/`items`/`backstory` use a
+   host-side prune (`inspector/prune.rs`) for delegated/runtime fields. Carve-outs
+   left flat by design: Map inspector, conversations Topics-nav, backstory canvas.
+   *Gate: step 3 + step 3.5 — met.*
+5. **[`small_mercies`] — then delete** the flat/serde editor machinery. ✅ **[DONE]**
+   Deleted `schema_form.rs`, `widgets/effects.rs`, the `§list`/`__add`/`__objdel`/
+   `__add_kind` sentinels, `MAX_NESTED_DEPTH`, per-pane flat projections + write
+   handlers (~6k lines). **`FieldKind`/`InspectorField`/`field_row`/`inspector_value`
+   survive** — they remain load-bearing for the Map inspector + the items chooser +
+   the conversations/backstory nav carve-outs (an as-built correction to the
+   retire-list, which assumed Map also migrated). *Gate: the last pane migrated — met.*
 
 Step 1 is independent and goes first; the editor deletion (5) is gated on the whole
 build chain (2→3→4). **Portal is keep — there is no portal migration**; the earlier
