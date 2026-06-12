@@ -382,6 +382,14 @@ impl Widget for PresenceWidget {
         // every animated descendant.
         self.inner.restart_entry_animation();
     }
+
+    fn add_group_delay(&mut self, secs: f32) {
+        self.inner.add_group_delay(secs);
+    }
+
+    fn strip_inherited_group_delay(&mut self) {
+        self.inner.strip_inherited_group_delay();
+    }
 }
 
 #[cfg(test)]

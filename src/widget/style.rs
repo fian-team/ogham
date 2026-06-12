@@ -53,6 +53,13 @@ pub struct FlexStyle {
     pub text_size: Option<f32>,
     pub text_color: Option<Color>,
     pub overflow: Overflow,
+    /// Scroll containers only: keep the view pinned to the END of the
+    /// content as it grows — the chat-log convention. The first layout
+    /// lands on the latest content (no ease-in), and any growth while the
+    /// view sits at the bottom re-pins it there; scrolling up disengages
+    /// the follow until the user returns to the bottom. Ignored unless
+    /// `overflow` is [`Overflow::Scroll`].
+    pub scroll_follow_end: bool,
     /// Paint-time opacity applied to the widget and its descendants.
     /// 1.0 is fully opaque; values less than 1.0 trigger a Skia layer
     /// composite. Does not affect layout.
@@ -74,6 +81,39 @@ pub struct FlexStyle {
     /// Spring-driven transitions declared for specific style properties.
     /// Empty by default — properties snap to new values unless opted in.
     pub transitions: TransitionSet,
+    /// Group-moment cascade for this container's CHILDREN. When set, the
+    /// container injects per-child spring delays at the three moments it
+    /// owns — construction, entry restart, and a parent-initiated exit
+    /// cascade — so children stagger in/out by index. Children inserted
+    /// or removed individually by reconciliation are deliberately NOT
+    /// delayed: the stagger belongs to the group, not the item. Offsets
+    /// compose by summation through nested staggered containers.
+    pub stagger: Option<StaggerConfig>,
+}
+
+/// Per-child delay cascade declared on a container — see
+/// [`FlexStyle::stagger`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaggerConfig {
+    /// Seconds between consecutive children's entry springs.
+    pub step: f32,
+    /// Seconds between consecutive children's exit springs in a
+    /// parent-initiated exit cascade. Defaults to `step`; set 0 for an
+    /// entry-only stagger (everything leaves together).
+    pub exit_step: f32,
+    /// Which end of the list the exit cascade starts from.
+    pub exit_order: StaggerOrder,
+}
+
+/// Direction of a [`StaggerConfig`] exit cascade.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum StaggerOrder {
+    /// Same order as entry: the first child leaves first.
+    Forward,
+    /// Mirror of entry: the last child leaves first, so the list peels
+    /// away the way it arrived (default).
+    #[default]
+    Reverse,
 }
 
 /// A single-knob backdrop filter. Currently exposes Gaussian blur only;
@@ -175,11 +215,13 @@ impl Default for FlexStyle {
             text_size: None,
             text_color: None,
             overflow: Overflow::Visible,
+            scroll_follow_end: false,
             opacity: Opacity::OPAQUE,
             transform: Transform::IDENTITY,
             backdrop_filter: None,
             inner_glow: None,
             transitions: TransitionSet::default(),
+            stagger: None,
         }
     }
 }

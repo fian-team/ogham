@@ -269,22 +269,30 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 self.client.handle_ui_event(&ui_event);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                match delta {
+                let (dx, dy) = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         // Match common desktop conventions (~3 lines per notch
                         // at ~16px line height = ~50px). The previous 15px was
                         // a single-line value and made each notch barely move.
-                        let pixel_delta_x = x * 50.0;
-                        let pixel_delta_y = y * 50.0;
-                        self.input
-                            .set_scroll_delta(glm::vec2(pixel_delta_x, pixel_delta_y));
+                        (x * 50.0, y * 50.0)
                     }
                     winit::event::MouseScrollDelta::PixelDelta(position) => {
                         let scale_factor = self.window.scale_factor();
-                        let x = position.x as f32 / scale_factor as f32;
-                        let y = position.y as f32 / scale_factor as f32;
-                        self.input.set_scroll_delta(glm::vec2(x, y));
+                        (
+                            position.x as f32 / scale_factor as f32,
+                            position.y as f32 / scale_factor as f32,
+                        )
                     }
+                };
+                // The UI sees the wheel first — a scroll container (or any
+                // interaction-blocking panel) under the cursor consumes it;
+                // only an unconsumed wheel reaches the game `Input` (where
+                // e.g. a map camera reads it as zoom).
+                let cursor_pos = self.input.cursor_position();
+                let ui_event =
+                    Event::scroll(Point::new(cursor_pos.x, cursor_pos.y), dx, dy);
+                if !self.client.handle_ui_event(&ui_event) {
+                    self.input.set_scroll_delta(glm::vec2(dx, dy));
                 }
             }
             _ => (),

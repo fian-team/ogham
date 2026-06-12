@@ -1679,6 +1679,24 @@ pub trait Widget: Downcast {
     /// `initial_style` (or no enabled transitions) are no-ops.
     fn restart_entry_animation(&mut self) {}
 
+    /// Shift every active spring delay in this subtree by `secs` and
+    /// record the shift, so [`Widget::strip_inherited_group_delay`] can
+    /// undo it. Staggered containers (`FlexStyle::stagger`) call this on
+    /// each child at group moments — construction, entry restart, exit
+    /// cascade — to offset the children into a cascade. No-op for
+    /// widgets without springs.
+    fn add_group_delay(&mut self, secs: f32) {
+        let _ = secs;
+    }
+
+    /// Remove whatever group delay this widget inherited from *ancestor*
+    /// staggered containers, leaving cascades injected by containers
+    /// inside this subtree intact. Reconciliation calls this on
+    /// brand-new children spliced into an already-live parent: such a
+    /// widget mounts individually, not with its group, so it must not
+    /// sit out a cascade slot that isn't happening.
+    fn strip_inherited_group_delay(&mut self) {}
+
     /// Advance any in-flight style transitions and recursively
     /// tick children. Returns the merged tick result so the UI
     /// root can flag the tree for repaint/layout when animations

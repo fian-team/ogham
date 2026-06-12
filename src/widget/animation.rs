@@ -24,6 +24,11 @@ const SETTLE_VEL: f32 = 0.01;
 pub struct TransitionConfig {
     pub stiffness: f32,
     pub damping: f32,
+    /// Seconds a freshly created spring holds at its starting value before
+    /// integrating. Applies when the spring is *created* (entry animations,
+    /// first divergence of a property); a retarget of an already-live spring
+    /// does not re-arm it. This is what staggered entrances are built from.
+    pub delay: f32,
 }
 
 impl TransitionConfig {
@@ -31,6 +36,7 @@ impl TransitionConfig {
     pub const DEFAULT: Self = Self {
         stiffness: 170.0,
         damping: 26.0,
+        delay: 0.0,
     };
 }
 
@@ -48,6 +54,9 @@ pub struct Spring {
     pub current: f32,
     pub velocity: f32,
     pub target: f32,
+    /// Seconds left of the config's start `delay`. While positive, `tick`
+    /// burns time instead of integrating and the spring holds at `current`.
+    pub delay: f32,
     pub config: TransitionConfig,
 }
 
@@ -57,6 +66,7 @@ impl Spring {
             current: initial,
             velocity: 0.0,
             target: initial,
+            delay: config.delay,
             config,
         }
     }
@@ -68,7 +78,17 @@ impl Spring {
     /// Step the spring forward by `dt` seconds. Returns `true` while the
     /// spring is still moving. When it settles, current is snapped exactly
     /// to the target and the velocity is zeroed so no further ticks fire.
-    pub fn tick(&mut self, dt: f32) -> bool {
+    pub fn tick(&mut self, mut dt: f32) -> bool {
+        if self.delay > 0.0 {
+            let consumed = self.delay.min(dt);
+            self.delay -= consumed;
+            dt -= consumed;
+            if dt <= 0.0 {
+                // Still holding at the start value. Report "moving" while
+                // displaced so ticks keep coming and the hold isn't culled.
+                return !self.is_settled();
+            }
+        }
         // Cap each integration step to keep the simple Euler integrator
         // stable at our default stiffness (~170). 1/120s is tight enough
         // for stiffness well north of 500 while keeping the typical case
@@ -96,6 +116,15 @@ impl Spring {
 
     pub fn is_settled(&self) -> bool {
         (self.target - self.current).abs() < SETTLE_POS && self.velocity.abs() < SETTLE_VEL
+    }
+
+    /// Shift the remaining start delay by `secs` (clamped at zero).
+    /// Staggered containers use this to inject group-cascade offsets
+    /// into freshly created springs — and, negated, to strip an
+    /// inherited offset from a subtree that turned out to mount
+    /// individually rather than with its group.
+    pub fn add_delay(&mut self, secs: f32) {
+        self.delay = (self.delay + secs).max(0.0);
     }
 }
 
@@ -183,6 +212,13 @@ impl ColorSprings {
     pub fn is_settled(&self) -> bool {
         self.r.is_settled() && self.g.is_settled() && self.b.is_settled() && self.a.is_settled()
     }
+
+    pub fn add_delay(&mut self, secs: f32) {
+        self.r.add_delay(secs);
+        self.g.add_delay(secs);
+        self.b.add_delay(secs);
+        self.a.add_delay(secs);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +268,13 @@ impl SpacingSprings {
             && self.right.is_settled()
             && self.bottom.is_settled()
             && self.left.is_settled()
+    }
+
+    pub fn add_delay(&mut self, secs: f32) {
+        self.top.add_delay(secs);
+        self.right.add_delay(secs);
+        self.bottom.add_delay(secs);
+        self.left.add_delay(secs);
     }
 }
 
@@ -350,6 +393,13 @@ impl CornersSprings {
             && self.bottom_left.is_settled()
             && self.bottom_right.is_settled()
     }
+
+    pub fn add_delay(&mut self, secs: f32) {
+        self.top_left.size.add_delay(secs);
+        self.top_right.size.add_delay(secs);
+        self.bottom_left.size.add_delay(secs);
+        self.bottom_right.size.add_delay(secs);
+    }
 }
 
 /// Springs for the three animatable components of an inner glow: the
@@ -395,6 +445,12 @@ impl InnerGlowSprings {
 
     pub fn is_settled(&self) -> bool {
         self.color.is_settled() && self.blur.is_settled() && self.spread.is_settled()
+    }
+
+    pub fn add_delay(&mut self, secs: f32) {
+        self.color.add_delay(secs);
+        self.blur.add_delay(secs);
+        self.spread.add_delay(secs);
     }
 }
 
@@ -485,6 +541,17 @@ impl BorderSprings {
             && self.bottom_width.is_settled()
             && self.left_width.is_settled())
     }
+
+    pub fn add_delay(&mut self, secs: f32) {
+        self.top_width.add_delay(secs);
+        self.right_width.add_delay(secs);
+        self.bottom_width.add_delay(secs);
+        self.left_width.add_delay(secs);
+        self.top_color.add_delay(secs);
+        self.right_color.add_delay(secs);
+        self.bottom_color.add_delay(secs);
+        self.left_color.add_delay(secs);
+    }
 }
 
 /// Springs for the five scalar components of an affine transform.
@@ -541,6 +608,14 @@ impl TransformSprings {
             && self.scale_x.is_settled()
             && self.scale_y.is_settled()
             && self.rotate.is_settled()
+    }
+
+    pub fn add_delay(&mut self, secs: f32) {
+        self.translate_x.add_delay(secs);
+        self.translate_y.add_delay(secs);
+        self.scale_x.add_delay(secs);
+        self.scale_y.add_delay(secs);
+        self.rotate.add_delay(secs);
     }
 }
 
@@ -906,6 +981,44 @@ impl AnimationState {
             || self.gap.is_some()
             || self.text_size.is_some()
     }
+
+    /// Shift every active spring's remaining start delay by `secs`
+    /// (each clamped at zero). The group-stagger injection/strip hook.
+    pub fn add_delay(&mut self, secs: f32) {
+        if let Some(s) = self.background_color.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.text_color.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.border.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.corners.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.padding.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.margin.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.gap.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.text_size.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.opacity.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.transform.as_mut() {
+            s.add_delay(secs);
+        }
+        if let Some(s) = self.inner_glow.as_mut() {
+            s.add_delay(secs);
+        }
+    }
 }
 
 fn spacing_matches(a: &Spacing, b: &Spacing) -> bool {
@@ -974,6 +1087,29 @@ mod tests {
         }
         assert!(s.is_settled(), "spring did not settle");
         assert!((s.current - 100.0).abs() < 0.5, "current={}", s.current);
+    }
+
+    #[test]
+    fn spring_holds_through_delay_then_settles() {
+        let cfg = TransitionConfig {
+            delay: 0.5,
+            ..TransitionConfig::DEFAULT
+        };
+        let mut s = Spring::new(0.0, cfg);
+        s.set_target(100.0);
+        // During the hold: no movement, but still reported as animating.
+        assert!(s.tick(0.3), "held spring must keep ticking");
+        assert_eq!(s.current, 0.0, "spring moved during its delay");
+        assert!(!s.is_settled());
+        // This tick crosses the delay boundary: 0.2s burns the hold, the
+        // remaining 0.1s integrates.
+        assert!(s.tick(0.3));
+        assert!(s.current > 0.0, "spring should move once the delay elapses");
+        for _ in 0..120 {
+            s.tick(1.0 / 60.0);
+        }
+        assert!(s.is_settled());
+        assert!((s.current - 100.0).abs() < 0.5);
     }
 
     #[test]

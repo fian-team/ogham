@@ -60,6 +60,12 @@ pub struct FlexWidget {
     /// stays in the parent's `children` list until its springs settle,
     /// then is dropped on the next reconcile pass.
     pub exiting: bool,
+    /// Net spring-delay offset injected into this subtree by staggered
+    /// ancestor containers (`FlexStyle::stagger`). Tracked so reconcile
+    /// can strip exactly the inherited amount from a subtree that turns
+    /// out to mount individually rather than with its group, while
+    /// cascades injected by containers *inside* the subtree survive.
+    pub group_delay: f32,
     /// Debug-only: consecutive frames where this widget reported
     /// `layout_effects && still_moving` from `tick_own_animations`.
     /// Used to identify a stuck spring by emitting a single warning
@@ -121,6 +127,7 @@ impl FlexWidget {
             viewport_height: 0.0,
             animations: AnimationState::default(),
             exiting: false,
+            group_delay: 0.0,
             #[cfg(debug_assertions)]
             layout_anim_frames: 0,
             owned_path_prefix: String::new(),
@@ -150,6 +157,7 @@ impl FlexWidget {
             viewport_height: 0.0,
             animations: AnimationState::default(),
             exiting: false,
+            group_delay: 0.0,
             #[cfg(debug_assertions)]
             layout_anim_frames: 0,
             owned_path_prefix: String::new(),
@@ -211,6 +219,27 @@ impl FlexWidget {
             // initial and declared are identical on all transition-
             // declared properties — nothing to animate.
             self.style = target;
+        }
+    }
+
+    /// Inject this container's entry-stagger offsets into each child's
+    /// subtree (see [`FlexStyle::stagger`]). Called at the two entry
+    /// group moments — construction (by the builder, once children's
+    /// springs exist) and entry restart — never on reconcile, so
+    /// individually inserted children don't inherit a cascade slot.
+    pub fn apply_child_stagger_offsets(&mut self) {
+        let Some(stagger) = self.declared_style.stagger else {
+            return;
+        };
+        if stagger.step <= 0.0 {
+            return;
+        }
+        for (i, child) in self.children.iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            let mut g = child.lock().expect("widget lock poisoned");
+            g.add_group_delay(i as f32 * stagger.step);
         }
     }
 
@@ -441,14 +470,26 @@ impl FlexWidget {
                             // boundary — drain-time semantics.
                             agg.drained_path_prefixes.push(prefix);
                         }
+                        {
+                            let mut g = new_child.lock().expect("widget lock poisoned");
+                            g.strip_inherited_group_delay();
+                        }
                         next.push(new_child.clone());
                     }
                 }
             } else {
                 // Brand-new keyed child or a fresh tail entry — structural
-                // change, layout has to re-flow.
+                // change, layout has to re-flow. It mounts individually,
+                // not with its group: strip any cascade offset that
+                // staggered ancestors in the (discarded) new tree
+                // injected at construction, so the lone newcomer doesn't
+                // sit out a cascade slot that isn't happening.
                 agg.needs_layout = true;
                 agg.needs_repaint = true;
+                {
+                    let mut g = new_child.lock().expect("widget lock poisoned");
+                    g.strip_inherited_group_delay();
+                }
                 next.push(new_child.clone());
             }
         }
@@ -1546,10 +1587,24 @@ impl Widget for FlexWidget {
                     max_bottom = max_bottom.max(r.y + r.height);
                 }
             }
+            // Follow-the-tail (`scroll_follow_end`): decide from the PRE-update
+            // extents whether the view sat at the bottom, so content growth
+            // can't un-pin it before we compare.
+            let first_measure = self.viewport_height == 0.0;
+            let was_max = (self.content_height - self.viewport_height).max(0.0);
+            let was_pinned = self.scroll_y_target >= was_max - 0.5;
             self.content_height = max_bottom - content_top;
             self.viewport_height = content_height;
 
             let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+            if self.style.scroll_follow_end && (first_measure || was_pinned) {
+                self.scroll_y_target = max_scroll;
+                if first_measure {
+                    // Land on the latest content; easing in from the top on
+                    // mount would replay the whole history as an animation.
+                    self.scroll_y = max_scroll;
+                }
+            }
             self.scroll_y_target = self.scroll_y_target.clamp(0.0, max_scroll);
             self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
         }
@@ -1715,14 +1770,32 @@ impl Widget for FlexWidget {
         // nothing to animate), try to begin_exit on each child. If any
         // child can animate out, become a passive ghost so the subtree
         // stays in the tree until its exiting descendants finish.
+        //
+        // A parent-initiated cascade is a group moment: when this
+        // container declares `stagger`, offset each exiting child's
+        // springs by its slot so the children peel out in sequence.
+        // (Individual removals via reconcile call begin_exit on the
+        // orphan directly and never pass through here, so they exit
+        // undelayed by design.)
         let mut any_descendant_exiting = false;
         let children = self.children.clone();
-        for child in &children {
-            let started = {
-                let mut g = child.lock().expect("widget lock poisoned");
-                g.begin_exit()
-            };
-            if started {
+        let count = children.len();
+        let stagger = self
+            .declared_style
+            .stagger
+            .filter(|s| s.exit_step > 0.0 && count > 1);
+        for (i, child) in children.iter().enumerate() {
+            let mut g = child.lock().expect("widget lock poisoned");
+            if g.begin_exit() {
+                if let Some(st) = stagger {
+                    let slot = match st.exit_order {
+                        StaggerOrder::Forward => i,
+                        StaggerOrder::Reverse => count - 1 - i,
+                    };
+                    if slot > 0 {
+                        g.add_group_delay(slot as f32 * st.exit_step);
+                    }
+                }
                 any_descendant_exiting = true;
             }
         }
@@ -1793,6 +1866,10 @@ impl Widget for FlexWidget {
         // a true reset: springs that start at `initial` and ease to
         // declared.
         self.animations = AnimationState::default();
+        // Fresh springs above — any previously inherited group offset
+        // died with them; ancestors re-inject as the restart cascade
+        // unwinds back up the tree.
+        self.group_delay = 0.0;
         // Re-seed style ↔ initial and arm the spring toward declared.
         // No-op if this widget has no initial_style or transitions.
         self.apply_entry_transition();
@@ -1801,6 +1878,35 @@ impl Widget for FlexWidget {
         for child in &children {
             let mut g = child.lock().expect("widget lock poisoned");
             g.restart_entry_animation();
+        }
+        // Children's springs are re-armed; offset them into this
+        // container's cascade. Runs after the child cascade so nested
+        // staggered containers' own offsets are already in place and
+        // ancestor offsets sum on top.
+        self.apply_child_stagger_offsets();
+    }
+
+    fn add_group_delay(&mut self, secs: f32) {
+        if secs == 0.0 {
+            return;
+        }
+        self.animations.add_delay(secs);
+        self.group_delay = (self.group_delay + secs).max(0.0);
+        let children = self.children.clone();
+        for child in &children {
+            let mut g = child.lock().expect("widget lock poisoned");
+            g.add_group_delay(secs);
+        }
+    }
+
+    fn strip_inherited_group_delay(&mut self) {
+        // Subtracting exactly the inherited amount from the whole
+        // subtree leaves cascades injected by containers *inside* it
+        // intact: descendants carry `inherited + internal` and keep
+        // `internal`.
+        let inherited = self.group_delay;
+        if inherited > 0.0 {
+            self.add_group_delay(-inherited);
         }
     }
 
@@ -2042,6 +2148,10 @@ mod tests {
         fn contains_point(&self, _point: &Point) -> bool {
             false
         }
+
+        fn get_layout_rect(&self) -> Option<&Rect> {
+            self.layout.as_ref()
+        }
     }
 
     fn test_ctx() -> LayoutContext<'static> {
@@ -2199,6 +2309,47 @@ mod tests {
         assert!(
             h <= 40.0,
             "Shrink row with a fixed sibling ballooned: height {h}"
+        );
+    }
+
+    #[test]
+    fn test_scroll_follow_end_pins_to_growing_content() {
+        let ctx = test_ctx();
+        let mut style = FlexStyle::builder()
+            .width(Size::Fixed(100.0))
+            .height(Size::Fixed(100.0))
+            .direction(Direction::Column)
+            .build();
+        style.overflow = Overflow::Scroll;
+        style.scroll_follow_end = true;
+        let mut log = FlexWidget::with_style(style);
+        log.add_child(Arc::new(Mutex::new(TestWidget::new(50.0, 300.0))));
+
+        // First layout: land on the end (no ease-in from the top).
+        log.layout(&ctx, 0.0, 0.0, &Direction::Column, 100.0, 100.0, 400.0, 400.0, 0.0);
+        assert_eq!(
+            log.scroll_y_target, 200.0,
+            "first measure pins the target to the end"
+        );
+        assert_eq!(log.scroll_y, 200.0, "…and lands there without animating");
+
+        // Content grows while the view sits at the bottom: stay pinned.
+        log.add_child(Arc::new(Mutex::new(TestWidget::new(50.0, 100.0))));
+        log.layout(&ctx, 0.0, 0.0, &Direction::Column, 100.0, 100.0, 400.0, 400.0, 0.0);
+        assert_eq!(
+            log.scroll_y_target, 300.0,
+            "growth at the bottom re-pins to the new end"
+        );
+
+        // The reader scrolled up into the history: growth must NOT yank
+        // them back down.
+        log.scroll_y_target = 40.0;
+        log.scroll_y = 40.0;
+        log.add_child(Arc::new(Mutex::new(TestWidget::new(50.0, 100.0))));
+        log.layout(&ctx, 0.0, 0.0, &Direction::Column, 100.0, 100.0, 400.0, 400.0, 0.0);
+        assert_eq!(
+            log.scroll_y_target, 40.0,
+            "a reader up in the history stays put as the log grows"
         );
     }
 
@@ -3433,5 +3584,233 @@ mod tests {
             flex.animations.background_color.is_some(),
             "mid-animation spring state should survive reorder + update"
         );
+    }
+
+    // ── Stagger: group-moment cascades (`FlexStyle::stagger`) ──────────
+
+    use crate::widget::animation::TransitionConfig;
+
+    /// An entry/exit-capable child: opacity 0→1 on entry, →0 on exit,
+    /// with `authored_delay` baked into its own transition config.
+    fn stagger_child(authored_delay: f32) -> WidgetRef {
+        let mut declared = FlexStyle::default();
+        declared.transitions.opacity = Some(TransitionConfig {
+            delay: authored_delay,
+            ..TransitionConfig::DEFAULT
+        });
+        let mut initial = declared.clone();
+        initial.opacity = Opacity(0.0);
+        let mut exit = declared.clone();
+        exit.opacity = Opacity(0.0);
+        let mut w = FlexWidget::with_style(declared);
+        w.initial_style = Some(initial);
+        w.exit_style = Some(exit);
+        w.apply_entry_transition();
+        Arc::new(Mutex::new(w))
+    }
+
+    fn stagger_parent(stagger: StaggerConfig, children: Vec<WidgetRef>) -> FlexWidget {
+        let mut style = FlexStyle::default();
+        style.stagger = Some(stagger);
+        let mut parent = FlexWidget::with_style(style);
+        for c in children {
+            parent.add_child(c);
+        }
+        parent
+    }
+
+    fn opacity_delay(w: &WidgetRef) -> f32 {
+        let g = w.lock().expect("widget lock poisoned");
+        let f = g.downcast_ref::<FlexWidget>().expect("FlexWidget");
+        f.animations
+            .opacity
+            .as_ref()
+            .expect("opacity spring should be active")
+            .delay
+    }
+
+    const STEPPED: StaggerConfig = StaggerConfig {
+        step: 0.1,
+        exit_step: 0.05,
+        exit_order: StaggerOrder::Reverse,
+    };
+
+    #[test]
+    fn stagger_offsets_children_by_index_and_sums_authored_delay() {
+        let kids: Vec<WidgetRef> = vec![stagger_child(0.0), stagger_child(0.0), stagger_child(0.02)];
+        let mut parent = stagger_parent(STEPPED, kids);
+        parent.apply_child_stagger_offsets();
+
+        assert_eq!(opacity_delay(&parent.children[0]), 0.0);
+        assert!((opacity_delay(&parent.children[1]) - 0.1).abs() < 1e-6);
+        // Authored per-child delay survives underneath the group offset.
+        assert!((opacity_delay(&parent.children[2]) - 0.22).abs() < 1e-6);
+    }
+
+    #[test]
+    fn restart_entry_animation_reapplies_stagger_offsets() {
+        let kids: Vec<WidgetRef> = vec![stagger_child(0.0), stagger_child(0.0)];
+        let mut parent = stagger_parent(STEPPED, kids);
+        parent.apply_child_stagger_offsets();
+
+        // Settle everything, then restart — the cascade must re-arm.
+        for _ in 0..600 {
+            for c in parent.children.clone() {
+                let mut g = c.lock().expect("widget lock poisoned");
+                let f = g.downcast_mut::<FlexWidget>().expect("FlexWidget");
+                f.tick_own_animations(1.0 / 60.0);
+            }
+        }
+        parent.restart_entry_animation();
+
+        assert_eq!(opacity_delay(&parent.children[0]), 0.0);
+        assert!((opacity_delay(&parent.children[1]) - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn exit_cascade_staggers_in_reverse_by_default() {
+        let kids: Vec<WidgetRef> = vec![stagger_child(0.0), stagger_child(0.0), stagger_child(0.0)];
+        let mut parent = stagger_parent(STEPPED, kids);
+        // Settle entries so begin_exit creates fresh exit springs.
+        for c in parent.children.clone() {
+            let mut g = c.lock().expect("widget lock poisoned");
+            let f = g.downcast_mut::<FlexWidget>().expect("FlexWidget");
+            for _ in 0..600 {
+                f.tick_own_animations(1.0 / 60.0);
+            }
+        }
+
+        assert!(parent.begin_exit(), "cascade should start");
+        // Reverse order: the LAST child leaves first.
+        assert!((opacity_delay(&parent.children[0]) - 0.1).abs() < 1e-6);
+        assert!((opacity_delay(&parent.children[1]) - 0.05).abs() < 1e-6);
+        assert_eq!(opacity_delay(&parent.children[2]), 0.0);
+    }
+
+    #[test]
+    fn exit_cascade_respects_forward_order_and_zero_exit_step() {
+        let forward = StaggerConfig {
+            step: 0.1,
+            exit_step: 0.05,
+            exit_order: StaggerOrder::Forward,
+        };
+        let kids: Vec<WidgetRef> = vec![stagger_child(0.0), stagger_child(0.0)];
+        let mut parent = stagger_parent(forward, kids);
+        for c in parent.children.clone() {
+            let mut g = c.lock().expect("widget lock poisoned");
+            let f = g.downcast_mut::<FlexWidget>().expect("FlexWidget");
+            for _ in 0..600 {
+                f.tick_own_animations(1.0 / 60.0);
+            }
+        }
+        assert!(parent.begin_exit());
+        assert_eq!(opacity_delay(&parent.children[0]), 0.0);
+        assert!((opacity_delay(&parent.children[1]) - 0.05).abs() < 1e-6);
+
+        // exit_step 0 = entry-only stagger: everything leaves together.
+        let entry_only = StaggerConfig {
+            step: 0.1,
+            exit_step: 0.0,
+            exit_order: StaggerOrder::Reverse,
+        };
+        let kids: Vec<WidgetRef> = vec![stagger_child(0.0), stagger_child(0.0)];
+        let mut parent = stagger_parent(entry_only, kids);
+        for c in parent.children.clone() {
+            let mut g = c.lock().expect("widget lock poisoned");
+            let f = g.downcast_mut::<FlexWidget>().expect("FlexWidget");
+            for _ in 0..600 {
+                f.tick_own_animations(1.0 / 60.0);
+            }
+        }
+        assert!(parent.begin_exit());
+        assert_eq!(opacity_delay(&parent.children[0]), 0.0);
+        assert_eq!(opacity_delay(&parent.children[1]), 0.0);
+    }
+
+    #[test]
+    fn reconcile_strips_inherited_offset_from_individually_mounted_child() {
+        // Live parent with no children; the "new tree" hands it a child
+        // whose ancestors injected a cascade offset at construction.
+        // The child mounts alone, so the offset must be stripped back to
+        // its authored delay.
+        let mut live = FlexWidget::new();
+        let newcomer = stagger_child(0.02);
+        {
+            let mut g = newcomer.lock().expect("widget lock poisoned");
+            g.add_group_delay(0.27); // simulated new-tree ancestor injection
+        }
+        let mut new_children = vec![newcomer];
+        live.reconcile_children(&mut new_children);
+
+        assert!((opacity_delay(&live.children[0]) - 0.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn strip_preserves_cascades_internal_to_the_new_subtree() {
+        // A whole staggered list mounting as one new unit keeps its own
+        // internal cascade; only the offset inherited from ABOVE the
+        // unit is stripped.
+        let kids: Vec<WidgetRef> = vec![stagger_child(0.0), stagger_child(0.0)];
+        let mut container = stagger_parent(STEPPED, kids);
+        container.apply_child_stagger_offsets();
+        let container_ref: WidgetRef = Arc::new(Mutex::new(container));
+        {
+            let mut g = container_ref.lock().expect("widget lock poisoned");
+            g.add_group_delay(0.3); // simulated new-tree ancestor injection
+        }
+
+        let mut live = FlexWidget::new();
+        let mut new_children = vec![container_ref];
+        live.reconcile_children(&mut new_children);
+
+        let g = live.children[0].lock().expect("widget lock poisoned");
+        let f = g.downcast_ref::<FlexWidget>().expect("FlexWidget");
+        assert_eq!(opacity_delay(&f.children[0]), 0.0, "inherited 0.3 stripped");
+        assert!(
+            (opacity_delay(&f.children[1]) - 0.1).abs() < 1e-6,
+            "internal cascade survives the strip"
+        );
+    }
+
+    #[test]
+    fn stagger_parses_from_source_and_sums_through_nesting() {
+        // End-to-end through the parser + builder: a staggered root with a
+        // plain leaf and a nested staggered list. Offsets must sum down the
+        // tree: leaf 0.0; list children 0.1 + j*0.1.
+        let src = r##"
+            let item = fn () {
+              Flex {
+                initial: { opacity: 0 },
+                style: {
+                  width: "grow", height: "shrink",
+                  transition: { opacity: { stiffness: 170, damping: 26 } },
+                },
+                children: [],
+              }
+            };
+            let main = fn () {
+              Flex {
+                style: { direction: "column", stagger: { step: 0.1 } },
+                children: [
+                  item(),
+                  Flex {
+                    style: { direction: "column", stagger: { step: 0.1 } },
+                    children: [item(), item()],
+                  },
+                ],
+              }
+            };
+        "##;
+        let o = crate::Ogham::from_source(src, crate::runtime::config::RuntimeConfig::default())
+            .expect("from_source");
+        let root = o.get_ui().root.clone();
+        let g = root.lock().expect("widget lock poisoned");
+        let f = g.downcast_ref::<FlexWidget>().expect("FlexWidget root");
+
+        assert_eq!(opacity_delay(&f.children[0]), 0.0);
+        let list = f.children[1].lock().expect("widget lock poisoned");
+        let list = list.downcast_ref::<FlexWidget>().expect("FlexWidget list");
+        assert!((opacity_delay(&list.children[0]) - 0.1).abs() < 1e-6);
+        assert!((opacity_delay(&list.children[1]) - 0.2).abs() < 1e-6);
     }
 }

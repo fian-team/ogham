@@ -449,6 +449,11 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     }
                 }
             }
+            "scroll_follow_end" => {
+                if let Value::Boolean(b) = value {
+                    style.scroll_follow_end = *b;
+                }
+            }
             "opacity" => {
                 if let Some(v) = value_to_f32(value) {
                     style.opacity = Opacity(v);
@@ -469,9 +474,42 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     style.transitions = set;
                 }
             }
+            "stagger" => {
+                if let Some(cfg) = parse_stagger_value(value) {
+                    style.stagger = Some(cfg);
+                }
+            }
             _ => {}
         }
     }
+}
+
+/// Parse a `stagger:` value — the per-child cascade declared on a
+/// container (see [`StaggerConfig`]). Accepted shape:
+/// `{ step, exit_step?, exit_order? }` where `step` (seconds, required)
+/// spaces consecutive children's entry springs, `exit_step` spaces a
+/// parent-initiated exit cascade (defaults to `step`; 0 disables exit
+/// staggering), and `exit_order` is `"forward"` or `"reverse"`
+/// (default reverse — the list peels away the way it arrived).
+fn parse_stagger_value(value: &Value) -> Option<StaggerConfig> {
+    let Value::Map(map) = value else {
+        return None;
+    };
+    let step = map.get("step").and_then(value_to_f32)?.max(0.0);
+    let exit_step = map
+        .get("exit_step")
+        .and_then(value_to_f32)
+        .map(|v| v.max(0.0))
+        .unwrap_or(step);
+    let exit_order = match map.get("exit_order") {
+        Some(Value::String(s)) if s == "forward" => StaggerOrder::Forward,
+        _ => StaggerOrder::Reverse,
+    };
+    Some(StaggerConfig {
+        step,
+        exit_step,
+        exit_order,
+    })
 }
 
 /// Parse a `transform:` value.
@@ -579,7 +617,9 @@ fn parse_transition_value(value: &Value) -> Option<TransitionSet> {
 
 /// Parse the value side of a single transition entry into a
 /// `TransitionConfig`. `true` / `"spring"` yield the default; a map with
-/// `stiffness` / `damping` yields a tuned spring.
+/// `stiffness` / `damping` yields a tuned spring; an optional `delay`
+/// (seconds) holds a freshly created spring at its start value first —
+/// the building block for staggered entrances.
 fn parse_transition_entry(value: &Value) -> Option<TransitionConfig> {
     match value {
         Value::Boolean(true) => Some(TransitionConfig::DEFAULT),
@@ -591,6 +631,9 @@ fn parse_transition_entry(value: &Value) -> Option<TransitionConfig> {
             }
             if let Some(v) = map.get("damping").and_then(value_to_f32) {
                 cfg.damping = v;
+            }
+            if let Some(v) = map.get("delay").and_then(value_to_f32) {
+                cfg.delay = v.max(0.0);
             }
             Some(cfg)
         }
@@ -885,6 +928,12 @@ fn create_flex_widget(
     // overrides `style` on the first frame and springs start moving
     // toward `declared_style` on the next tick.
     flex_widget.apply_entry_transition();
+
+    // Construction is a group moment: children were built above (their
+    // entry springs are armed), so a declared `stagger:` offsets each
+    // child's subtree into the cascade now. Reconcile strips this from
+    // any child that ends up mounting individually.
+    flex_widget.apply_child_stagger_offsets();
 
     Ok(Arc::new(Mutex::new(flex_widget)))
 }
