@@ -505,6 +505,56 @@ let main = fn () {
     assert_eq!(run(source), Value::Integer(2));
 }
 
+#[test]
+fn for_loop_closures_capture_per_iteration_loop_variable() {
+    // Each closure created in the loop body captures the loop variable `i`.
+    // Before the fix, the loop counter was a single shared slot closed only
+    // when the whole loop ended, so every closure saw the final value
+    // (== range end). Now `i` is a fresh per-iteration local that is
+    // snapshotted (CloseUpvalue) at the end of each iteration, so each
+    // closure observes its own value. Crucially the closures are invoked
+    // AFTER the loop has finished.
+    let source = r#"
+let main = fn () {
+    let cbs = for (i in 0..4) { fn () { i } };
+    return for (j in 0..cbs.length()) { cbs[j]() };
+};
+"#;
+    assert_eq!(
+        run(source),
+        Value::Array(vec![
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
+fn for_loop_captured_closure_indexes_array_after_loop() {
+    // Mirrors the consumer crash: a closure captures `i` and indexes the
+    // iterated array by it. After the loop, `i` must hold the per-iteration
+    // value, not `tabs.length()`, otherwise indexing panics with an
+    // out-of-bounds InvalidOperation. The closures are stored and invoked
+    // after the loop completes.
+    let source = r#"
+let main = fn () {
+    let tabs = [{key: "a"}, {key: "b"}, {key: "c"}];
+    let handlers = for (i in 0..tabs.length()) { fn () { tabs[i].key } };
+    return for (j in 0..handlers.length()) { handlers[j]() };
+};
+"#;
+    assert_eq!(
+        run(source),
+        Value::Array(vec![
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+            Value::String("c".to_string()),
+        ])
+    );
+}
+
 // ===========================================================================
 // Functions
 // ===========================================================================

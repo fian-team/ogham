@@ -890,7 +890,11 @@ impl Compiler {
         self.begin_scope();
 
         self.compile_expression(range_start)?;
-        let counter_slot = self.add_local(for_loop_variable.to_string(), false);
+        // The counter local is only ever referenced by slot (for the bounds
+        // check and the increment), never by name from the loop body — body
+        // name lookups resolve to the per-iteration copy added below, which
+        // shadows this one. Give it an internal name to make that explicit.
+        let counter_slot = self.add_local(format!("$counter_{}", for_loop_variable), false);
 
         self.compile_expression(range_end)?;
         let end_slot = self.add_local(format!("$end_{}", for_loop_variable), false);
@@ -901,7 +905,17 @@ impl Compiler {
         self.emit(OpCode::Lt);
         let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0));
 
+        // Per-iteration binding: copy the counter into a fresh local named
+        // after the loop variable so closures created in the body capture a
+        // distinct slot that gets closed (snapshotted) at the end of each
+        // iteration, rather than all aliasing the single shared counter slot.
+        self.begin_scope();
+        self.emit(OpCode::GetLocal(counter_slot));
+        self.add_local(for_loop_variable.to_string(), false);
+
         body_fn(self, counter_slot)?;
+
+        self.end_scope();
 
         self.emit(OpCode::GetLocal(counter_slot));
         self.emit_constant(Value::Integer(1));

@@ -18,6 +18,11 @@ pub struct RuntimeConfig {
         HashMap<String, Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync>>,
     pub project_root: Option<PathBuf>,
     pub import_paths: HashMap<String, PathBuf>,
+    /// In-memory sources for `import "..."` resolution, keyed by the import path
+    /// string exactly as written (e.g. `"./chrome.ogh"`). Consulted BEFORE the
+    /// filesystem, so a binary can embed its `.ogh` library via `include_str!`
+    /// and run with no source-tree dependency.
+    pub embedded_sources: HashMap<PathBuf, String>,
     pub fonts: Vec<FontEntry>,
     pub default_font: Option<String>,
     /// Custom widget factories keyed by lowercased type name. These are merged
@@ -52,6 +57,17 @@ impl RuntimeConfig {
 
     pub fn with_import_path(mut self, prefix: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         self.import_paths.insert(prefix.into(), path.into());
+        self
+    }
+
+    /// Provide in-memory sources for `import "..."` resolution, keyed by the
+    /// import path string exactly as written (e.g. `"./chrome.ogh"`). Consulted
+    /// before the filesystem, so a binary can carry its `.ogh` library with
+    /// `include_str!` and run with no source-tree dependency. The entry module
+    /// itself is passed to [`crate::Ogham::from_source`]; its imports (and
+    /// theirs, transitively) resolve from this map.
+    pub fn with_embedded_sources(mut self, sources: HashMap<PathBuf, String>) -> Self {
+        self.embedded_sources = sources;
         self
     }
 

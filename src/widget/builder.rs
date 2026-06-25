@@ -731,6 +731,18 @@ pub(crate) fn parse_size_value(value: &Value) -> Option<Size> {
             "grow" => Some(Size::Grow(1.0)),
             _ => None,
         },
+        // Weighted grow: `{ grow: 2 }` claims twice the share of free space a
+        // bare `"grow"` (basis 1.0) does — the basis is distributed
+        // proportionally among grow siblings. Lets authors express fractional
+        // splits (a `1` column beside a `2` column = a 1/3 : 2/3 layout).
+        Value::Map(map) => map
+            .get("grow")
+            .and_then(|v| match v {
+                Value::Float(f) => Some(*f as f32),
+                Value::Integer(i) => Some(*i as f32),
+                _ => None,
+            })
+            .map(Size::Grow),
         _ => None,
     }
 }

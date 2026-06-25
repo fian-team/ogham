@@ -162,6 +162,9 @@ impl StateManager {
 pub(crate) struct ImportResolver {
     pub(crate) project_root: Option<PathBuf>,
     pub(crate) import_paths: HashMap<String, PathBuf>,
+    /// In-memory sources keyed by the import path string (e.g. `"./chrome.ogh"`),
+    /// consulted before the filesystem so an embedded UI library needs no files.
+    pub(crate) embedded: HashMap<PathBuf, String>,
     loading_stack: Vec<PathBuf>,
     loaded: HashSet<PathBuf>,
     cache: HashMap<PathBuf, Environment>,
@@ -172,6 +175,7 @@ impl ImportResolver {
         Self {
             project_root: None,
             import_paths: HashMap::new(),
+            embedded: HashMap::new(),
             loading_stack: Vec::new(),
             loaded: HashSet::new(),
             cache: HashMap::new(),
@@ -241,6 +245,10 @@ impl Runtime {
 
     pub fn project_root(&self) -> Option<&PathBuf> {
         self.imports.project_root.as_ref()
+    }
+
+    pub fn set_embedded_sources(&mut self, sources: HashMap<PathBuf, String>) {
+        self.imports.embedded = sources;
     }
 
     pub fn set_import_paths(&mut self, paths: HashMap<String, PathBuf>) {
@@ -436,27 +444,42 @@ impl Runtime {
         &mut self,
         import_stmt: &ImportStatement,
     ) -> Result<Value, VMError> {
-        let project_root = self.imports.project_root.as_ref().ok_or_else(|| {
-            VMError::ImportError("project root not set; cannot resolve import path".to_string())
-        })?;
-
         let path_str = import_stmt.get_path();
 
-        let mut resolved = None;
-        for (prefix, base) in &self.imports.import_paths {
-            if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
-                let rest = rest.strip_prefix('/').unwrap_or(rest);
-                resolved = Some(base.join(rest));
-                break;
+        // Embedded (in-memory) sources resolve first — no project_root, no
+        // filesystem. Keyed by the import path string exactly as written, so a
+        // binary can carry its `.ogh` library via `include_str!`.
+        let embedded_src = self
+            .imports
+            .embedded
+            .get(std::path::Path::new(path_str))
+            .cloned();
+
+        let (resolved, key) = if embedded_src.is_some() {
+            let k = PathBuf::from(path_str);
+            (k.clone(), k)
+        } else {
+            let project_root = self.imports.project_root.as_ref().ok_or_else(|| {
+                VMError::ImportError("project root not set; cannot resolve import path".to_string())
+            })?;
+
+            let mut resolved = None;
+            for (prefix, base) in &self.imports.import_paths {
+                if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
+                    let rest = rest.strip_prefix('/').unwrap_or(rest);
+                    resolved = Some(base.join(rest));
+                    break;
+                }
             }
-        }
-        let mut resolved = resolved.unwrap_or_else(|| project_root.join(path_str));
+            let mut resolved = resolved.unwrap_or_else(|| project_root.join(path_str));
 
-        if resolved.extension().is_none() {
-            resolved.set_extension("ogh");
-        }
+            if resolved.extension().is_none() {
+                resolved.set_extension("ogh");
+            }
 
-        let key = resolved.canonicalize().unwrap_or(resolved.clone());
+            let key = resolved.canonicalize().unwrap_or(resolved.clone());
+            (resolved, key)
+        };
 
         if self.imports.loading_stack.contains(&key) {
             let mut cycle = self.imports.loading_stack.clone();
@@ -487,9 +510,12 @@ impl Runtime {
             return Ok(Value::Void);
         }
 
-        let source = fs::read_to_string(&resolved).map_err(|e| {
-            VMError::ImportError(format!("failed to read {}: {}", resolved.display(), e))
-        })?;
+        let source = match embedded_src {
+            Some(src) => src,
+            None => fs::read_to_string(&resolved).map_err(|e| {
+                VMError::ImportError(format!("failed to read {}: {}", resolved.display(), e))
+            })?,
+        };
 
         self.imports.loading_stack.push(key.clone());
 
@@ -634,6 +660,10 @@ impl Runtime {
 
             if !config.import_paths.is_empty() {
                 runtime.set_import_paths(config.import_paths.clone());
+            }
+
+            if !config.embedded_sources.is_empty() {
+                runtime.set_embedded_sources(config.embedded_sources.clone());
             }
 
             for (name, factory) in &config.custom_widgets {
