@@ -624,6 +624,22 @@ impl Widget for FlexWidget {
             let block_changed = self.block_interactions != new_flex_widget.block_interactions;
             let key_changed = self.key != new_flex_widget.key;
             let own_layout_changed = style_changed || hover_changed || block_changed || key_changed;
+            // A paint-only style change (background_color, text color, opacity, …)
+            // leaves `layout_equal` true, so `style_changed`/`hover_changed` miss it
+            // and `own_layout_changed` stays false. Detect ANY visual difference so
+            // such a change actually repaints: without this, a colour-only state
+            // change — e.g. a selected chip flipping to its accent highlight, whose
+            // label text is unchanged — updates the widget's style (below) but is
+            // never marked dirty, so it renders stale until an unrelated layout or
+            // text change happens to force a full repaint.
+            let own_paint_changed = !self
+                .declared_style
+                .paint_equal(&new_flex_widget.declared_style)
+                || match (&self.hover_style, &new_flex_widget.hover_style) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => !a.paint_equal(b),
+                    _ => true,
+                };
 
             // Snapshot the current rendered style — this is what the user
             // last saw on screen, including any mid-animation values — so
@@ -677,7 +693,9 @@ impl Widget for FlexWidget {
             UpdateResult {
                 absorbed: true,
                 needs_layout: own_layout_changed || children_result.needs_layout,
-                needs_repaint: own_layout_changed || children_result.needs_repaint,
+                needs_repaint: own_layout_changed
+                    || own_paint_changed
+                    || children_result.needs_repaint,
                 cancelled_unmount_prefixes: children_result.cancelled_unmount_prefixes,
                 drained_path_prefixes: children_result.drained_path_prefixes,
             }
@@ -3176,6 +3194,39 @@ mod tests {
         assert!(
             w.animations.background_color.is_some(),
             "entry animation should be armed"
+        );
+    }
+
+    #[test]
+    fn paint_only_background_change_marks_needs_repaint_not_relayout() {
+        // Regression: a widget whose ONLY change is background_color — e.g. a
+        // selected chip flipping to its accent highlight, label text unchanged —
+        // must report needs_repaint so it actually redraws. `layout_equal`
+        // ignores paint fields, so before `paint_equal` this returned
+        // needs_repaint:false and the new colour rendered stale until an
+        // unrelated layout/text change forced a repaint (the Lorekeeper
+        // map-editor mode-switcher "button doesn't highlight" bug).
+        let mut old = FlexWidget::new();
+        old.declared_style.background_color = Some(Color::new(24, 27, 33, 255));
+        old.style = old.declared_style.clone();
+
+        let mut new = FlexWidget::new();
+        new.declared_style.background_color = Some(Color::new(70, 100, 150, 255)); // accent
+        let new_ref: WidgetRef = Arc::new(Mutex::new(new));
+
+        let result = old.update(new_ref);
+        assert!(
+            result.needs_repaint,
+            "a paint-only background_color change must mark needs_repaint"
+        );
+        assert!(
+            !result.needs_layout,
+            "a paint-only change must not force a relayout"
+        );
+        assert_eq!(
+            old.style.background_color,
+            Some(Color::new(70, 100, 150, 255)),
+            "the new colour is adopted onto the rendered style"
         );
     }
 

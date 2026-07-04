@@ -287,6 +287,28 @@ impl FlexStyle {
             && self.overflow == other.overflow
     }
 
+    /// Equal in every PAINT-affecting field — the appearance complement of
+    /// [`layout_equal`]. Two styles that are both `layout_equal` and
+    /// `paint_equal` render identically.
+    ///
+    /// Used by [`FlexWidget::update`] to mark `needs_repaint` when only a
+    /// widget's appearance changed (no geometry): e.g. a selected chip flipping
+    /// its `background_color` to the accent. Without this, such a change updates
+    /// the widget's style but is never redrawn until an unrelated layout/text
+    /// change forces a repaint. (`border` and `text_size` affect layout and are
+    /// covered by `layout_equal`; `transitions`/`stagger` are animation config,
+    /// not appearance.)
+    pub fn paint_equal(&self, other: &Self) -> bool {
+        self.background_color == other.background_color
+            && self.text_color == other.text_color
+            && self.background_image == other.background_image
+            && self.corners == other.corners
+            && self.opacity == other.opacity
+            && self.transform == other.transform
+            && self.backdrop_filter == other.backdrop_filter
+            && self.inner_glow == other.inner_glow
+    }
+
     /// Returns the size along the given axis.
     pub fn size_on_axis(&self, axis: Axis) -> &Size {
         match axis {
