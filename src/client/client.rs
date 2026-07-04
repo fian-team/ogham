@@ -193,5 +193,5 @@ impl ClientUI for Client {
         self.get_ui_mut()
     }
 
-    fn render(&mut self, _surface: &mut SkiaSurface) {}
+    fn render(&mut self, _surface: &mut SkiaSurface, _width: f32, _height: f32) {}
 }

@@ -358,22 +358,32 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
             let dt = frame_length.as_secs_f32();
             self.update_client(dt);
 
-            {
-                let logical_size: LogicalSize<f64> = self
-                    .window
-                    .inner_size()
-                    .to_logical(self.window.scale_factor());
-                self.client.update_ui_layout(
-                    logical_size.width as f32,
-                    logical_size.height as f32,
-                    dt,
-                );
-            }
+            let logical_size: LogicalSize<f64> = self
+                .window
+                .inner_size()
+                .to_logical(self.window.scale_factor());
+            self.client.update_ui_layout(
+                logical_size.width as f32,
+                logical_size.height as f32,
+                dt,
+            );
 
             {
                 self.frame += 1;
                 self.gr_context.reset(None);
-                self.client.render(&mut self.ui_skia.surface);
+                // Clients draw in logical coordinates (see `ClientUI::render`):
+                // scale the canvas so their output maps 1:1 onto physical pixels
+                // on HiDPI displays, and restore before the widget pass —
+                // `SkiaEnv::draw` applies the DPI scale to coordinates itself.
+                let dpi = self.ui_skia.dpi_scale;
+                self.ui_skia.surface.canvas().save();
+                self.ui_skia.surface.canvas().scale((dpi, dpi));
+                self.client.render(
+                    &mut self.ui_skia.surface,
+                    logical_size.width as f32,
+                    logical_size.height as f32,
+                );
+                self.ui_skia.surface.canvas().restore();
                 self.ui_skia.draw(self.client.get_ui_mut());
 
                 self.gr_context.flush_and_submit();
@@ -402,7 +412,16 @@ pub trait ClientUI {
     fn needs_ui_update(&self) -> bool;
     fn update_ui_layout(&mut self, width: f32, height: f32, dt: f32);
     fn get_ui_mut(&mut self) -> &mut UI;
-    fn render(&mut self, surface: &mut SkiaSurface);
+    /// Draw the frame. `width`/`height` are the window's *logical* size —
+    /// the same units as [`update_ui_layout`] and mouse coordinates — and
+    /// the canvas arrives pre-scaled by the display's DPI factor, so all
+    /// Skia drawing is in logical coordinates and renders at native
+    /// resolution on HiDPI (Retina) displays. Raw GL work (viewports,
+    /// FBOs) bypasses the canvas matrix; use `surface.width()`/`height()`
+    /// for that, which remain physical pixels.
+    ///
+    /// [`update_ui_layout`]: ClientUI::update_ui_layout
+    fn render(&mut self, surface: &mut SkiaSurface, width: f32, height: f32);
 }
 
 pub fn create_application<T: ClientUpdate + ClientUI>(
