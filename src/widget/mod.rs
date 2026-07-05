@@ -632,6 +632,36 @@ impl UI {
     /// fired. Hosts wire this to right-click in their input
     /// pump; the event is distinct from `mouse_down` so left-
     /// vs right-click handling can diverge cleanly.
+    /// Whether a pointer press at `point` would be consumed by the chrome:
+    /// the side-effect-free twin of `call_event("mouse_down", …)` — no
+    /// listeners fire, no focus moves. Hosts that mix ogham chrome with
+    /// their own canvas-layer hit-testing (world hover, tooltips, click
+    /// selection) should gate that layer on this, or the world keeps
+    /// reacting underneath panels. Checks portal layers in hit-test order,
+    /// then the base tree.
+    pub fn blocks_point(&self, point: &Point) -> bool {
+        for entry in self.portal_layers.iter_hit_test_order() {
+            let child_point = Point::new(
+                point.x() - entry.viewport_rect.x,
+                point.y() - entry.viewport_rect.y,
+            );
+            let widget = entry.widget.lock().expect("widget lock poisoned");
+            for child in widget.get_children() {
+                if child
+                    .lock()
+                    .expect("widget lock poisoned")
+                    .blocks_point(&child_point)
+                {
+                    return true;
+                }
+            }
+        }
+        self.root
+            .lock()
+            .expect("widget lock poisoned")
+            .blocks_point(point)
+    }
+
     pub fn dispatch_contextmenu(&mut self, point: Point) -> bool {
         let target = self.hit_test_drag_target(&point);
         if let Some(target_ref) = target {
@@ -1576,6 +1606,17 @@ pub trait Widget: Downcast {
     /// absorbed and whether layout-affecting props actually differed.
     fn update(&mut self, new_widget: WidgetRef) -> UpdateResult;
     fn contains_point(&self, point: &Point) -> bool;
+
+    /// Whether a pointer press at `point` (parent-relative, same space as
+    /// `handle_event`) would be consumed by this widget subtree — the
+    /// side-effect-free twin of `handle_event`'s hit-test verdict
+    /// (`block_interactions || child || listener`). Hosts use the UI-level
+    /// wrapper ([`UI::blocks_point`]) to occlude game-world hover and
+    /// hit-testing under chrome. Leaf widgets that don't consume presses
+    /// keep this default.
+    fn blocks_point(&self, _point: &Point) -> bool {
+        false
+    }
     // fn is_focused(&self) -> bool;
     // fn focus(&mut self);
     // fn unfocus(&mut self);

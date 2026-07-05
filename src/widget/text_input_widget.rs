@@ -674,6 +674,11 @@ impl Widget for TextInputWidget {
         self.layout.as_ref().is_some_and(|r| r.contains(point))
     }
 
+    fn blocks_point(&self, point: &Point) -> bool {
+        // A field always consumes presses inside itself (focus + caret).
+        self.contains_point(point)
+    }
+
     fn set_hovered(&mut self, hovered: bool) {
         self.hovered = hovered;
     }

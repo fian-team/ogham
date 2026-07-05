@@ -200,10 +200,20 @@ impl SkiaEnv {
         paragraph_builder.push_style(&self.text_style);
         paragraph_builder.add_text(text);
         let mut paragraph = paragraph_builder.build();
+        // Measure at infinite width, then ALWAYS re-lay out at a finite
+        // width before painting: `text_align` offsets glyphs within the
+        // *layout* width, so painting the infinite measurement layout puts
+        // Center/Right-aligned text at x = +∞ (invisible). When the box is
+        // at least the intrinsic width (with a 0.5px tolerance so a box a
+        // hair narrow doesn't wrap its last glyph), lay out at the box
+        // width so alignment distributes the real slack; otherwise lay out
+        // at the box width and let the content wrap.
         paragraph.layout(f32::INFINITY);
         let intrinsic = paragraph.max_intrinsic_width();
         if scaled_width < intrinsic - 0.5 {
             paragraph.layout(scaled_width);
+        } else {
+            paragraph.layout(scaled_width.max(intrinsic));
         }
         paragraph
     }

@@ -114,7 +114,11 @@ impl TextWidget {
             } else if let Some(default) = ctx.default_font {
                 cache.skia_text_style.set_font_families(&[default]);
             } else {
-                cache.skia_text_style.set_font_families(&[] as &[&str]);
+                // See `text_layout::configure_geometry`: an empty slice
+                // aborts under skia-safe 0.91's slice preconditions; a
+                // single unresolvable name resets the reused style and
+                // falls back to the collection's default font manager.
+                cache.skia_text_style.set_font_families(&[""]);
             }
 
             let font_collection = ctx.font_collection.unwrap_or(&cache.font_collection);

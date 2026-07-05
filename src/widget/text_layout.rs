@@ -90,7 +90,13 @@ pub fn configure_geometry(
     if let Some(family) = style.get_font().or(default_font) {
         text_style.set_font_families(&[family]);
     } else {
-        text_style.set_font_families(&[] as &[&str]);
+        // "No families" intent, expressed with a single unresolvable name:
+        // skia-safe 0.91's `set_font_families` aborts the process on an
+        // empty slice (strict `slice::from_raw_parts` preconditions), and
+        // the style must still be overwritten because it is reused across
+        // widgets. An unknown family falls through to the collection's
+        // default font manager — the same behavior "no families" produced.
+        text_style.set_font_families(&[""]);
     }
     paragraph_style.set_text_align(match style.get_align() {
         TextAlign::Left => SkiaTextAlign::Left,

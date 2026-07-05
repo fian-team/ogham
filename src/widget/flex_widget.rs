@@ -1663,6 +1663,40 @@ impl Widget for FlexWidget {
         }
     }
 
+    fn blocks_point(&self, point: &Point) -> bool {
+        if !self.contains_point(point) {
+            return false;
+        }
+        if self.block_interactions {
+            return true;
+        }
+        // A pointer listener on a transparent shell still consumes presses.
+        if ["mouse_down", "mouse_up", "contextmenu"]
+            .iter()
+            .any(|name| self.event_listeners.contains_key(*name))
+        {
+            return true;
+        }
+        // Same child-space shift as `handle_event`.
+        let origin = self
+            .layout
+            .as_ref()
+            .map(|r| (r.x, r.y))
+            .unwrap_or((0.0, 0.0));
+        let scroll_y = if self.style.overflow == Overflow::Scroll {
+            self.scroll_y
+        } else {
+            0.0
+        };
+        let local = Point::new(point.x() - origin.0, point.y() - origin.1 + scroll_y);
+        self.children.iter().any(|child| {
+            child
+                .lock()
+                .expect("widget lock poisoned")
+                .blocks_point(&local)
+        })
+    }
+
     fn get_layout_rect(&self) -> Option<&Rect> {
         self.layout.as_ref()
     }
