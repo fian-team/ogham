@@ -1039,6 +1039,14 @@ impl UI {
         self.needs_repaint
     }
 
+    /// Acknowledge a presented frame: clear the repaint flag so
+    /// [`needs_repaint`](Self::needs_repaint) acts as a damage flag for
+    /// redraw-on-demand render loops. Everything that changes the tree's
+    /// appearance (events, reconcile, animation ticks) re-marks it.
+    pub fn clear_needs_repaint(&mut self) {
+        self.needs_repaint = false;
+    }
+
     /// Backward-compatible alias for [`needs_layout`].
     pub fn is_dirty(&self) -> bool {
         self.needs_layout

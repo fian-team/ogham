@@ -765,7 +765,13 @@ impl Widget for FlexWidget {
                     } else {
                         0.0
                     };
-                    let avail_h = (parent_available_height - occupied_height - gap_space).max(0.0);
+                    // Same unbounded-main-axis rule as `layout`: a scroll
+                    // column measures its children at natural height.
+                    let avail_h = if self.style.overflow == Overflow::Scroll {
+                        f32::INFINITY
+                    } else {
+                        (parent_available_height - occupied_height - gap_space).max(0.0)
+                    };
                     let mut shrink_main_total = 0.0;
                     for child_ref in self.children.iter() {
                         let child = child_ref.lock().expect("widget lock poisoned");
@@ -1229,6 +1235,20 @@ impl Widget for FlexWidget {
                 self.get_children_fixed_height() + gap_space
             };
 
+        // A scroll container's main axis is unbounded for its children:
+        // the whole point of Overflow::Scroll is content past the
+        // viewport, so a shrink child must measure its natural height
+        // there — never a viewport share (the shrink clamp otherwise
+        // squeezes every row past the fold into the fold, and they paint
+        // over one another). Grow children keep the finite pool below:
+        // growing to the viewport is still the sane reading.
+        let child_available_height =
+            if self.style.overflow == Overflow::Scroll && !self.style.direction.is_row() {
+                f32::INFINITY
+            } else {
+                available_height
+            };
+
         self.layout = Some(Rect::new(cursor_x, cursor_y, width, height));
 
         // Per-child grow basis along the parent's main axis. Zero for any
@@ -1275,7 +1295,7 @@ impl Widget for FlexWidget {
                 content_width,
                 available_width,
                 content_height,
-                available_height,
+                child_available_height,
                 children_basis,
             );
             shrink_main_total += if self.style.direction.is_row() {
@@ -1314,7 +1334,7 @@ impl Widget for FlexWidget {
                 let (avail_w, avail_h) = if child_main_basis[i] > 0.0 {
                     (available_width_for_grow, available_height_for_grow)
                 } else {
-                    (available_width, available_height)
+                    (available_width, child_available_height)
                 };
                 Some(child.get_dimensions(
                     ctx,
@@ -1524,7 +1544,7 @@ impl Widget for FlexWidget {
             let (avail_w, avail_h) = if child_main_basis[i] > 0.0 {
                 (available_width_for_grow, available_height_for_grow)
             } else {
-                (available_width, available_height)
+                (available_width, child_available_height)
             };
             child.layout(
                 ctx,
@@ -3897,5 +3917,65 @@ mod tests {
         let list = list.downcast_ref::<FlexWidget>().expect("FlexWidget list");
         assert!((opacity_delay(&list.children[0]) - 0.1).abs() < 1e-6);
         assert!((opacity_delay(&list.children[1]) - 0.2).abs() < 1e-6);
+    }
+
+    /// A scroll column offers its children an unbounded main axis: a
+    /// `height: shrink` section inside it measures its natural height —
+    /// its rows keep stacking past the viewport, and the next section
+    /// starts below ALL of them. The old shrink clamp capped the section
+    /// at the viewport's height while its children laid out past it, so
+    /// every row past the fold painted over the following section
+    /// (regency's almanac bug, 2026-07-08).
+    #[test]
+    fn scroll_column_children_measure_unclamped() {
+        let src = r##"
+            let row = fn () {
+              Flex { style: { width: "grow", height: 40 } }
+            };
+            let main = fn () {
+              Flex {
+                style: { width: 300, height: 100, direction: "column", overflow: "scroll" },
+                children: [
+                  Flex {
+                    style: { width: "grow", height: "shrink", direction: "column" },
+                    children: [row(), row(), row(), row(), row()],
+                  },
+                  Flex {
+                    style: { width: "grow", height: "shrink", direction: "column" },
+                    children: [row(), row(), row()],
+                  },
+                ],
+              }
+            };
+        "##;
+        let mut o =
+            crate::Ogham::from_source(src, crate::runtime::config::RuntimeConfig::default())
+                .expect("from_source");
+        o.get_ui_mut().layout(300.0, 100.0);
+        let root = o.get_ui().root.clone();
+        let g = root.lock().expect("widget lock poisoned");
+        let f = g.downcast_ref::<FlexWidget>().expect("FlexWidget root");
+        assert_eq!(f.style.overflow, Overflow::Scroll);
+
+        let first = f.children[0].lock().expect("widget lock poisoned");
+        let first_rect = first
+            .get_layout_rect()
+            .expect("first section laid out")
+            .clone();
+        assert_eq!(
+            first_rect.height, 200.0,
+            "a shrink section in a scroll column keeps its natural height"
+        );
+        let second = f.children[1].lock().expect("widget lock poisoned");
+        let second_rect = second
+            .get_layout_rect()
+            .expect("second section laid out")
+            .clone();
+        assert_eq!(
+            second_rect.y,
+            first_rect.y + first_rect.height,
+            "the next section starts below the whole first section"
+        );
+        assert_eq!(second_rect.height, 120.0);
     }
 }

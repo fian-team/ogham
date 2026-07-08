@@ -302,29 +302,84 @@ impl Scanner {
         }
     }
 
-    /// Scans a string contained by quotation marks. Errors if the string is unterminated.
+    /// Scans a string contained by quotation marks. Errors if the string is
+    /// unterminated.
+    ///
+    /// Escape sequences (2026-07-08): `\"`, `\\`, `\n`, `\t`, and
+    /// Rust-style `\u{HEX}`. Strings previously carried every byte
+    /// verbatim, so authors writing Rust escape syntax (every UI corpus
+    /// did) shipped the literal characters `\u{2026}` to the screen. A
+    /// backslash before anything else stays literal — old corpuses with
+    /// stray backslashes keep scanning unchanged.
     fn consume_string(&mut self) -> Token {
         // Skip the opening quotation mark.
         self.start += 1;
 
+        let mut value = String::new();
         while !self.is_at_end() {
-            let peek = self.peek();
-            if let Some(next) = peek {
-                if next == '"' {
-                    break;
-                }
+            let Some(next) = self.peek() else { break };
+            if next == '"' {
+                break;
+            }
+            if next != '\\' {
+                value.push(next);
                 self.consume();
+                continue;
+            }
+            self.consume(); // the backslash
+            match self.peek() {
+                Some('"') => {
+                    value.push('"');
+                    self.consume();
+                }
+                Some('\\') => {
+                    value.push('\\');
+                    self.consume();
+                }
+                Some('n') => {
+                    value.push('\n');
+                    self.consume();
+                }
+                Some('t') => {
+                    value.push('\t');
+                    self.consume();
+                }
+                // `\u` only escapes in the full Rust shape `\u{HEX}`;
+                // a bare `\u` stays literal like any unknown escape.
+                Some('u') if self.input.get(self.current + 1) == Some(&'{') => {
+                    self.consume(); // 'u'
+                    self.consume(); // '{'
+                    let mut hex = String::new();
+                    while let Some(c) = self.peek() {
+                        if c == '}' {
+                            break;
+                        }
+                        hex.push(c);
+                        self.consume();
+                    }
+                    if self.peek() != Some('}') {
+                        return self.create_token(TokenType::Error(
+                            "Unterminated \\u{…} escape in string".to_owned(),
+                        ));
+                    }
+                    self.consume(); // '}'
+                    match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        Some(c) => value.push(c),
+                        None => {
+                            return self.create_token(TokenType::Error(format!(
+                                "Invalid unicode escape \\u{{{hex}}} in string"
+                            )))
+                        }
+                    }
+                }
+                // Unknown escape (or trailing backslash): literal.
+                _ => value.push('\\'),
             }
         }
 
         if self.is_at_end() {
             return self.create_token(TokenType::Error("Unterminated string".to_owned()));
         }
-
-        let value: String = self.input[self.start..self.current]
-            .into_iter()
-            .collect::<String>()
-            .clone();
 
         self.consume();
         self.create_token(TokenType::String(value))
@@ -447,6 +502,38 @@ mod tests {
     fn scan_string_literal() {
         let tokens = scan(r#""hello""#);
         assert_eq!(tokens[0].token_type, TokenType::String("hello".to_string()));
+    }
+
+    #[test]
+    fn scan_string_escapes() {
+        let tokens = scan(r#""a\"b \\ c\nd\te \u{2212} \u{2026}""#);
+        assert_eq!(
+            tokens[0].token_type,
+            TokenType::String("a\"b \\ c\nd\te − …".to_string())
+        );
+    }
+
+    #[test]
+    fn scan_string_keeps_unknown_escapes_literal() {
+        // Old corpuses with stray backslashes must scan unchanged; a bare
+        // \u without the {…} shape is just characters.
+        let tokens = scan(r#""C:\path \q …""#);
+        assert_eq!(
+            tokens[0].token_type,
+            TokenType::String(r"C:\path \q …".to_string())
+        );
+    }
+
+    #[test]
+    fn scan_string_rejects_bad_unicode_escapes() {
+        for src in [r#""\u{2026""#, r#""\u{zz}""#, r#""\u{110000}""#] {
+            let tokens = scan(src);
+            assert!(
+                matches!(tokens[0].token_type, TokenType::Error(_)),
+                "{src} should scan to an error token, got {:?}",
+                tokens[0].token_type
+            );
+        }
     }
 
     #[test]
