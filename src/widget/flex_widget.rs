@@ -2031,6 +2031,19 @@ impl Widget for FlexWidget {
             let border_box_height =
                 layout.height - style.margin.get_top() - style.margin.get_bottom();
 
+            // The drop shadow casts first — everything else (backdrop
+            // capture, background, border, children) paints on top of it.
+            if let Some(shadow) = style.shadow.as_ref() {
+                ctx.draw_shadow(
+                    border_box_x,
+                    border_box_y,
+                    border_box_width,
+                    border_box_height,
+                    &style.corners,
+                    shadow,
+                );
+            }
+
             // Backdrop filter (frosted-glass): captures the canvas
             // under the border box, blurs it, and the panel's own
             // background image / colour composite on top of that

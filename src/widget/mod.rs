@@ -60,7 +60,7 @@ use crate::widget::{
     event::{Event, EventContext},
     image::ImageCache,
     point::Point,
-    style::{Border, Color, Corners, Direction, InnerGlow, Size, TextStyle, Transform},
+    style::{Border, Color, Corners, Direction, InnerGlow, Shadow, Size, TextStyle, Transform},
 };
 
 /// Context passed through the layout tree during a layout pass.
@@ -1476,6 +1476,21 @@ pub trait RenderContext {
         _h: f32,
         _corners: &Corners,
         _glow: &InnerGlow,
+    ) {
+    }
+
+    /// Paint an outer drop shadow under the border box (CSS non-inset
+    /// `box-shadow`): the panel silhouette offset and blurred, drawn
+    /// BEFORE the panel's own background so the fill sits on top.
+    /// Default impl is a no-op so non-Skia backends compile.
+    fn draw_shadow(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _w: f32,
+        _h: f32,
+        _corners: &Corners,
+        _shadow: &Shadow,
     ) {
     }
 }

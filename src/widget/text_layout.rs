@@ -6,12 +6,13 @@
 //! need to map a coordinate back to a byte offset. This module is the single
 //! source of that geometry.
 //!
-//! Everything here works in **logical** pixels. The Skia backend scales
-//! coordinates and font size to physical pixels internally (`scale_coord` /
-//! `scale_dim` / `scale_font_size`), so a caret x computed here lines up with
-//! what `draw_text` paints when both are handed the same logical font size and
-//! wrap width. The shared [`configure_geometry`] mapping keeps the two from
-//! drifting on font family / size / weight / alignment.
+//! Everything here works in **logical** pixels. The Skia backend paints text
+//! in logical space too — the paragraph is laid out at the logical font size
+//! and wrap width under a canvas DPI transform — so a caret x computed here
+//! lines up with what `draw_text` paints, and paint can never re-derive a
+//! line break the layout pass didn't measure. The shared
+//! [`configure_geometry`] mapping keeps the two from drifting on font family
+//! / size / weight / spacing / alignment.
 //!
 //! Skia's paragraph `TextIndex` is a **UTF-8 byte offset** (the UTF-16 calls
 //! are explicitly suffixed `_utf16_`), so [`Selection`](super::text_input_widget)
@@ -77,6 +78,15 @@ pub fn configure_geometry(
     default_font: Option<&str>,
 ) {
     text_style.set_font_size(font_size);
+    // Letter spacing is authored in logical px; scale it by the same factor
+    // the caller applied to the font size (1.0 here, the DPI scale from
+    // `skia.rs`) so tracking widens with the glyphs.
+    let spacing_scale = if style.get_size() > f32::EPSILON {
+        font_size / style.get_size()
+    } else {
+        1.0
+    };
+    text_style.set_letter_spacing(style.get_letter_spacing() * spacing_scale);
     text_style.set_font_style(FontStyle::new(
         match style.get_weight() {
             FontWeight::Normal => Weight::NORMAL,
@@ -315,4 +325,75 @@ pub fn prev_boundary(text: &str, idx: usize) -> usize {
         i -= 1;
     }
     i
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `letter_spacing` participates in measurement: tracked text is wider
+    /// than the same text at natural fit, by roughly spacing × glyph count.
+    #[test]
+    fn letter_spacing_widens_measurement() {
+        let text = "INVITATION";
+        let mut style = TextStyle::default();
+        let plain = measure(None, None, &style, text, f32::INFINITY);
+        style.letter_spacing = 4.0;
+        let tracked = measure(None, None, &style, text, f32::INFINITY);
+        let widened = tracked.intrinsic_width - plain.intrinsic_width;
+        assert!(
+            widened > 4.0 * (text.len() as f32 - 1.0) - 1.0,
+            "tracking should widen the line (got +{widened}px)"
+        );
+    }
+}
+/// A `width: "shrink"` Text inside a centered column: its box is exactly
+/// its intrinsic width (single line, no wrap) and the column centers it.
+/// The engraved-card layout regressed here once — a fitting line's last
+/// word wrapped at paint time because paint re-measured at the DPI-scaled
+/// font size (see `SkiaEnv::draw_text`: text now paints in logical space).
+#[cfg(test)]
+#[test]
+fn shrink_text_gets_its_intrinsic_width_and_centers() {
+    use crate::runtime::config::RuntimeConfig;
+    use crate::widget::Widget;
+    let src = r##"
+let main = fn () {
+  Flex {
+    style: { width: 400, height: 300, direction: "column", cross_alignment: "center" },
+    children: [
+      Text { text: "LORD ASHWORTH", style: { width: "shrink", size: 18.6, letter_spacing: 5.95 } },
+    ],
+  }
+};
+"##;
+    let mut ui = crate::Ogham::from_source(src, RuntimeConfig::default()).unwrap();
+    let ui = ui.get_ui_mut();
+    ui.layout(400.0, 300.0);
+
+    let root = ui.root.lock().unwrap();
+    let child = root.get_children()[0].clone();
+    drop(root);
+    let child = child.lock().unwrap();
+    let text = child
+        .downcast_ref::<crate::widget::text_widget::TextWidget>()
+        .expect("the column's child is the Text");
+    let rect = text.layout.as_ref().expect("laid out").clone();
+
+    let mut style = TextStyle::default();
+    style.size = 18.6;
+    style.letter_spacing = 5.95;
+    let m = measure(None, None, &style, "LORD ASHWORTH", f32::INFINITY);
+    assert!(
+        (rect.width - m.intrinsic_width).abs() < 0.01,
+        "shrink box ({}) hugs the intrinsic width ({})",
+        rect.width,
+        m.intrinsic_width
+    );
+    assert_eq!(m.line_count, 1, "a fitting line never wraps");
+    assert!(
+        (rect.x - (400.0 - m.intrinsic_width) / 2.0).abs() < 0.51,
+        "cross-center places the box mid-column (x = {})",
+        rect.x
+    );
 }

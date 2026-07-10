@@ -98,6 +98,9 @@ impl TextWidget {
             paint.set_color(skia_safe::Color::from_argb(c.a, c.r, c.g, c.b));
             cache.skia_text_style.set_foreground_paint(&paint);
             cache.skia_text_style.set_font_size(self.style.get_size());
+            cache
+                .skia_text_style
+                .set_letter_spacing(self.style.get_letter_spacing());
             cache.skia_text_style.set_font_style(FontStyle::new(
                 match self.style.get_weight() {
                     FontWeight::Normal => Weight::NORMAL,

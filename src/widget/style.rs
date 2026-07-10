@@ -78,6 +78,11 @@ pub struct FlexStyle {
     /// no-op. Renders after the background fill and before children so
     /// it sits beneath descendant content (matches CSS `box-shadow: inset`).
     pub inner_glow: Option<InnerGlow>,
+    /// Paint-time drop shadow cast by the border box onto the canvas
+    /// beneath it (CSS outer `box-shadow`). `None` is a no-op. Renders
+    /// before the background fill so the panel sits on top of its own
+    /// shadow.
+    pub shadow: Option<Shadow>,
     /// Spring-driven transitions declared for specific style properties.
     /// Empty by default — properties snap to new values unless opted in.
     pub transitions: TransitionSet,
@@ -220,6 +225,7 @@ impl Default for FlexStyle {
             transform: Transform::IDENTITY,
             backdrop_filter: None,
             inner_glow: None,
+            shadow: None,
             transitions: TransitionSet::default(),
             stagger: None,
         }
@@ -307,6 +313,7 @@ impl FlexStyle {
             && self.transform == other.transform
             && self.backdrop_filter == other.backdrop_filter
             && self.inner_glow == other.inner_glow
+            && self.shadow == other.shadow
     }
 
     /// Returns the size along the given axis.
@@ -513,6 +520,9 @@ pub struct TextStyle {
     pub font: Option<String>,
     /// Optional outline stroked around glyphs. `None` draws no outline.
     pub outline: Option<TextOutline>,
+    /// Extra tracking between glyphs, logical px (CSS `letter-spacing`).
+    /// 0 = the font's natural fit. Scales with DPI alongside the font size.
+    pub letter_spacing: f32,
 }
 
 impl TextStyle {
@@ -542,6 +552,10 @@ impl TextStyle {
 
     pub fn get_outline(&self) -> Option<TextOutline> {
         self.outline
+    }
+
+    pub fn get_letter_spacing(&self) -> f32 {
+        self.letter_spacing
     }
 
     pub fn with_color(mut self, color: Color) -> Self {
@@ -597,6 +611,11 @@ impl TextStyleBuilder {
         self
     }
 
+    pub fn letter_spacing(mut self, spacing: f32) -> Self {
+        self.style.letter_spacing = spacing;
+        self
+    }
+
     pub fn build(self) -> TextStyle {
         self.style
     }
@@ -627,6 +646,7 @@ impl Default for TextStyle {
             height: Size::Shrink,
             font: None,
             outline: None,
+            letter_spacing: 0.0,
         }
     }
 }
@@ -1099,6 +1119,23 @@ pub struct InnerGlow {
 impl InnerGlow {
     pub fn is_active(&self) -> bool {
         self.blur > 0.0 && self.color.a > 0
+    }
+}
+
+/// An outer drop shadow cast by a panel's border box — CSS `box-shadow`
+/// (non-inset). The silhouette follows the panel's corner shape, offset
+/// by `(offset_x, offset_y)` and softened by a Gaussian `blur` sigma.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Shadow {
+    pub color: Color,
+    pub blur: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+}
+
+impl Shadow {
+    pub fn is_active(&self) -> bool {
+        self.color.a > 0 && (self.blur > 0.0 || self.offset_x != 0.0 || self.offset_y != 0.0)
     }
 }
 

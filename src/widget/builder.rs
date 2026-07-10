@@ -412,6 +412,11 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     style.inner_glow = Some(g);
                 }
             }
+            "shadow" => {
+                if let Some(s) = parse_shadow_value(value) {
+                    style.shadow = Some(s);
+                }
+            }
             "background_image" => {
                 if let Value::String(path) = value {
                     style.background_image = Some(path.clone());
@@ -700,6 +705,11 @@ fn apply_text_style_from_map(style: &mut TextStyle, map: &HashMap<String, Value>
             }
             "outline" => {
                 style.outline = parse_text_outline_value(value);
+            }
+            "letter_spacing" => {
+                if let Some(ls) = value_to_f32(value) {
+                    style.letter_spacing = ls;
+                }
             }
             _ => {}
         }
@@ -1725,6 +1735,26 @@ pub(crate) fn parse_inner_glow_value(value: &Value) -> Option<InnerGlow> {
             color,
             blur,
             spread,
+        })
+    } else {
+        None
+    }
+}
+
+/// Parse a `shadow:` value into a [`Shadow`]. A map with `color` and any
+/// of `blur`, `offset_x`, `offset_y` — an all-zero geometry renders as a
+/// no-op (see `Shadow::is_active`).
+pub(crate) fn parse_shadow_value(value: &Value) -> Option<Shadow> {
+    if let Value::Map(map) = value {
+        let color = map.get("color").and_then(parse_color_value)?;
+        let blur = map.get("blur").and_then(value_to_f32).unwrap_or(0.0);
+        let offset_x = map.get("offset_x").and_then(value_to_f32).unwrap_or(0.0);
+        let offset_y = map.get("offset_y").and_then(value_to_f32).unwrap_or(0.0);
+        Some(Shadow {
+            color,
+            blur,
+            offset_x,
+            offset_y,
         })
     } else {
         None

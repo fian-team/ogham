@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::widget::{
     flex_widget::FlexWidget,
     image::ImageCache,
-    style::{Border, BorderSide, CornerShape, Corners, InnerGlow},
+    style::{Border, BorderSide, CornerShape, Corners, InnerGlow, Shadow},
     RenderContext, Surface, WidgetRef, UI,
 };
 
@@ -86,12 +86,6 @@ impl SkiaEnv {
         width * self.dpi_scale
     }
 
-    /// Scale a logical font size to physical pixels
-    #[inline]
-    fn scale_font_size(&self, size: f32) -> f32 {
-        size * self.dpi_scale
-    }
-
     #[inline]
     pub fn save(&mut self) {
         self.canvas().save();
@@ -166,26 +160,33 @@ impl SkiaEnv {
     }
 
     /// Configures `self.paint` and `self.text_style` from an Ogham `TextStyle`,
-    /// and sets the paragraph text alignment. Returns the DPI-scaled font size.
-    fn apply_text_style(&mut self, style: &crate::widget::style::TextStyle) -> f32 {
+    /// and sets the paragraph text alignment.
+    ///
+    /// Geometry is configured at the **logical** font size — text paints in
+    /// logical space under a canvas DPI transform (see [`Self::draw_text`]),
+    /// so the paragraph here is built with exactly the inputs the layout
+    /// pass measured with. Configuring at the DPI-scaled size instead (the
+    /// old behavior) let paint re-derive line breaks at a different nominal
+    /// size, and fonts don't scale advances perfectly linearly: a
+    /// shrink-to-fit box has zero slack, and the accumulated drift wrapped
+    /// its last word on high-DPI displays.
+    fn apply_text_style(&mut self, style: &crate::widget::style::TextStyle) {
         self.paint.set_style(PaintStyle::Fill);
         let color = style.get_color();
         self.paint
             .set_color(Color::from_argb(color.a, color.r, color.g, color.b));
         self.text_style.set_foreground_paint(&self.paint);
-        let scaled_font_size = self.scale_font_size(style.get_size());
-        // Geometry mapping (family / size / weight / alignment) is shared with
-        // the measurement path so paint and layout can't drift — see
-        // `crate::widget::text_layout::configure_geometry`. Paint is applied
-        // above; this only touches geometry.
+        // Geometry mapping (family / size / weight / spacing / alignment) is
+        // shared with the measurement path so paint and layout can't drift —
+        // see `crate::widget::text_layout::configure_geometry`. Paint is
+        // applied above; this only touches geometry.
         crate::widget::text_layout::configure_geometry(
             &mut self.text_style,
             &mut self.paragraph_style,
             style,
-            scaled_font_size,
+            style.get_size(),
             self.default_font.as_deref(),
         );
-        scaled_font_size
     }
 
     /// Build a paragraph for `text` using the current `text_style` and lay it
@@ -213,7 +214,13 @@ impl SkiaEnv {
         if scaled_width < intrinsic - 0.5 {
             paragraph.layout(scaled_width);
         } else {
-            paragraph.layout(scaled_width.max(intrinsic));
+            // A shrink-to-content box hands us width == intrinsic bit-for-
+            // bit, and Skia's wrap test is strict floating-point: laying
+            // out at exactly max_intrinsic_width can still break the last
+            // word onto a second line. A pixel of slack absorbs the ULPs;
+            // alignment distributes at most that pixel, so nothing visibly
+            // moves.
+            paragraph.layout(scaled_width.max(intrinsic) + 1.0);
         }
         paragraph
     }
@@ -505,19 +512,25 @@ impl RenderContext for SkiaEnv {
         y: f32,
         width: f32,
     ) {
+        // Text paints in LOGICAL space under a canvas DPI transform: the
+        // paragraph is laid out at the logical font size and wrap width —
+        // bit-identical inputs to the layout pass's measurement — so paint
+        // can never break a line the layout didn't. Glyph outlines
+        // rasterize through the canvas matrix at full device resolution;
+        // quality is unchanged.
         self.apply_text_style(style);
-        let scaled_width = self.scale_dim(width);
-        let scaled_x = self.scale_coord(x);
-        let scaled_y = self.scale_coord(y);
 
         // Outline pass: stroke the glyphs underneath the fill so the fill color
-        // stays crisp. We bake a stroke paint into the text style, paint the
-        // outline, then restore the fill paint (`self.paint`) for the fill pass.
-        if let Some(outline) = style.get_outline() {
+        // stays crisp. We bake a stroke paint into the text style, build the
+        // outline paragraph, then restore the fill paint (`self.paint`) for the
+        // fill pass. Both paragraphs are built before the canvas transform is
+        // pushed (building borrows `self`).
+        let outline_paragraph = style.get_outline().map(|outline| {
             let mut stroke_paint = Paint::default();
             stroke_paint.set_anti_alias(true);
             stroke_paint.set_style(PaintStyle::Stroke);
-            stroke_paint.set_stroke_width(self.scale_stroke(outline.width));
+            // Logical width: the canvas transform below applies the DPI scale.
+            stroke_paint.set_stroke_width(outline.width);
             stroke_paint.set_stroke_join(skia_safe::paint::Join::Round);
             stroke_paint.set_color(Color::from_argb(
                 outline.color.a,
@@ -526,14 +539,32 @@ impl RenderContext for SkiaEnv {
                 outline.color.b,
             ));
             self.text_style.set_foreground_paint(&stroke_paint);
-            let mut outline_paragraph = self.build_laid_out_paragraph(text, scaled_width);
-            outline_paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
-            // Restore the fill paint for the fill pass below.
+            let paragraph = self.build_laid_out_paragraph(text, width);
             self.text_style.set_foreground_paint(&self.paint);
+            paragraph
+        });
+        let paragraph = self.build_laid_out_paragraph(text, width);
+        if std::env::var_os("OGHAM_TEXT_DEBUG").is_some() && paragraph.line_number() > 1 {
+            eprintln!(
+                "[text] wrapped {:?} box_w={:.2} intrinsic={:.2} size={:.2} spacing={:.2} font={:?}",
+                text,
+                width,
+                paragraph.max_intrinsic_width(),
+                style.get_size(),
+                style.get_letter_spacing(),
+                style.get_font(),
+            );
         }
 
-        let mut paragraph = self.build_laid_out_paragraph(text, scaled_width);
-        paragraph.paint(self.canvas(), Point::new(scaled_x, scaled_y));
+        let dpi = self.dpi_scale;
+        let canvas = self.surface.canvas();
+        canvas.save();
+        canvas.scale((dpi, dpi));
+        if let Some(outline_paragraph) = outline_paragraph {
+            outline_paragraph.paint(canvas, Point::new(x, y));
+        }
+        paragraph.paint(canvas, Point::new(x, y));
+        canvas.restore();
     }
 
     fn draw_line(
@@ -801,6 +832,59 @@ impl RenderContext for SkiaEnv {
         }
         canvas.draw_path(&path, &paint);
         canvas.restore();
+    }
+
+    fn draw_shadow(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        corners: &Corners,
+        shadow: &Shadow,
+    ) {
+        if !shadow.is_active() {
+            return;
+        }
+        let sx = self.scale_coord(x + shadow.offset_x);
+        let sy = self.scale_coord(y + shadow.offset_y);
+        let sw = self.scale_dim(w);
+        let sh = self.scale_dim(h);
+        let s_blur = self.scale_dim(shadow.blur);
+
+        // The panel silhouette, offset to the cast position. Filled with
+        // a blurred alpha mask — the classic soft drop shadow. No clip:
+        // the panel's own background paints over the shadow's center
+        // next, so only the offset/blurred fringe reads.
+        let path = if corners.is_all_sharp() {
+            let mut pb = skia_safe::PathBuilder::new();
+            pb.move_to((sx, sy));
+            pb.line_to((sx + sw, sy));
+            pb.line_to((sx + sw, sy + sh));
+            pb.line_to((sx, sy + sh));
+            pb.close();
+            pb.detach()
+        } else {
+            self.build_corners_path(sx, sy, sw, sh, corners)
+        };
+
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Fill);
+        paint.set_color(Color::from_argb(
+            shadow.color.a,
+            shadow.color.r,
+            shadow.color.g,
+            shadow.color.b,
+        ));
+        if s_blur > 0.0 {
+            if let Some(mf) =
+                skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, s_blur, false)
+            {
+                paint.set_mask_filter(mf);
+            }
+        }
+        self.surface.canvas().draw_path(&path, &paint);
     }
 }
 
