@@ -178,9 +178,15 @@ impl Widget for TextWidget {
         parent_available_height: f32,
         sibling_basis: f32,
     ) -> (f32, f32) {
+        // A measuring shrink ancestor reads grow axes as shrink — the
+        // text's content size is its honest contribution there (see
+        // `LayoutContext::measuring_width`).
+        let width_size = ctx.effective_width(self.style.width);
+        let height_size = ctx.effective_height(self.style.height);
+
         // If either axis is Shrink, measure the text using Skia's paragraph layout.
         let needs_measurement =
-            matches!(self.style.width, Size::Shrink) || matches!(self.style.height, Size::Shrink);
+            matches!(width_size, Size::Shrink) || matches!(height_size, Size::Shrink);
 
         let mut measured_paragraph = if needs_measurement {
             Some(self.build_paragraph(ctx))
@@ -194,7 +200,7 @@ impl Widget for TextWidget {
         }
 
         // First compute the width this widget is allowed to use.
-        let width = match self.style.width {
+        let width = match width_size {
             Size::Fixed(w) => w,
             Size::Shrink => {
                 if needs_measurement {
@@ -221,7 +227,7 @@ impl Widget for TextWidget {
             Size::Percent(_) => 0.0, // Calculated during layout (not currently supported for Text)
         };
 
-        let height = match self.style.height {
+        let height = match height_size {
             Size::Fixed(h) => h,
             Size::Shrink => {
                 if needs_measurement {

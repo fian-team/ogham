@@ -162,6 +162,8 @@ let add = fn (a: int, b: int): int {
 
 Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`, `Portal`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`, `Portal`) wrap or specialize it.
 
+Sizing: `width`/`height` take `"grow"`, `"shrink"`, a number (fixed px), or a percent. One pinned interaction (`flex_widget.rs` tests): while a `shrink` parent measures itself along an axis, `grow` descendants on that axis contribute their *content* size — a shrink parent has no leftover space to grow into — and are stretched to the parent's resolved size during the real layout pass. So a full-height accent bar (`height: "grow"`, no children) inside a `height: "shrink"` row contributes nothing to the row's height and then spans it exactly.
+
 ```ogh
 Flex {
   style: {

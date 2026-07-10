@@ -60,15 +60,66 @@ use crate::widget::{
     event::{Event, EventContext},
     image::ImageCache,
     point::Point,
-    style::{Border, Color, Corners, Direction, InnerGlow, TextStyle, Transform},
+    style::{Border, Color, Corners, Direction, InnerGlow, Size, TextStyle, Transform},
 };
 
 /// Context passed through the layout tree during a layout pass.
 /// Carries the font collection and default font so that text widgets
-/// can measure text without relying on thread-locals.
+/// can measure text without relying on thread-locals — plus the
+/// shrink-measurement flags (see [`LayoutContext::measuring_width`]).
+#[derive(Clone, Copy)]
 pub struct LayoutContext<'a> {
     pub font_collection: Option<&'a FontCollection>,
     pub default_font: Option<&'a str>,
+    /// While a `Shrink` parent measures its own WIDTH, `Grow`-width
+    /// descendants resolve as `Shrink` (their content size). A shrink
+    /// parent has no leftover space for a grow child to claim — without
+    /// this, the child resolves against whatever budget the measurement
+    /// happened to pass (historically an ancestor's size, ballooning the
+    /// parent to the viewport). After measurement the parent's size is
+    /// fixed, and the real `layout` pass stretches grow children into it
+    /// as usual.
+    pub measure_grow_width_as_shrink: bool,
+    /// The height twin of [`measure_grow_width_as_shrink`].
+    ///
+    /// [`measure_grow_width_as_shrink`]: Self::measure_grow_width_as_shrink
+    pub measure_grow_height_as_shrink: bool,
+}
+
+impl<'a> LayoutContext<'a> {
+    /// This context, flagged for a parent measuring its shrink WIDTH:
+    /// grow widths in the measured subtree resolve as content.
+    pub fn measuring_width(&self) -> LayoutContext<'a> {
+        LayoutContext {
+            measure_grow_width_as_shrink: true,
+            ..*self
+        }
+    }
+
+    /// This context, flagged for a parent measuring its shrink HEIGHT.
+    pub fn measuring_height(&self) -> LayoutContext<'a> {
+        LayoutContext {
+            measure_grow_height_as_shrink: true,
+            ..*self
+        }
+    }
+
+    /// A widget's effective width sizing under this context (grow reads
+    /// as shrink while a shrink ancestor measures its width).
+    pub fn effective_width(&self, size: Size) -> Size {
+        match size {
+            Size::Grow(_) if self.measure_grow_width_as_shrink => Size::Shrink,
+            _ => size,
+        }
+    }
+
+    /// The height twin of [`effective_width`](Self::effective_width).
+    pub fn effective_height(&self, size: Size) -> Size {
+        match size {
+            Size::Grow(_) if self.measure_grow_height_as_shrink => Size::Shrink,
+            _ => size,
+        }
+    }
 }
 
 /// Phase 2 Portal (extended in P25-M0): per-frame entry on
@@ -920,6 +971,8 @@ impl UI {
         let ctx = LayoutContext {
             font_collection: self.font_collection.as_ref(),
             default_font: self.default_font.as_deref(),
+            measure_grow_width_as_shrink: false,
+            measure_grow_height_as_shrink: false,
         };
 
         let mut root = self.root.lock().expect("widget lock poisoned");

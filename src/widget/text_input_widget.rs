@@ -455,7 +455,9 @@ impl Widget for TextInputWidget {
             + self.style.padding.get_top()
             + self.style.padding.get_bottom();
 
-        let width = match self.style.width {
+        // A measuring shrink ancestor reads grow axes as shrink (see
+        // `LayoutContext::measuring_width`).
+        let width = match ctx.effective_width(self.style.width) {
             Size::Fixed(w) => w,
             Size::Shrink => {
                 let intrinsic = text_layout::measure(
@@ -490,7 +492,7 @@ impl Widget for TextInputWidget {
             Size::Percent(_) => 0.0, // Will be calculated during layout based on parent
         };
 
-        let height = match self.style.height {
+        let height = match ctx.effective_height(self.style.height) {
             Size::Fixed(h) => h,
             Size::Shrink => {
                 // Multi-line: grow to fit the text wrapped at the content width.

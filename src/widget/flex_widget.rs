@@ -738,7 +738,11 @@ impl Widget for FlexWidget {
         parent_available_height: f32,
         sibling_basis: f32,
     ) -> (f32, f32) {
-        let width = match self.style.width {
+        // Under a measuring shrink ancestor, grow on the measured axis
+        // resolves as shrink — a shrink parent has no leftover space to
+        // grow into, so the child's content is its honest contribution
+        // (the ancestor's real `layout` pass stretches it afterwards).
+        let width = match ctx.effective_width(self.style.width) {
             Size::Fixed(w) => w,
             Size::Shrink => {
                 let _occupied_width: f32 = self.get_children_fixed_width();
@@ -797,6 +801,9 @@ impl Widget for FlexWidget {
                     (0.0, 0.0)
                 };
 
+                // Measuring our own width: grow widths below resolve as
+                // content (see `LayoutContext::measuring_width`).
+                let measure_ctx = ctx.measuring_width();
                 let get_dimensions = |child: &WidgetRef| {
                     let child = child.lock().expect("widget lock poisoned");
                     if child.is_absolute_positioned() {
@@ -817,7 +824,7 @@ impl Widget for FlexWidget {
                         parent_available_height - occupied_height
                     };
                     child.get_dimensions(
-                        ctx,
+                        &measure_ctx,
                         &self.style.direction,
                         parent_width,
                         child_available_width,
@@ -877,7 +884,7 @@ impl Widget for FlexWidget {
             Size::Percent(_) => 0.0, // Will be calculated during layout based on parent
         };
 
-        let height = match self.style.height {
+        let height = match ctx.effective_height(self.style.height) {
             Size::Fixed(h) => h,
             Size::Shrink => {
                 let children_basis = self.get_children_basis();
@@ -944,6 +951,9 @@ impl Widget for FlexWidget {
                     (0.0, 0.0)
                 };
 
+                // Measuring our own height: grow heights below resolve as
+                // content (see `LayoutContext::measuring_height`).
+                let measure_ctx = ctx.measuring_height();
                 let get_dimensions = |child: &WidgetRef| {
                     let child = child.lock().expect("widget lock poisoned");
                     if child.is_absolute_positioned() {
@@ -964,7 +974,7 @@ impl Widget for FlexWidget {
                         parent_available_height
                     };
                     child.get_dimensions(
-                        ctx,
+                        &measure_ctx,
                         &self.style.direction,
                         width,
                         child_available_width,
@@ -2230,6 +2240,8 @@ mod tests {
         LayoutContext {
             font_collection: None,
             default_font: None,
+            measure_grow_width_as_shrink: false,
+            measure_grow_height_as_shrink: false,
         }
     }
 
@@ -2381,6 +2393,88 @@ mod tests {
         assert!(
             h <= 40.0,
             "Shrink row with a fixed sibling ballooned: height {h}"
+        );
+    }
+
+    #[test]
+    fn test_grow_height_child_in_shrink_row_measures_as_content() {
+        let ctx = test_ctx();
+        // A Shrink-height row holding a full-height accent rule (`height:
+        // grow`, no content) beside fixed content — the list-row shape. A
+        // grow child has no leftover space to claim in a shrink parent, so
+        // it must contribute its content (here: nothing) to the row's
+        // measurement instead of the ancestor budget that used to balloon
+        // the row to the viewport. The real layout pass then stretches it
+        // into the resolved row.
+        let rule = Arc::new(Mutex::new(FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(3.0))
+                .height(Size::Grow(1.0))
+                .build(),
+        )));
+        let content = Arc::new(Mutex::new(TestWidget::new(100.0, 40.0)));
+        let mut row = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Fixed(300.0))
+                .height(Size::Shrink)
+                .direction(Direction::Row)
+                .build(),
+        );
+        row.add_child(rule.clone());
+        row.add_child(content);
+
+        let (_w, h) =
+            row.get_dimensions(&ctx, &Direction::Column, 300.0, 300.0, 600.0, 600.0, 0.0);
+        assert_eq!(
+            h, 40.0,
+            "the shrink row must be its content's height, not the ancestor budget"
+        );
+
+        // And once the row's size is settled, the rule spans it.
+        row.layout(&ctx, 0.0, 0.0, &Direction::Column, 300.0, 300.0, 600.0, 600.0, 0.0);
+        let rule = rule.lock().unwrap();
+        let rect = rule.get_layout_rect().expect("rule laid out");
+        assert_eq!(
+            rect.height, 40.0,
+            "the grow rule stretches to the resolved row height"
+        );
+    }
+
+    #[test]
+    fn test_grow_width_child_in_shrink_column_measures_as_content() {
+        let ctx = test_ctx();
+        // The width twin: a Shrink-width column holding a horizontal rule
+        // (`width: grow`) above fixed content.
+        let rule = Arc::new(Mutex::new(FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Grow(1.0))
+                .height(Size::Fixed(3.0))
+                .build(),
+        )));
+        let content = Arc::new(Mutex::new(TestWidget::new(120.0, 20.0)));
+        let mut column = FlexWidget::with_style(
+            FlexStyle::builder()
+                .width(Size::Shrink)
+                .height(Size::Fixed(100.0))
+                .direction(Direction::Column)
+                .build(),
+        );
+        column.add_child(rule.clone());
+        column.add_child(content);
+
+        let (w, _h) =
+            column.get_dimensions(&ctx, &Direction::Row, 800.0, 800.0, 100.0, 100.0, 0.0);
+        assert_eq!(
+            w, 120.0,
+            "the shrink column must be its content's width, not the ancestor budget"
+        );
+
+        column.layout(&ctx, 0.0, 0.0, &Direction::Row, 800.0, 800.0, 100.0, 100.0, 0.0);
+        let rule = rule.lock().unwrap();
+        let rect = rule.get_layout_rect().expect("rule laid out");
+        assert_eq!(
+            rect.width, 120.0,
+            "the grow rule stretches to the resolved column width"
         );
     }
 
