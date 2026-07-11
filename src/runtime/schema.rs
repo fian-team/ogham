@@ -32,10 +32,12 @@
 //! of truth — the rest of the runtime never carries a separate
 //! flag.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::Path;
+
+use crate::runtime::value::Value;
 
 use crate::parser::span::Span;
 use crate::parser::typed_bindings::{EventsDecl, FieldDecl, HostStateDecl, RecordDecl};
@@ -395,6 +397,243 @@ fn check_no_direct_self_reference(
         // any of them is fine.
         TypeRef::Array(_) | TypeRef::Map(_, _) | TypeRef::Optional(_) => Ok(()),
         TypeRef::Primitive(_) => Ok(()),
+    }
+}
+
+// ---------------------------------------------------------------------
+// Runtime value validation
+// ---------------------------------------------------------------------
+
+/// One mismatch between an injected host-state `Value` tree and the
+/// declared schema. `path` is the dotted route from the host_state
+/// root (`lobby.roster[3].name`); `message` says what disagreed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SchemaValueError {
+    pub path: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for SchemaValueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path, self.message)
+    }
+}
+
+impl ModuleSchema {
+    /// Validate a host-injected state map against this module's
+    /// declared `host_state {}` schema. The `.ogh` declaration is
+    /// the single source of truth (INTENT: no rival Rust-side
+    /// description); this walk lets a host's tests assert its
+    /// injected `Value` trees conform — the runtime-value
+    /// counterpart of the compiler's strict-mode read checking.
+    ///
+    /// Checked both ways: a declared non-optional field missing
+    /// from the map is an error, and a map key the schema doesn't
+    /// declare is an error (that's drift, the thing this exists to
+    /// catch). All mismatches are collected, not first-error.
+    ///
+    /// A loose module (no `host_state {}`) vacuously passes —
+    /// callers that require a schema should assert
+    /// [`has_host_state`](Self::has_host_state) first.
+    pub fn validate_host_state(
+        &self,
+        state: &HashMap<String, Value>,
+    ) -> Result<(), Vec<SchemaValueError>> {
+        let mut errors = Vec::new();
+        if let Some(hs) = &self.host_state {
+            self.validate_record_value(hs, None, state, "", &mut errors);
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Validate a single `Value` against one declared type — the
+    /// per-key form of [`validate_host_state`](Self::validate_host_state),
+    /// for hosts that inject top-level keys individually.
+    pub fn validate_value(
+        &self,
+        ty: &TypeRef,
+        value: &Value,
+        path: &str,
+    ) -> Result<(), Vec<SchemaValueError>> {
+        let mut errors = Vec::new();
+        self.validate_type(ty, None, value, path, &mut errors);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn validate_record_value(
+        &self,
+        record: &RecordSchema,
+        enclosing_record: Option<&str>,
+        map: &HashMap<String, Value>,
+        path: &str,
+        errors: &mut Vec<SchemaValueError>,
+    ) {
+        for (name, field) in &record.fields {
+            let field_path = join_path(path, name);
+            match map.get(name) {
+                Some(value) => {
+                    self.validate_type(&field.ty, enclosing_record, value, &field_path, errors)
+                }
+                None => {
+                    // A missing optional field reads as Void — fine.
+                    if !matches!(field.ty, TypeRef::Optional(_)) {
+                        errors.push(SchemaValueError {
+                            path: field_path,
+                            message: format!(
+                                "missing: declared `{}` but the injected map has no such key",
+                                field.ty.to_canonical_string()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        for key in map.keys() {
+            if !record.fields.contains_key(key) {
+                errors.push(SchemaValueError {
+                    path: join_path(path, key),
+                    message: "undeclared: present in the injected map but not in the schema"
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    fn validate_type(
+        &self,
+        ty: &TypeRef,
+        enclosing_record: Option<&str>,
+        value: &Value,
+        path: &str,
+        errors: &mut Vec<SchemaValueError>,
+    ) {
+        let mismatch = |errors: &mut Vec<SchemaValueError>| {
+            errors.push(SchemaValueError {
+                path: path.to_string(),
+                message: format!(
+                    "expected `{}`, found {}",
+                    ty.to_canonical_string(),
+                    value_kind(value)
+                ),
+            });
+        };
+        match ty {
+            TypeRef::Primitive(PrimType::Int) => {
+                if !matches!(value, Value::Integer(_)) {
+                    mismatch(errors);
+                }
+            }
+            // An integer where a float is declared is accepted —
+            // the VM's arithmetic already treats the two as one
+            // numeric tower, and hosts routinely inject whole
+            // numbers into float slots.
+            TypeRef::Primitive(PrimType::Float) => {
+                if !matches!(value, Value::Float(_) | Value::Integer(_)) {
+                    mismatch(errors);
+                }
+            }
+            TypeRef::Primitive(PrimType::Bool) => {
+                if !matches!(value, Value::Boolean(_)) {
+                    mismatch(errors);
+                }
+            }
+            TypeRef::Primitive(PrimType::String) => {
+                if !matches!(value, Value::String(_)) {
+                    mismatch(errors);
+                }
+            }
+            TypeRef::Record(name) => match (self.lookup_record(name), value) {
+                (Some(record), Value::Map(map)) => {
+                    self.validate_record_value(record, Some(name), map, path, errors)
+                }
+                (Some(_), _) => mismatch(errors),
+                (None, _) => errors.push(SchemaValueError {
+                    path: path.to_string(),
+                    message: format!("unknown record `{}` (schema not resolved?)", name),
+                }),
+            },
+            TypeRef::SelfRef => match enclosing_record {
+                Some(name) => {
+                    self.validate_type(&TypeRef::Record(name.to_string()), None, value, path, errors)
+                }
+                None => errors.push(SchemaValueError {
+                    path: path.to_string(),
+                    message: "`Self` outside a record (schema not resolved?)".to_string(),
+                }),
+            },
+            TypeRef::Array(inner) => match value {
+                Value::Array(items) => {
+                    for (i, item) in items.iter().enumerate() {
+                        self.validate_type(
+                            inner,
+                            enclosing_record,
+                            item,
+                            &format!("{path}[{i}]"),
+                            errors,
+                        );
+                    }
+                }
+                _ => mismatch(errors),
+            },
+            TypeRef::Map(key_ty, value_ty) => match value {
+                Value::Map(map) => {
+                    for (key, item) in map {
+                        if matches!(key_ty, KeyType::Int) && key.parse::<i32>().is_err() {
+                            errors.push(SchemaValueError {
+                                path: join_path(path, key),
+                                message: format!("map key `{key}` is not an int"),
+                            });
+                        }
+                        self.validate_type(
+                            value_ty,
+                            enclosing_record,
+                            item,
+                            &join_path(path, key),
+                            errors,
+                        );
+                    }
+                }
+                _ => mismatch(errors),
+            },
+            TypeRef::Optional(inner) => {
+                if !matches!(value, Value::Void) {
+                    self.validate_type(inner, enclosing_record, value, path, errors);
+                }
+            }
+        }
+    }
+}
+
+fn join_path(path: &str, key: &str) -> String {
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
+    }
+}
+
+/// The schema-vocabulary name for a `Value`'s runtime shape, for
+/// mismatch messages.
+fn value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Integer(_) => "int",
+        Value::Float(_) => "float",
+        Value::Boolean(_) => "bool",
+        Value::String(_) => "string",
+        Value::Map(_) => "a map",
+        Value::Array(_) => "an array",
+        Value::Void => "void",
+        Value::BytecodeClosure(_) => "a closure",
+        Value::Widget(_) => "a widget",
+        Value::WidgetRef(_) => "a widget ref",
     }
 }
 
@@ -851,6 +1090,144 @@ mod tests {
     fn load_schema_loose_module_returns_non_strict() {
         let s = load_schema_from_source("let x = 5;").unwrap();
         assert!(!s.is_strict());
+    }
+
+    // -----------------------------------------------------------------
+    // Runtime value validation
+    // -----------------------------------------------------------------
+
+    fn plate(name: &str) -> Value {
+        let mut m = HashMap::new();
+        m.insert("name".to_string(), Value::String(name.to_string()));
+        m.insert("count".to_string(), Value::Integer(2));
+        Value::Map(m)
+    }
+
+    fn roster_schema() -> ModuleSchema {
+        schema_of(
+            r#"
+            record Item { name: string, count: int };
+            host_state {
+                title: string,
+                weight: float,
+                open: bool,
+                items: array<Item>,
+                pending: Item?,
+            };
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn valid_state() -> HashMap<String, Value> {
+        HashMap::from([
+            ("title".to_string(), Value::String("hands".to_string())),
+            ("weight".to_string(), Value::Float(1.2)),
+            ("open".to_string(), Value::Boolean(true)),
+            (
+                "items".to_string(),
+                Value::Array(vec![plate("candle"), plate("key")]),
+            ),
+            ("pending".to_string(), Value::Void),
+        ])
+    }
+
+    #[test]
+    fn validate_conforming_state_passes() {
+        roster_schema().validate_host_state(&valid_state()).unwrap();
+    }
+
+    #[test]
+    fn validate_missing_key_names_the_path() {
+        let mut state = valid_state();
+        state.remove("open");
+        let errs = roster_schema().validate_host_state(&state).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "open");
+        assert!(errs[0].message.contains("missing"));
+    }
+
+    #[test]
+    fn validate_missing_optional_passes() {
+        let mut state = valid_state();
+        state.remove("pending");
+        roster_schema().validate_host_state(&state).unwrap();
+    }
+
+    #[test]
+    fn validate_present_optional_is_checked() {
+        let mut state = valid_state();
+        state.insert("pending".to_string(), plate("candle"));
+        roster_schema().validate_host_state(&state).unwrap();
+        state.insert("pending".to_string(), Value::Integer(3));
+        let errs = roster_schema().validate_host_state(&state).unwrap_err();
+        assert_eq!(errs[0].path, "pending");
+    }
+
+    #[test]
+    fn validate_undeclared_key_is_drift() {
+        let mut state = valid_state();
+        state.insert("stray".to_string(), Value::Void);
+        let errs = roster_schema().validate_host_state(&state).unwrap_err();
+        assert_eq!(errs[0].path, "stray");
+        assert!(errs[0].message.contains("undeclared"));
+    }
+
+    #[test]
+    fn validate_wrong_type_in_array_element_names_index() {
+        let mut state = valid_state();
+        let mut bad = HashMap::new();
+        bad.insert("name".to_string(), Value::String("candle".to_string()));
+        bad.insert("count".to_string(), Value::String("two".to_string()));
+        state.insert(
+            "items".to_string(),
+            Value::Array(vec![plate("key"), Value::Map(bad)]),
+        );
+        let errs = roster_schema().validate_host_state(&state).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "items[1].count");
+        assert!(errs[0].message.contains("expected `int`, found string"));
+    }
+
+    #[test]
+    fn validate_int_widens_to_float_but_not_reverse() {
+        let mut state = valid_state();
+        state.insert("weight".to_string(), Value::Integer(1));
+        roster_schema().validate_host_state(&state).unwrap();
+
+        let s = schema_of("host_state { n: int };").unwrap();
+        let errs = s
+            .validate_host_state(&HashMap::from([("n".to_string(), Value::Float(1.5))]))
+            .unwrap_err();
+        assert_eq!(errs[0].path, "n");
+    }
+
+    #[test]
+    fn validate_collects_all_errors_not_first() {
+        let mut state = valid_state();
+        state.remove("title");
+        state.insert("open".to_string(), Value::Integer(1));
+        let errs = roster_schema().validate_host_state(&state).unwrap_err();
+        assert_eq!(errs.len(), 2);
+    }
+
+    #[test]
+    fn validate_loose_module_vacuously_passes() {
+        let s = schema_of("let x = 5;").unwrap();
+        s.validate_host_state(&HashMap::from([("anything".to_string(), Value::Void)]))
+            .unwrap();
+    }
+
+    #[test]
+    fn validate_single_value_per_key_form() {
+        let s = roster_schema();
+        let ty = TypeRef::Array(Box::new(TypeRef::Record("Item".to_string())));
+        s.validate_value(&ty, &Value::Array(vec![plate("candle")]), "items")
+            .unwrap();
+        let errs = s
+            .validate_value(&ty, &Value::String("nope".to_string()), "items")
+            .unwrap_err();
+        assert_eq!(errs[0].path, "items");
     }
 
     // Catch the case where a record is declared but `host_state`

@@ -1,6 +1,30 @@
 # Ogham — Typed Rust↔Ogham Bindings (Phase 1)
 
-> **Status: Live contract — Phase 1 shipped.**
+> **Status: PARTIALLY CUT (2026-06-07, `addd9da`) — read this before
+> planning against anything below.**
+>
+> The Rust-side half of this design — `ogham-derive`
+> (`OghamState`/`OghamMsg`/`OghamRecord`), `TypedOgham<S, M>`,
+> `watch_typed`/`from_source_typed`, `ogham check`, and the
+> diagnostics manifest system — was built (M4–M6, landed 2026-05),
+> then **deliberately removed** as a rival typed layer per
+> [`IDENTITY_AND_SCOPE.md`](IDENTITY_AND_SCOPE.md) §1–2: one
+> adoption site ever, superseded by `editable` for the
+> typed-introspectable-state need. Do not re-implement it from this
+> document.
+>
+> What **survives, load-bearing** (see the cut commit for the
+> split): the `.ogh`-source schema — `record` / `host_state {}` /
+> `events {}` declarations, `ModuleSchema`/`RecordSchema`/
+> `load_schema*`, compiler strict-mode resolution + event-call
+> validation, LSP hover/diagnostics, the view layer's Tenet-6
+> host-state requirements, and `ModuleSchema::validate_host_state`
+> (runtime value validation for host conformance tests). The
+> `.ogh` declaration is the **single** description of the
+> contract; hosts inject loose `Value`s against it. Sections below
+> describing the `.ogh` grammar and strict mode remain accurate;
+> sections describing derives, `TypedOgham`, manifests, and the
+> CLI are **historical**.
 >
 > This document specifies Phase 1 of the typed-bindings work: a
 > per-module schema declared in `.ogh` source, paired with Rust
