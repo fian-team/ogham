@@ -307,6 +307,13 @@ impl Runtime {
         self.host_state.get(name).cloned()
     }
 
+    /// The full host-state map as currently stored. Used by hot reload to
+    /// carry live state into the replacement runtime, which otherwise starts
+    /// from the config's initial values.
+    pub fn host_state_snapshot(&self) -> HashMap<String, Value> {
+        self.host_state.clone()
+    }
+
     /// Inject multiple host state values at once. Only values that differ
     /// from the currently stored value are inserted, and `request_rerender`
     /// is called automatically if anything changed.

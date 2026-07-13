@@ -333,6 +333,18 @@ of scope**:
   case. Universalizing it was the overcomplication that made this seam look like a
   framework crisis instead of a bounded tool.
 
+> **Amendment (2026-07-13, regency):** the read walk has a second consumer
+> beyond generic editing — a host projecting a **typed host-state struct**
+> (`#[derive(Editable)]` chrome state → `Value` at mutation time, diffed
+> per field before injection). This stays inside the seam's rules: the
+> `Value`-building visitor lives **host-side** (the composition-point rule
+> below), the `.ogh` `host_state {}` block remains the single contract
+> description (validated at load via `ModuleSchema::validate_host_state`),
+> and Ogham stays derive-free — `addd9da` stands; this is *not* a revival
+> of `TypedOgham`/`OghamState`. It relaxes only the "one thing" framing
+> above: the walk serves generic *projection*, of which generic editing is
+> the richest case.
+
 ### One derive, both directions — no second crate needed  [DECIDED]
 
 Read and write come from **the same `editable` derive**. `apply` already walks the

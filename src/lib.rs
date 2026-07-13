@@ -188,6 +188,7 @@ impl Ogham {
             path,
             Some(self.config.clone()),
         )?));
+        self.carry_host_state_into(&new_runtime);
         let mut new_ui = Self::create_ui_from_runtime(&new_runtime)?;
         if let Some(ref fc) = self.font_collection {
             new_ui.set_font_collection(fc.clone());
@@ -198,6 +199,24 @@ impl Ogham {
         self.runtime = new_runtime;
         self.ui = new_ui;
         Ok(())
+    }
+
+    /// Carry the live host-state map from the current runtime into a
+    /// replacement one. Hot reload rebuilds the runtime from the config's
+    /// *initial* host state; without this, a reload snaps the tree back to
+    /// placeholders until the host next injects. Must run before the new
+    /// runtime's first module execution so even the first reloaded frame
+    /// renders live data.
+    fn carry_host_state_into(&self, new_runtime: &Arc<Mutex<runtime::Runtime>>) {
+        let live = self
+            .runtime
+            .lock()
+            .expect("runtime lock poisoned")
+            .host_state_snapshot();
+        new_runtime
+            .lock()
+            .expect("runtime lock poisoned")
+            .inject_host_state_batch(live);
     }
 
     /// Recompile from source code
@@ -212,6 +231,7 @@ impl Ogham {
             source,
             Some(self.config.clone()),
         )?));
+        self.carry_host_state_into(&new_runtime);
         let mut new_ui = Self::create_ui_from_runtime(&new_runtime)?;
         if let Some(ref fc) = self.font_collection {
             new_ui.set_font_collection(fc.clone());
@@ -391,9 +411,39 @@ impl Ogham {
         self.font_collection = Some(fc);
     }
 
+    /// One standard frame: hot-reload check (state-preserving), screen-size
+    /// update, re-execute the module if a rerender is pending, tick
+    /// animations, lay out. `layout` early-exits when nothing is dirty and
+    /// the dimensions are unchanged, so an idle frame does no tree work.
+    ///
+    /// Unlike [`Self::tick`], there is no inject callback: push host state
+    /// beforehand via [`Self::with_runtime_mut`] /
+    /// [`runtime::Runtime::set_host_state`] whenever it changes — reload
+    /// carries live host state forward, so injection order is safe across
+    /// frames.
+    ///
+    /// Returns `true` if the module re-executed this frame.
+    pub fn frame(
+        &mut self,
+        width: f32,
+        height: f32,
+        dt: f32,
+    ) -> Result<bool, runtime::error::RuntimeError> {
+        if self.check_for_changes() {
+            self.reload()?;
+        }
+        self.set_screen_size(width, height);
+        let rerendered = self.update()?;
+        self.ui.tick_animations(dt);
+        self.ui.layout(width, height);
+        Ok(rerendered)
+    }
+
     /// Perform a complete frame update: check for file changes, reload if
     /// needed, run the `inject` callback to push host state into the
     /// runtime, then reconcile the widget tree if a rerender is pending.
+    /// Hosts that push state as it changes (rather than per frame) can use
+    /// [`Self::frame`], which also animates and lays out.
     ///
     /// Returns `true` if a rerender was performed.
     pub fn tick(

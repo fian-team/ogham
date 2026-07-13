@@ -21,7 +21,11 @@
 > host-state requirements, and `ModuleSchema::validate_host_state`
 > (runtime value validation for host conformance tests). The
 > `.ogh` declaration is the **single** description of the
-> contract; hosts inject loose `Value`s against it. Sections below
+> contract; hosts inject loose `Value`s against it. (A host may
+> *derive* those `Value`s from an `editable`-derived struct — see
+> the 2026-07-13 amendment in `IDENTITY_AND_SCOPE.md` §4 — but the
+> struct conforms to the `.ogh` declaration, never the reverse.)
+> Sections below
 > describing the `.ogh` grammar and strict mode remain accurate;
 > sections describing derives, `TypedOgham`, manifests, and the
 > CLI are **historical**.
