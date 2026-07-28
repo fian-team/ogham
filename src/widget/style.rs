@@ -19,6 +19,24 @@ impl Axis {
     }
 }
 
+/// The semantic pointer role a widget declares — the CSS `cursor`
+/// property, deliberately decoupled from event listeners. A widget can
+/// consume clicks without inviting them (a scroll surface, a drag
+/// capture, an opaque panel that only swallows presses) and, conversely,
+/// declare `Pointer` on something whose handler lives elsewhere. Ogham
+/// only *classifies*; the host renders the actual glyph from
+/// [`UI::hovered_cursor`](crate::widget::UI::hovered_cursor). The enum starts small
+/// (interactive / not) and can grow — `Grab`, `Text` — without breaking
+/// hosts that only distinguish `Pointer` from the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorRole {
+    /// No affordance declared — inherit the ambient cursor (default).
+    #[default]
+    Default,
+    /// A clickable control: the host should show its "interactive" cursor.
+    Pointer,
+}
+
 /// Controls how content that exceeds the container bounds is handled.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Overflow {
@@ -53,6 +71,12 @@ pub struct FlexStyle {
     pub text_size: Option<f32>,
     pub text_color: Option<Color>,
     pub overflow: Overflow,
+    /// The pointer role this widget declares (CSS `cursor`). Independent
+    /// of event listeners: authored where the affordance lives, resolved
+    /// leaf-wins by [`UI::hovered_cursor`](crate::widget::UI::hovered_cursor) so a
+    /// child inherits its interactive parent's cursor for free. Does not
+    /// affect layout or paint — Ogham never draws the cursor.
+    pub cursor: CursorRole,
     /// Scroll containers only: keep the view pinned to the END of the
     /// content as it grows — the chat-log convention. The first layout
     /// lands on the latest content (no ease-in), and any growth while the
@@ -220,6 +244,7 @@ impl Default for FlexStyle {
             text_size: None,
             text_color: None,
             overflow: Overflow::Visible,
+            cursor: CursorRole::Default,
             scroll_follow_end: false,
             opacity: Opacity::OPAQUE,
             transform: Transform::IDENTITY,

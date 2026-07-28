@@ -454,6 +454,14 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     }
                 }
             }
+            "cursor" => {
+                if let Value::String(s) = value {
+                    style.cursor = match s.as_str() {
+                        "pointer" => CursorRole::Pointer,
+                        _ => CursorRole::Default,
+                    };
+                }
+            }
             "scroll_follow_end" => {
                 if let Value::Boolean(b) = value {
                     style.scroll_follow_end = *b;

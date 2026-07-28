@@ -343,6 +343,11 @@ pub struct UI {
     /// cleared by `dispatch_drag_end`. `None` outside of an
     /// active drag.
     active_drag_preview: Option<DragPreviewState>,
+    /// The last pointer position `call_event` saw (`mouse_move`), in the
+    /// window coordinates layout runs in; `None` until the first move.
+    /// Hosts read it for pointer-anchored effects (a backdrop's parallax,
+    /// a spotlight) without shadowing the event stream themselves.
+    last_mouse: Option<Point>,
 }
 
 /// Phase 3 M2: state captured by `UI` during an in-flight
@@ -385,7 +390,14 @@ impl UI {
             pending_drained_prefixes: Vec::new(),
             pending_cancelled_unmount_prefixes: Vec::new(),
             active_drag_preview: None,
+            last_mouse: None,
         }
+    }
+
+    /// The last pointer position seen by `call_event` (`mouse_move`);
+    /// `None` until the pointer first moves over the window.
+    pub fn last_mouse(&self) -> Option<&Point> {
+        self.last_mouse.as_ref()
     }
 
     /// Phase 3 M2: read-only access to the in-flight drag
@@ -417,6 +429,7 @@ impl UI {
     pub fn call_event(&mut self, event: &Event) -> bool {
         if event.name == "mouse_move" {
             if let Some(point) = &event.point {
+                self.last_mouse = Some(point.clone());
                 let changed = self.update_hover(point);
                 if changed {
                     // Hover only affects visual appearance (effective_style in
@@ -711,6 +724,60 @@ impl UI {
             .lock()
             .expect("widget lock poisoned")
             .blocks_point(point)
+    }
+
+    /// The pointer role under the cursor right now — the CSS `cursor` of
+    /// the deepest *hovered* widget (leaf-wins), or `Default` where the
+    /// chrome declares nothing. Reads the hover chain [`update_hover`]
+    /// already tagged from the last `mouse_move`, so it stays current
+    /// wherever pointer events are routed into this UI (the host needs no
+    /// cursor coordinate of its own). The companion to [`hovered_blocks`]:
+    /// a host reads this to decide whether the chrome under the pointer
+    /// wants the interactive glyph, and `hovered_blocks` to know whether
+    /// the world underneath still gets a vote.
+    ///
+    /// [`update_hover`]: Self::update_hover
+    /// [`hovered_blocks`]: Self::hovered_blocks
+    pub fn hovered_cursor(&self) -> style::CursorRole {
+        fn walk(widget: &WidgetRef) -> style::CursorRole {
+            let g = widget.lock().expect("widget lock poisoned");
+            if !g.is_hovered() {
+                return style::CursorRole::Default;
+            }
+            let own = g.declared_cursor();
+            let children = g.get_children();
+            drop(g);
+            // Leaf-wins: a deeper hovered descendant overrides our own.
+            for child in &children {
+                let deeper = walk(child);
+                if deeper != style::CursorRole::Default {
+                    return deeper;
+                }
+            }
+            own
+        }
+        walk(&self.root)
+    }
+
+    /// Whether the chrome under the pointer would consume a press — any
+    /// widget in the hovered chain that `block_interactions` or carries a
+    /// pointer listener. The chain twin of [`blocks_point`](Self::blocks_point)
+    /// (no coordinate needed), for hosts that gate world hover on the hover
+    /// state this UI already tracks.
+    pub fn hovered_blocks(&self) -> bool {
+        fn walk(widget: &WidgetRef) -> bool {
+            let g = widget.lock().expect("widget lock poisoned");
+            if !g.is_hovered() {
+                return false;
+            }
+            if g.blocks_interactions() {
+                return true;
+            }
+            let children = g.get_children();
+            drop(g);
+            children.iter().any(|child| walk(child))
+        }
+        walk(&self.root)
     }
 
     pub fn dispatch_contextmenu(&mut self, point: Point) -> bool {
@@ -1691,6 +1758,23 @@ pub trait Widget: Downcast {
     /// hit-testing under chrome. Leaf widgets that don't consume presses
     /// keep this default.
     fn blocks_point(&self, _point: &Point) -> bool {
+        false
+    }
+
+    /// This widget's own declared [`CursorRole`](crate::widget::style::CursorRole)
+    /// (CSS `cursor`) — non-recursive, decoupled from event listeners. The
+    /// UI-level [`UI::hovered_cursor`] resolves the effective role leaf-wins
+    /// over the hovered chain; a widget declaring none keeps this default.
+    fn declared_cursor(&self) -> style::CursorRole {
+        style::CursorRole::Default
+    }
+
+    /// Whether this widget itself would consume a pointer press — the
+    /// non-recursive predicate behind [`blocks_point`](Self::blocks_point)
+    /// (`block_interactions` or a pointer listener). [`UI::hovered_blocks`]
+    /// reads it over the hovered chain so a host can tell "the chrome under
+    /// the pointer eats the click" from "the world shows through."
+    fn blocks_interactions(&self) -> bool {
         false
     }
     // fn is_focused(&self) -> bool;

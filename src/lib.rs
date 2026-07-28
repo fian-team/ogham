@@ -47,6 +47,9 @@ pub struct Ogham {
     /// Default font family applied to all text widgets that don't set
     /// their own `font` style property.
     default_font: Option<String>,
+    /// Base directory for `Image { path }` lookups, kept so hot reloads
+    /// re-point the fresh UI's image cache at it (like fonts).
+    image_root: Option<PathBuf>,
 }
 
 impl Ogham {
@@ -72,6 +75,7 @@ impl Ogham {
             font_collection: None,
             registered_typefaces: Vec::new(),
             default_font: None,
+            image_root: None,
         };
         instance.apply_config_fonts(&config);
         Ok(instance)
@@ -96,6 +100,7 @@ impl Ogham {
             font_collection: None,
             registered_typefaces: Vec::new(),
             default_font: None,
+            image_root: None,
         };
         instance.apply_config_fonts(&config);
         Ok(instance)
@@ -196,6 +201,9 @@ impl Ogham {
         if let Some(ref name) = self.default_font {
             new_ui.set_default_font(name.clone());
         }
+        if let Some(ref root) = self.image_root {
+            new_ui.image_cache.set_root(root.clone());
+        }
         self.runtime = new_runtime;
         self.ui = new_ui;
         Ok(())
@@ -238,6 +246,9 @@ impl Ogham {
         }
         if let Some(ref name) = self.default_font {
             new_ui.set_default_font(name.clone());
+        }
+        if let Some(ref root) = self.image_root {
+            new_ui.image_cache.set_root(root.clone());
         }
         self.runtime = new_runtime;
         self.ui = new_ui;
@@ -367,6 +378,15 @@ impl Ogham {
     pub fn set_default_font(&mut self, name: &str) {
         self.default_font = Some(name.to_string());
         self.ui.set_default_font(name.to_string());
+    }
+
+    /// Resolve `Image { path }` lookups against `root` instead of the
+    /// default `data/assets/` under the process working directory. Like
+    /// registered fonts, the root survives hot reloads.
+    pub fn set_image_root(&mut self, root: impl Into<PathBuf>) {
+        let root = root.into();
+        self.ui.image_cache.set_root(root.clone());
+        self.image_root = Some(root);
     }
 
     /// Register a named font family from one or more TTF/OTF files.

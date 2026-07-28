@@ -679,9 +679,17 @@ impl Widget for FlexWidget {
                 if self.animations.is_empty() {
                     // No property actually changed — snap to target.
                     self.style = new_target;
+                } else {
+                    // Springs carry the transitioned properties from their
+                    // current values; everything else — including layout
+                    // fields like width/height that declare no transition —
+                    // must snap NOW, while this update's needs_layout flag
+                    // is in flight. Holding the whole old style here left
+                    // the box at its stale size: the tick that later wrote
+                    // the new value reports needs_layout only for spring-
+                    // driven properties, so the snap never re-laid out.
+                    self.style = self.animations.render_onto(&new_target);
                 }
-                // Otherwise leave self.style as old_rendered; the next
-                // tick will interpolate from there toward the new target.
             } else {
                 // No transitions declared — snap immediately.
                 self.animations = AnimationState::default();
@@ -1727,6 +1735,19 @@ impl Widget for FlexWidget {
         })
     }
 
+    fn declared_cursor(&self) -> CursorRole {
+        // The declared style, not the interpolated `style`: the cursor is
+        // authored intent, unaffected by hover/animation.
+        self.declared_style.cursor
+    }
+
+    fn blocks_interactions(&self) -> bool {
+        self.block_interactions
+            || ["mouse_down", "mouse_up", "contextmenu"]
+                .iter()
+                .any(|name| self.event_listeners.contains_key(*name))
+    }
+
     fn get_layout_rect(&self) -> Option<&Rect> {
         self.layout.as_ref()
     }
@@ -1759,6 +1780,10 @@ impl Widget for FlexWidget {
             self.animations.retarget(&old_rendered, &new_target);
             if self.animations.is_empty() {
                 self.style = new_target;
+            } else {
+                // Non-transitioned properties snap immediately (see the
+                // reconcile path in `update`).
+                self.style = self.animations.render_onto(&new_target);
             }
         } else {
             self.animations = AnimationState::default();
@@ -1901,6 +1926,10 @@ impl Widget for FlexWidget {
             self.animations.retarget(&old_rendered, &new_target);
             if self.animations.is_empty() {
                 self.style = new_target;
+            } else {
+                // Non-transitioned properties snap immediately (see the
+                // reconcile path in `update`).
+                self.style = self.animations.render_onto(&new_target);
             }
         } else {
             self.animations = AnimationState::default();
@@ -3388,6 +3417,47 @@ mod tests {
             old.style.background_color,
             Some(Color::new(70, 100, 150, 255)),
             "the new colour is adopted onto the rendered style"
+        );
+    }
+
+    #[test]
+    fn non_transitioned_layout_change_snaps_while_springs_fly() {
+        // Regression: a widget with a declared transition (say, on
+        // background_color) receives an update that ALSO changes a
+        // layout field with no transition of its own (width). The width
+        // must snap onto the rendered style during this update — this is
+        // the frame whose UpdateResult carries needs_layout — while the
+        // color spring keeps interpolating. Holding the entire old
+        // rendered style until the next tick left the box at its stale
+        // size forever: the tick that finally wrote the new width reports
+        // needs_layout only for spring-driven properties (the Ashworth
+        // Manor title screen's shrunken invitation card, when the
+        // fullscreen resize landed mid entrance animation).
+        let mut old = FlexWidget::new();
+        old.declared_style = make_transition_style(Color::new(0, 0, 0, 255));
+        old.declared_style.width = Size::Fixed(100.0);
+        old.style = old.declared_style.clone();
+
+        let mut new = FlexWidget::new();
+        new.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+        new.declared_style.width = Size::Fixed(500.0);
+        let new_ref: WidgetRef = Arc::new(Mutex::new(new));
+
+        let result = old.update(new_ref);
+        assert!(result.needs_layout, "a width change must mark needs_layout");
+        assert!(
+            !old.animations.is_empty(),
+            "the background_color spring must be in flight"
+        );
+        assert_eq!(
+            old.style.width,
+            Size::Fixed(500.0),
+            "the non-transitioned width must snap to the new target immediately"
+        );
+        assert_eq!(
+            old.style.background_color,
+            Some(Color::new(0, 0, 0, 255)),
+            "the transitioned colour still renders its spring's current value"
         );
     }
 

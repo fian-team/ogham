@@ -2,7 +2,8 @@
 
 use skia_safe::{
     textlayout::{FontCollection, ParagraphBuilder, ParagraphStyle, TextStyle},
-    Color, FontMgr, Paint, PaintStyle, PathBuilder, Point, RRect, Rect, Surface as SkiaSurface,
+    Color, FilterMode, FontMgr, MipmapMode, Paint, PaintStyle, PathBuilder, Point, RRect, Rect,
+    SamplingOptions, Surface as SkiaSurface,
 };
 use std::sync::Arc;
 
@@ -498,9 +499,17 @@ impl RenderContext for SkiaEnv {
             let mut image_paint = Paint::default();
             image_paint.set_anti_alias(true);
             let image_rect = Rect::new(sx, sy, sx + sw, sy + sh);
-            self.surface
-                .canvas()
-                .draw_image_rect(image, None, image_rect, &image_paint);
+            // Bilinear filtering with mipmaps: `draw_image_rect`'s default
+            // sampling is nearest-neighbor, which shreds any image drawn
+            // away from its native size (mipmaps carry heavy downscales).
+            let sampling = SamplingOptions::new(FilterMode::Linear, MipmapMode::Linear);
+            self.surface.canvas().draw_image_rect_with_sampling_options(
+                image,
+                None,
+                image_rect,
+                sampling,
+                &image_paint,
+            );
         }
     }
 
