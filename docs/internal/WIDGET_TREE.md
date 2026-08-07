@@ -157,6 +157,16 @@ adds custom widgets (and overrides built-ins on collision).
 - **`portal` / `Portal`** — deferred-paint container that lifts
   its children into a named layer; see [Portal layers](#portal-layers)
   below.
+- **`canvas` / `Canvas`** — see `create_canvas_widget`. Leaf whose
+  pixels are drawn by a host-registered painter through
+  `RenderContext::with_local_canvas`. Required `painter` (a name
+  resolved against `Runtime::painters` **at build time** — an
+  unregistered one is a `BridgeError` listing the registered names,
+  never a silent blank); optional `props` handed to the painter
+  verbatim; sizing from `style` (`"grow"` / `"shrink"` / a number),
+  not from bare required numbers the way `Image` does it. Wires the
+  five pointer listeners. See [SURFACE.md → `with_local_canvas`](SURFACE.md)
+  and [INTENT §6](INTENT.md#6-surface-is-the-only-rendering-seam).
 
 ### `WidgetDescriptor.owned_path`
 

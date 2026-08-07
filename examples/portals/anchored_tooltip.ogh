@@ -1,0 +1,98 @@
+// Anchored portals: chrome seated at a point the HOST computes.
+//
+// A Portal that names an `anchor:` takes its viewport origin from
+// the host's anchor map instead of from the slot it was declared
+// in. Paint, hit-testing, occlusion and nesting all follow, because
+// the anchor resolves into the same viewport-absolute rect an
+// unanchored portal computes.
+//
+// The host side of this file is one line per frame:
+//
+//     ogham.set_anchor("cursor", Point::new(mouse_x, mouse_y));
+//
+// The `client` previewer already does exactly that on every pointer
+// move, so this file runs as-is: `cargo run --bin client`, ctrl+O,
+// pick `examples/portals/anchored_tooltip.ogh`, and move the mouse.
+//
+// Note what is NOT here: no edge arithmetic, no "am I near the
+// bottom" branch, no measured card width. `anchor_policy` needs the
+// subtree's laid-out size, which `.ogh` cannot see, so the renderer
+// applies it after layout — that is the entire reason anchoring is
+// a Portal property rather than a composition pattern.
+
+let card = fn (title: String, body: String) {
+  Flex {
+    style: {
+      direction: "column",
+      width: 260,
+      padding: 10,
+      gap: 4,
+      background_color: { r: 22, g: 22, b: 26, a: 242 },
+      border: { width: 1, color: { r: 90, g: 90, b: 104, a: 255 } },
+      radius: 6,
+    },
+    children: [
+      Text {
+        text: title,
+        style: { font_size: 15, color: { r: 236, g: 236, b: 242, a: 255 } },
+      },
+      Text {
+        text: body,
+        style: { font_size: 13, color: { r: 158, g: 158, b: 172, a: 255 } },
+      },
+    ],
+  }
+};
+
+let main = fn () {
+  Flex {
+    style: {
+      width: "grow",
+      height: "grow",
+      direction: "column",
+      justify: "center",
+      align: "center",
+      gap: 8,
+      background_color: { r: 14, g: 14, b: 17, a: 255 },
+    },
+    children: [
+      Text {
+        text: "Move the pointer — the card follows it.",
+        style: { font_size: 16, color: { r: 222, g: 222, b: 230, a: 255 } },
+      },
+      Text {
+        text: "Near the bottom edge it flips above the pointer; near the right edge it pulls back inside.",
+        style: { font_size: 13, color: { r: 140, g: 140, b: 156, a: 255 } },
+      },
+
+      // The tooltip itself. `flip` reproduces the hand-rolled rule
+      // every Skia tooltip in every host has re-implemented:
+      // below-right of the pointer, above it when the card would
+      // overrun the bottom of the window, always inside the sides.
+      Portal {
+        layer: "tooltip",
+        open: true,
+        anchor: "cursor",
+        anchor_policy: "flip",
+        anchor_offset: { x: 14, y: 22 },
+        children: [
+          card("Anchored", "layer: tooltip · policy: flip · offset: 14, 22"),
+        ],
+      },
+
+      // The same anchor, a different policy. `clamp` never flips —
+      // it only ever pulls the box back inside the 8 px inset — so
+      // side by side the two make the flip rule visible.
+      Portal {
+        layer: "toast",
+        open: true,
+        anchor: "cursor",
+        anchor_policy: "clamp",
+        anchor_offset: { x: 14, y: -96 },
+        children: [
+          card("Clamped", "same anchor, policy: clamp"),
+        ],
+      },
+    ],
+  }
+};

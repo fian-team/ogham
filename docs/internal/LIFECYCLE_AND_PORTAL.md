@@ -870,12 +870,22 @@ Portal {
   cursor: "free",          // optional; Phase 2.5
   children: [ ... ],
 }
+
+Portal {
+  layer: "tooltip",
+  open: state.hovering,
+  anchor: "action-tooltip",         // optional; anchored portals
+  anchor_policy: "flip",            // optional; "raw" | "clamp" | "flip"
+  anchor_offset: { x: 14, y: 22 },  // optional
+  children: [ ... ],
+}
 ```
 
-Five properties. The two optional ones (`layer` and `cursor`)
-default to the layer's declared defaults, so existing Phase 2
-Portals without them continue to work — they land on the
-`overlay-modal` layer with a `Block` backdrop.
+Eight properties, five of them optional. `layer` and `cursor`
+default to the layer's declared defaults and the three `anchor*`
+properties default to absent, so existing Phase 2 Portals without
+any of them continue to work — they land on the `overlay-modal`
+layer with a `Block` backdrop, positioned at their declared slot.
 
 | Property | Type | Default | Meaning |
 |---|---|---|---|
@@ -884,6 +894,79 @@ Portals without them continue to work — they land on the
 | `layer` | `string` | `"overlay-modal"` | Which named layer to paint into. One of `"main"`, `"overlay-modal"`, `"popover"`, `"tooltip"`, `"toast"`, `"cursor-attached"` (Phase 2.5). The layer determines paint priority, default backdrop policy, and default cursor preference. |
 | `cursor` | `string` | layer default | `"free"` requests a visible system cursor; `"inherit"` defers to the host. Aggregated by `Ogham::wants_cursor_free()`. |
 | `children` | `array<widget>` | `[]` | The widgets to render in the portal layer. Layout starts at the parent's slot rect; transforms apply normally. |
+| `anchor` | `string` | none | Names a host-set anchor point. When present, the entry's viewport origin comes from `UI`'s anchor map instead of from Pass-A translate accumulation. See *The anchor contract* below. |
+| `anchor_policy` | `string` | `"clamp"` | How the anchor point is seated against the viewport once the subtree's size is known. One of `"raw"`, `"clamp"`, `"flip"`. Inert without `anchor`. |
+| `anchor_offset` | `{ x, y }` | `{ x: 0, y: 0 }` | Fixed nudge applied to the anchor point *before* the policy. Either component may be omitted. Inert without `anchor`. |
+
+### The anchor contract
+
+Anchoring is the one exception to *"positioning is composition"*
+below, and it earns the exception on a specific technical ground:
+**the policies need the subtree's measured size, and `.ogh` cannot
+see it.** A card that flips above the pointer when it would overrun
+the bottom of the window is not expressible by any arrangement of
+widgets, at any amount of author effort, because the author has no
+handle on the card's laid-out height. Everything that *is*
+expressible — backdrops, dismiss, escape, static offsets — stays
+composition.
+
+**Anchors are host state, not frame state.** They live in
+`UI.anchors: HashMap<String, Point>`, written through
+`set_anchor` / `clear_anchor` / `clear_anchors` and read back with
+`anchor`. They persist until changed, which is the same contract as
+injected host state and the reason chrome pinned to something that
+rarely moves costs nothing per frame. A hot reload clears them
+(INTENT §7: a reload drops what it cannot verify still means
+anything — an anchor id names a Portal in the *old* program).
+
+**Resolution happens in Pass A, in one place.** The renderer's
+portal branch chooses the entry's `viewport_rect` between two
+expressions: the existing `local_rect + accumulated_translate`, or
+`resolve_anchor(point, offset, policy, size, viewport)`. That is
+the whole override. Because the result lands in the same field,
+paint, nesting, hit-testing, focus, occlusion and layer policy all
+follow with no further changes — anchoring adds no coordinate
+space, no paint path, and no hit-test path.
+
+**Size is the children's extent, not the Portal's rect.** A
+Portal's own laid-out rect is its inner flex, which is `grow`/`grow`
+and therefore the size of the whole available box. The policies
+resolve against `max(child.x + child.width)` × `max(child.y +
+child.height)` over the portal's children — the card, which is what
+actually has to fit on screen.
+
+The consequence, and the one real footgun: **an anchored Portal
+should have exactly one content child.** The extent is a union, so
+the full-viewport backdrop child from the `Modal` composition
+pattern below makes the measured box the whole viewport and `clamp`
+pins it to the corner. That combination is legal and does what it
+says; it just isn't what anyone wants. It is also not a combination
+that arises naturally — an anchored modal would need `focus_trap`,
+which is rejected outright.
+
+**A missing anchor renders nothing.** An `anchor:` naming an id the
+host hasn't set this frame does not push an entry: the portal paints
+nothing and hit-tests as absent. This is correct behaviour rather
+than an error — the anchored thing is gone — and is why anchored
+chrome needs no separate `open:` gate for "is the target still
+there". Debug builds emit one `eprintln!` per id that was never set,
+so a typo'd id stays diagnosable.
+
+**Two loud rejections at build time**, both chosen against this
+framework's standing habit of silent degradation:
+
+- `anchor` with `focus_trap: true`. A trap gates input to a subtree
+  whose position the user cannot predict, and a host that stops
+  setting the anchor leaves the trap live over nothing on screen.
+- An `anchor_policy` string that isn't one of the three names —
+  `BridgeError::InvalidPropertyType` listing them. Contrast
+  `position: "relative"`, which parses and silently does nothing.
+
+Ids beginning with `__` are reserved for the runtime and rejected in
+`.ogh`. The drag preview lives at `__drag_preview` and since M4 is
+an ordinary anchored `cursor-attached` entry seated through exactly
+this path — the special case the mechanism was generalised from no
+longer exists as a separate code path.
 
 ### What's deliberately not in the API
 
@@ -898,9 +981,12 @@ primitives:
   styled chrome on top.)
 - **Dismiss-on-outside** → `on_click` on the backdrop child
   toggles the consumer's `open` state.
-- **Anchor positioning** → the second child uses
+- **Static anchor positioning** → the second child uses
   `transform: { translate_x, translate_y }` to position
-  itself relative to the portal's slot.
+  itself relative to the portal's slot. (Positioning at a
+  *host-computed* point is the `anchor:` property above —
+  see *The anchor contract* for why that one is not
+  composable.)
 - **Escape-to-dismiss** → consumer adds an event handler
   that toggles `open` on Escape, same as for any other
   dismissable UI.
@@ -922,7 +1008,7 @@ input-blocking needs.
 | `backdrop: bool` | Authors compose with a full-viewport Flex child — gives full control over color, opacity, dismiss behavior, animation. The layer's `BackdropPolicy` (Phase 2.5) handles the input-blocking *behaviour* separately from the styled chrome. |
 | `dismiss_on_outside: bool` | An `on_click` on the backdrop child does this exactly. |
 | `dismiss_on_escape: bool` | A consumer-level key handler does this — and is needed for non-Portal dismissable UIs anyway. |
-| `anchor: WidgetRef` | Anchor positioning is one transform call. Wiring it through portal would require widget refs as first-class values, which is its own large project. (Phase 2.5 introduced `Value::WidgetRef(u64)` to begin closing that gap.) |
+| `anchor: WidgetRef` | Still rejected. Widget-relative anchoring needs a measured-position query and a second layout dependency, and no consumer has asked for it. The `anchor: string` that *did* ship takes a host-supplied point, not a widget — a different feature that happens to share a name. |
 | `z_index: int` | Phase 2 said multiple portals stack last-opened-on-top; Phase 2.5 made the priority explicit via the named-layer set. Six layers cover every use case the UL audit found, with a fixed enum keeping the priority math obvious. |
 | `layer: string` (Phase 2.5) | Added. The audit showed tooltip / popover / overlay-modal / toast / cursor-attached have genuinely different priorities and backdrop policies; encoding them in a fixed-set enum is simpler than a free-form `z_index`. |
 | `cursor: string` (Phase 2.5) | Added. Modal-style overlays need to release a host's pointer lock; per-Portal declaration aggregates through `Ogham::wants_cursor_free()`. |

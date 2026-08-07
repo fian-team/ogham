@@ -52,6 +52,7 @@ Source (.ogh)
 | `src/widget/svg_widget.rs` | SVG widget |
 | `src/widget/grid_widget.rs` | Grid container widget |
 | `src/widget/image_widget.rs` | Image widget |
+| `src/widget/canvas_widget.rs` | Host-painted `Canvas` leaf — `Painter`, `CanvasPainter`, the widget |
 | `src/widget/presence_widget.rs` | Lifecycle-sequencing container (waits for exits before mounting next generation) |
 | `src/widget/portal_widget.rs` | Portal — paints children into a per-frame layer with hit-test priority |
 | `src/widget/portal_layer.rs` | Named portal layers + per-layer backdrop / cursor policies |
@@ -160,7 +161,7 @@ let add = fn (a: int, b: int): int {
 
 ### Widgets
 
-Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`, `Portal`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`, `Portal`) wrap or specialize it.
+Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`, `Portal`, `Canvas`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`, `Portal`) wrap or specialize it.
 
 Sizing: `width`/`height` take `"grow"`, `"shrink"`, a number (fixed px), or a percent. One pinned interaction (`flex_widget.rs` tests): while a `shrink` parent measures itself along an axis, `grow` descendants on that axis contribute their *content* size — a shrink parent has no leftover space to grow into — and are stretched to the parent's resolved size during the real layout pass. So a full-height accent bar (`height: "grow"`, no children) inside a `height: "shrink"` row contributes nothing to the row's height and then spans it exactly.
 
@@ -454,7 +455,7 @@ diagnostics only.)
 
 ### Portal widget (Phase 2 + 2.5)
 
-`Portal { open, focus_trap, layer, cursor, children }` lifts its
+`Portal { open, focus_trap, layer, cursor, anchor, children }` lifts its
 children's paint and hit-test out of the parent's clip / order
 into a named per-frame **layer**. Layout-wise the Portal node
 contributes nothing to the parent's flow — children paint into
@@ -499,10 +500,201 @@ host decide. `Ogham::wants_cursor_free()` aggregates across
 open portals + the focused widget.
 
 **Composition.** Backdrop styling, dismiss-on-outside-click,
-anchor positioning, and Escape-to-dismiss are *not* Portal
-properties — they're consumer composition with regular
-widgets. See `examples/portals/components.ogh` for `Modal`,
-`Tooltip`, and `Dropdown` reference functions.
+and Escape-to-dismiss are *not* Portal properties — they're
+consumer composition with regular widgets. See
+`examples/portals/components.ogh` for `Modal`, `Tooltip`, and
+`Dropdown` reference functions.
+
+### Anchored portals
+
+A Portal that names an `anchor:` takes its viewport origin from a
+point **your host sets**, instead of from the slot it was declared
+in. It's the seam for chrome that has to follow something the host
+knows about and Ogham doesn't: the pointer, an entity's projected
+screen position, the field a popover belongs to.
+
+```ogh
+Portal {
+  layer: "tooltip",
+  open: tooltip_open,
+  anchor: "action-tooltip",         // names a host-set anchor
+  anchor_policy: "flip",            // "clamp" (default) | "flip" | "raw"
+  anchor_offset: { x: 14, y: 22 },  // applied BEFORE the policy
+  children: [ /* ordinary ogham chrome */ ],
+}
+```
+
+```rust
+// Per frame, or only when the thing moves — anchors are host state,
+// not frame state, and persist until changed.
+ogham.set_anchor("action-tooltip", Point::new(cursor_x, cursor_y));
+ogham.clear_anchor("action-tooltip");   // the thing is gone
+ogham.clear_anchors();                  // all of them
+let p: Option<Point> = ogham.anchor("action-tooltip");
+```
+
+Run `examples/portals/anchored_tooltip.ogh` in the `client` binary
+(ctrl+O) and move the mouse; the previewer publishes every pointer
+move as the `"cursor"` anchor.
+
+**Why it's a Portal property and not a composition pattern.** The
+policies need the subtree's *measured* size, which `.ogh` cannot
+see. "Flip above the pointer when the card would overrun the
+bottom" is not expressible by any arrangement of widgets, which is
+why the rule lives in the renderer, applied after layout.
+
+| Policy | Rule |
+|---|---|
+| `"clamp"` (default) | Keep the whole box inside the viewport, inset 8 px on every edge. A box too large to fit pins to the top-left inset. |
+| `"flip"` | Clamp horizontally; vertically, sit *above* the anchor when the box would overrun the bottom, mirroring `anchor_offset.y`. Then clamp. This is the cursor-tooltip rule. |
+| `"raw"` | The point plus the offset, nothing else. May go off-screen — for hosts that did their own edge math. |
+
+**What you get for free.** The anchor resolves into the entry's
+`viewport_rect`, which is the same field an unanchored portal
+computes, so *everything downstream already works*: it paints
+where you anchored it, it's clickable where it's drawn,
+`UI::blocks_point` occludes your world picking under it, nested
+portals inherit the anchored origin, and layer/backdrop/cursor
+policy are unchanged.
+
+**A missing anchor renders nothing.** An `anchor:` id the host
+hasn't set means "the thing I was pointing at is gone", so the
+portal is skipped for that frame — no error, no fallback position.
+Debug builds print one line per id that was never set, so a typo'd
+id is distinguishable from a host with nothing to point at.
+
+| | |
+|---|---|
+| Coordinates | The same viewport coordinates layout runs in — the ones you pass to `frame(width, height, dt)`. Logical pixels, not device. |
+| Lifetime | Host state. Persists until `clear_anchor` / `clear_anchors` / a **hot reload** (INTENT §7 — a reload drops anchors, so a host that sets one *once* must re-set it after). |
+| World-space chrome | Project world → screen host-side and pass the result. Ogham does not know what a camera is. |
+| `focus_trap` | **Rejected at build time** with `anchor`. A focus trap that follows a host-set point can strand input over chrome the user can't reach. |
+| Reserved ids | Ids starting with `__` are the runtime's (the drag preview lives at `__drag_preview`) and are rejected in `.ogh`. |
+| Unknown `anchor_policy` | `BridgeError::InvalidPropertyType` listing the three valid names — not a silent fall back to the default. |
+| Measured size | The **union of the portal's children's** laid-out rects — not the Portal's own rect, which is `grow`/`grow`. Give an anchored Portal *one* content child. A full-viewport backdrop sibling (the `Modal` composition pattern) makes the measured box the viewport, and `clamp` then pins it to the corner. |
+| Collision | Policies resolve against the *viewport* only. Two anchored tooltips overlapping is the host's problem. |
+| Anchoring to a widget | Not supported. `anchor` takes a host-supplied point, never "the widget with key `foo`". |
+
+### Host-painted `Canvas`
+
+`Canvas` is a **leaf** widget whose pixels are drawn by *your* Rust —
+arcs, wedges, gradients along a path, blend modes, anything the typed
+`RenderContext` primitives can't express — while its geometry comes
+from flex layout like any other widget. Use it when host-drawn content
+is **widget-sized and has siblings**. A full-screen host surface under
+a transparent Ogham root already works and does not need this.
+
+```ogh
+Canvas {
+  painter: "wheel_dial",                       // required; names a host painter
+  props: { charge: charge, dancing: dancing }, // optional; handed to the painter verbatim
+  style: {
+    width: 180, height: 194,                   // "grow" / "shrink" also legal
+    margin: { bottom: 14 },                    // INSIDE the box: the painter gets 180x180
+    cursor: "pointer",
+  },
+  mouse_down: fn () { event("dial_press"); },  // ordinary pointer listeners
+}
+```
+
+```rust
+use ogham::runtime::config::RuntimeConfig;
+use ogham::skia_safe::{Paint, PaintStyle};      // re-exported: use THIS skia-safe
+
+let state = shared_state.clone();               // an Arc<Mutex<…>>, as with event handlers
+let config = RuntimeConfig::new()
+    .with_painter("wheel_dial", move |p, props| {
+        // p.canvas() is pre-translated to the widget's origin and pre-scaled
+        // by DPI: draw in LOCAL LOGICAL coordinates from (0, 0).
+        let (cx, cy) = (p.width() / 2.0, p.height() / 2.0);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_stroke_width(6.0);            // 6 LOGICAL px on any display
+        p.canvas().draw_circle((cx, cy), p.width().min(p.height()) / 2.0 - 6.0, &paint);
+        let _ = (&state, props);
+    });
+```
+
+Run `examples/canvas.ogh` in the `client` binary (ctrl+O) for a working
+one; its painter is `demo_dial` in `src/client/client.rs`.
+
+**The painter contract.**
+
+| | |
+|---|---|
+| Signature | `Fn(&mut Painter, &Value) + Send + Sync + 'static` |
+| Registration | `RuntimeConfig::with_painter(name, f)` — **on the config, never on a live `Runtime`** |
+| Name matching | Exact (unlike widget type names, which are lowercased) |
+| `props` | The `.ogh` `props:` value verbatim, fresh each frame. Defaults to an empty map. **The only channel from `.ogh` into the painter** — live host data comes from handles the closure captured at registration. |
+| Nothing flows out | A painter draws and returns. It has no route back into the runtime; state changes leave `.ogh` as `event(...)` calls, as always. |
+| Children | None. `Canvas` is a leaf. Chrome that must sit over painted content is a sibling with `position: { type: "absolute" }`, or a `Portal`. |
+
+**The coordinate space** is the reason this is worth using:
+
+- `p.canvas()` is already `save()`d, translated to the widget's
+  laid-out origin, and scaled by the display's DPI factor. Draw from
+  `(0, 0)` to `(p.width(), p.height())` in **logical** pixels.
+- Sizes, stroke widths, and offsets are logical too — a 2px hairline is
+  `2.0`, on any display. `p.dpi_scale()` is there for the rare painter
+  that wants device pixels.
+- **`margin` is subtracted from the painter's rect; padding and border
+  are not.** This is the opposite of CSS and it catches everyone once:
+  Ogham's layout rect is `width × height` *including* insets
+  ([`FLEX.md`](docs/internal/FLEX.md) §Insets), so
+  `width: 180, height: 194, margin: { bottom: 14 }` hands the painter
+  **180 × 180**, not 180 × 194 with a gap below. Declare the box as
+  *painter size plus the margins you want*, and read `p.width()` /
+  `p.height()` rather than assuming they match the style. Padding and
+  border are left alone deliberately — the painter owns its whole
+  interior.
+- The canvas is restored afterwards, so nothing you do to the transform
+  leaks into the next widget.
+- Migrating a full-screen paint routine is mechanical: replace its
+  centre computation with `p.width() / 2.0`, `p.height() / 2.0`, and
+  delete every seating constant.
+
+**Hot reload.** Painters registered on `RuntimeConfig` survive a hot
+reload for exactly the same reason event handlers do: `Ogham::reload`
+rebuilds the `Runtime` *from the config*. A painter poked into a live
+`Runtime` after construction would work until the first file save and
+then vanish, silently — so there is no API to do that.
+
+**Failure modes** (all loud, deliberately):
+
+| What you did | What happens |
+|---|---|
+| Omitted `painter:` | `BridgeError::MissingProperty("painter")` at build time. |
+| Named a painter that isn't registered | `BridgeError::InvalidPropertyType` at build time, **listing every registered name**. Surfaces through whatever channel your host already shows bridge errors in. |
+| Registered on a live `Runtime` instead of the config | Works once, disappears on the next hot reload. Don't. |
+| Rendering backend doesn't implement `with_local_canvas` | The `Canvas` paints nothing (its layout still happens) and debug builds log once per painter name. `SkiaEnv` implements it, so this only bites custom backends. |
+| Your painter panics | **The panic propagates.** It is host code on the host's render thread; Ogham does not `catch_unwind` it, because swallowing it would hide your bug behind a blank rectangle. |
+| Depended on `skia-safe` directly instead of `ogham::skia_safe` | Two copies of the crate in one binary; `p.canvas()` stops typechecking with an error that blames the wrong thing. Use the re-export. |
+
+**Occlusion.** A `Canvas` with a `mouse_down` / `mouse_up` /
+`contextmenu` listener consumes presses and reports `true` from
+`UI::blocks_point`; a bare one is see-through, so a decorative dial
+doesn't swallow clicks meant for the scene behind it. Same rule as
+`Flex`.
+
+**Reconciliation.** Same `painter:` name → the widget absorbs in place
+(props and style swap, `Arc` identity survives). Different name →
+replacement, because a different painter shares no pixels with the old
+one.
+
+**`key:` does nothing on a `Canvas`** — as on every other leaf. Only
+`Flex` and `Portal` implement `Widget::key`, so a keyed leaf is matched
+by position like an unkeyed one, silently. A reorderable list of
+Canvases therefore wants each one wrapped in a keyed `Flex`, which is
+what actually carries the identity. (This is a real gap, not a design
+statement: INTENT §5 makes `key` the identity mechanism, and a leaf that
+accepts the property while ignoring it is the silent-degradation shape
+§3.5 exists to prevent. Wrapping is the workaround until leaves carry
+keys.)
+
+See [`docs/internal/CANVAS_LEAF.md`](docs/internal/CANVAS_LEAF.md) for
+the design and [INTENT §6](docs/internal/INTENT.md) for the named
+exception this carves out of "`Surface` is the only rendering seam".
 
 ### Imports
 
@@ -821,6 +1013,17 @@ pub trait RenderContext {
         radii: &CornerRadii, sigma: f32,
     ) {}
     fn pop_backdrop_blur(&mut self) {}
+
+    /// The `Canvas` painter hatch: hand `paint` a backend-native canvas
+    /// positioned at `rect`'s origin and scaled to device pixels, so a
+    /// host painter draws in local logical coordinates from (0, 0) to
+    /// (rect.width, rect.height). Save before, restore after. Backends
+    /// that can't expose a native canvas keep the `false` default and the
+    /// Canvas widget paints nothing. See *Host-painted `Canvas`* above.
+    fn with_local_canvas(
+        &mut self, rect: &Rect,
+        paint: &mut dyn FnMut(&mut canvas_widget::Painter),
+    ) -> bool { false }
 }
 ```
 
@@ -831,9 +1034,13 @@ each open portal layer in priority order
 (`overlay-modal` → `popover` → `tooltip` → `toast` →
 `cursor-attached`) and paints its entries at viewport-absolute
 coordinates (Pass B), applying the layer's `BackdropPolicy`
-before painting children. While a drag is in flight, the
-backend synthesizes a `cursor-attached` entry from
-`UI::active_drag_preview` and the cursor position. See
+before painting children. A Portal that declares an `anchor:`
+takes its Pass-A origin from `UI`'s anchor map instead of from
+accumulated translates, and is skipped entirely when the host
+hasn't set that id. While a drag is in flight, the backend
+synthesizes a `cursor-attached` entry from
+`UI::active_drag_preview`, seated at the runtime-reserved
+`__drag_preview` anchor through that same path. See
 [`docs/internal/SURFACE.md`](docs/internal/SURFACE.md) for
 the full walker description.
 
@@ -873,6 +1080,7 @@ ogham/
       svg_widget.rs         -- SVG rendering
       grid_widget.rs        -- Grid container
       image_widget.rs       -- Image
+      canvas_widget.rs      -- Host-painted Canvas leaf (Painter + the paint escape)
       presence_widget.rs    -- Lifecycle-sequencing container
       portal_widget.rs      -- Portal (deferred-paint two-pass renderer)
       portal_layer.rs       -- Named portal layers + backdrop / cursor policies

@@ -11,6 +11,13 @@
 //! userspace. New patterns that need a new layer require a
 //! runtime change; that's a feature, not a bug, because it
 //! forces design review of layer-priority decisions.
+//!
+//! This module also owns [`AnchorPolicy`] and [`resolve_anchor`]
+//! — the seating rules for a Portal whose viewport origin comes
+//! from a host-set anchor rather than from Pass-A translate
+//! accumulation. They live here rather than in `skia.rs` so the
+//! edge arithmetic is a pure function that tests can drive
+//! without a window.
 
 /// Named portal layers with priority ordering. Discriminants
 /// are deliberate gaps (0/100/200/...) so future intermediate
@@ -154,6 +161,149 @@ impl PortalLayer {
     }
 }
 
+/// How an anchored Portal's box is seated against the viewport
+/// once its content size is known.
+///
+/// A Portal that names an `anchor:` takes its viewport origin
+/// from a host-set point instead of from Pass-A translate
+/// accumulation. The point alone isn't enough: chrome pinned to
+/// the pointer near the right edge of the window runs off it, and
+/// a tooltip near the bottom wants to sit *above* the pointer
+/// rather than be shoved up into it. Both corrections need the
+/// subtree's measured size, which `.ogh` cannot see — hence a
+/// named policy resolved in the renderer rather than arithmetic
+/// in the language.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnchorPolicy {
+    /// Use the anchor point (plus offset) as-is. The escape
+    /// hatch: honest about going off-screen, which is what a
+    /// host that has already done its own edge math wants.
+    Raw,
+    /// Keep the whole box inside the viewport, inset by
+    /// [`ANCHOR_VIEWPORT_INSET`] on every edge. The default,
+    /// because "visible" is the overwhelmingly common intent.
+    #[default]
+    Clamp,
+    /// Clamp horizontally; vertically, flip to sit *above* the
+    /// anchor when the box would overrun the bottom edge. The
+    /// cursor-tooltip rule: chrome that would be clipped by the
+    /// bottom of the window reads better above the pointer than
+    /// jammed against the sill.
+    Flip,
+}
+
+/// Margin an anchored Portal's box keeps from every viewport
+/// edge under [`AnchorPolicy::Clamp`] and [`AnchorPolicy::Flip`].
+///
+/// 8 logical px, matching the hand-rolled clamps this feature
+/// exists to delete (regency's `x.min(w - card_w - 8.0).max(8.0)`).
+/// Not configurable: a per-portal inset is a style knob dressed
+/// up as a policy, and no consumer has wanted a second value.
+pub const ANCHOR_VIEWPORT_INSET: f32 = 8.0;
+
+impl AnchorPolicy {
+    /// All policies, in the order the diagnostic lists them.
+    pub const ALL: [AnchorPolicy; 3] = [Self::Raw, Self::Clamp, Self::Flip];
+
+    /// Parse a string policy name as it appears in `.ogh`
+    /// source. Returns `None` for unknown names — the caller
+    /// surfaces the diagnostic with the list of valid names.
+    /// Mirrors [`PortalLayer::from_source_name`].
+    pub fn from_source_name(name: &str) -> Option<Self> {
+        match name {
+            "raw" => Some(Self::Raw),
+            "clamp" => Some(Self::Clamp),
+            "flip" => Some(Self::Flip),
+            _ => None,
+        }
+    }
+
+    /// String name as it appears in `.ogh` source. Used by LSP
+    /// hover, error messages, and the "list of valid names"
+    /// diagnostic.
+    pub fn source_name(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Clamp => "clamp",
+            Self::Flip => "flip",
+        }
+    }
+
+    /// Comma-separated list of all policy names, for diagnostic
+    /// messages.
+    pub fn all_names_for_diagnostic() -> &'static str {
+        "raw, clamp, flip"
+    }
+}
+
+/// Seat a box of `size` at a host-set anchor `point`, nudged by
+/// `offset`, under `policy`, inside a `viewport`. Returns the
+/// box's viewport-absolute top-left.
+///
+/// A **pure function of five numbers** on purpose: the three
+/// policies are the part of anchoring most likely to be wrong at
+/// an edge, and keeping them out of the Skia walk means they are
+/// unit-testable without a window (see `tests/anchored_portals.rs`).
+///
+/// `offset` is applied *before* the policy, so a cursor tooltip
+/// declared at `{ x: 14, y: 22 }` sits below-right of the pointer
+/// and only then gets pulled back inside the viewport.
+///
+/// A non-positive viewport dimension disables clamping on that
+/// axis: before the first layout pass there is no viewport to
+/// resolve against, and inventing one would park every anchored
+/// portal at the inset corner instead of leaving it where the
+/// host asked.
+pub fn resolve_anchor(
+    point: (f32, f32),
+    offset: (f32, f32),
+    policy: AnchorPolicy,
+    size: (f32, f32),
+    viewport: (f32, f32),
+) -> (f32, f32) {
+    let (x, y) = (point.0 + offset.0, point.1 + offset.1);
+    match policy {
+        AnchorPolicy::Raw => (x, y),
+        AnchorPolicy::Clamp => (
+            clamp_axis(x, size.0, viewport.0),
+            clamp_axis(y, size.1, viewport.1),
+        ),
+        AnchorPolicy::Flip => {
+            // Flip only when the below-the-anchor placement would
+            // overrun the bottom inset. The flipped placement
+            // mirrors the offset too, so a `+22` nudge downward
+            // becomes a `-22` nudge upward and the box clears the
+            // anchor by the same margin on either side.
+            let overruns_bottom =
+                viewport.1 > 0.0 && y + size.1 > viewport.1 - ANCHOR_VIEWPORT_INSET;
+            let seated_y = if overruns_bottom {
+                point.1 - offset.1 - size.1
+            } else {
+                y
+            };
+            (
+                clamp_axis(x, size.0, viewport.0),
+                // Clamp the result either way: a flipped box can
+                // still run off the top in a short viewport, and
+                // an un-flipped one can start above the top inset
+                // if the host anchored near y = 0.
+                clamp_axis(seated_y, size.1, viewport.1),
+            )
+        }
+    }
+}
+
+/// One axis of the clamp. `min` before `max` so the inset wins
+/// when the box is larger than the viewport — a box that cannot
+/// fit is better pinned to the top-left than pushed off it.
+fn clamp_axis(v: f32, size: f32, viewport: f32) -> f32 {
+    if viewport <= 0.0 {
+        return v;
+    }
+    v.min(viewport - size - ANCHOR_VIEWPORT_INSET)
+        .max(ANCHOR_VIEWPORT_INSET)
+}
+
 /// Backdrop / pointer-event policy for a portal layer. Applied
 /// at layer boundaries during Pass B paint and hit-test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +344,35 @@ mod tests {
         assert!(PortalLayer::from_source_name("MODAL").is_none());
         assert!(PortalLayer::from_source_name("").is_none());
         assert!(PortalLayer::from_source_name("overlay_modal").is_none());
+    }
+
+    #[test]
+    fn anchor_policy_from_source_name_round_trips() {
+        for policy in AnchorPolicy::ALL {
+            let name = policy.source_name();
+            assert_eq!(AnchorPolicy::from_source_name(name), Some(policy));
+            assert!(
+                AnchorPolicy::all_names_for_diagnostic().contains(name),
+                "{:?} missing from the diagnostic list",
+                policy
+            );
+        }
+    }
+
+    #[test]
+    fn anchor_policy_rejects_unknown() {
+        // Same shape as the layer names: no case folding, no
+        // near-misses. An unrecognised policy is a build error,
+        // not a silent fallback to the default.
+        assert!(AnchorPolicy::from_source_name("Clamp").is_none());
+        assert!(AnchorPolicy::from_source_name("clamped").is_none());
+        assert!(AnchorPolicy::from_source_name("none").is_none());
+        assert!(AnchorPolicy::from_source_name("").is_none());
+    }
+
+    #[test]
+    fn anchor_policy_defaults_to_clamp() {
+        assert_eq!(AnchorPolicy::default(), AnchorPolicy::Clamp);
     }
 
     #[test]

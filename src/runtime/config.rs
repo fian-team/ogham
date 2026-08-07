@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::runtime::value::Value;
 use crate::widget::builder::WidgetFactory;
+use crate::widget::canvas_widget::{CanvasPainter, Painter};
 
 /// A named font family with one or more file paths.
 #[derive(Clone, Debug)]
@@ -29,6 +30,16 @@ pub struct RuntimeConfig {
     /// into the runtime's [`WidgetRegistry`] on creation, overriding built-in
     /// types if the names collide.
     pub custom_widgets: HashMap<String, WidgetFactory>,
+    /// Host paint routines keyed by the exact name a `.ogh` file uses in
+    /// `Canvas { painter: "name" }`. Copied onto the `Runtime` on creation;
+    /// the `Canvas` builder resolves the name against this map at build time
+    /// and rejects an unregistered one.
+    ///
+    /// Registering here rather than on a live `Runtime` is what makes
+    /// painters survive hot reload: `Ogham::reload_file` rebuilds the
+    /// runtime from this config, so a painter added post-hoc to the old
+    /// runtime would vanish on the next file save.
+    pub painters: HashMap<String, CanvasPainter>,
 }
 
 impl RuntimeConfig {
@@ -111,6 +122,39 @@ impl RuntimeConfig {
     {
         self.custom_widgets
             .insert(name.into().to_lowercase(), Arc::new(factory));
+        self
+    }
+
+    /// Register a host paint routine that `.ogh` can seat in the layout as
+    /// `Canvas { painter: "name", props: { … }, style: { … } }`.
+    ///
+    /// The closure receives a [`Painter`] whose canvas is already
+    /// translated to the widget's laid-out origin and scaled by the
+    /// backend's DPI factor — draw from `(0, 0)` to
+    /// `(p.width(), p.height())` in logical pixels — plus the widget's
+    /// `props:` map verbatim. Live host data comes from handles the
+    /// closure captures here, the same way an event handler reads them.
+    ///
+    /// Names are matched **exactly** (unlike widget type names, which are
+    /// lowercased): a painter name is an opaque string chosen by the host,
+    /// not an identifier the language resolves. An unregistered name is a
+    /// build-time error listing the registered ones, never a silent blank.
+    ///
+    /// ```rust,no_run
+    /// # use ogham::runtime::config::RuntimeConfig;
+    /// let config = RuntimeConfig::new().with_painter("wheel_dial", |p, _props| {
+    ///     let mut paint = ogham::skia_safe::Paint::default();
+    ///     paint.set_anti_alias(true);
+    ///     p.canvas()
+    ///         .draw_circle((p.width() / 2.0, p.height() / 2.0), p.width() / 2.0, &paint);
+    /// });
+    /// ```
+    pub fn with_painter<S, F>(mut self, name: S, painter: F) -> Self
+    where
+        S: Into<String>,
+        F: Fn(&mut Painter, &Value) + Send + Sync + 'static,
+    {
+        self.painters.insert(name.into(), Arc::new(painter));
         self
     }
 }

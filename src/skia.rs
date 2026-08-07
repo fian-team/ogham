@@ -8,6 +8,7 @@ use skia_safe::{
 use std::sync::Arc;
 
 use crate::widget::{
+    canvas_widget::Painter,
     flex_widget::FlexWidget,
     image::ImageCache,
     style::{Border, BorderSide, CornerShape, Corners, InnerGlow, Shadow},
@@ -843,15 +844,7 @@ impl RenderContext for SkiaEnv {
         canvas.restore();
     }
 
-    fn draw_shadow(
-        &mut self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        corners: &Corners,
-        shadow: &Shadow,
-    ) {
+    fn draw_shadow(&mut self, x: f32, y: f32, w: f32, h: f32, corners: &Corners, shadow: &Shadow) {
         if !shadow.is_active() {
             return;
         }
@@ -895,6 +888,31 @@ impl RenderContext for SkiaEnv {
         }
         self.surface.canvas().draw_path(&path, &paint);
     }
+
+    fn with_local_canvas(
+        &mut self,
+        rect: &crate::widget::rect::Rect,
+        paint: &mut dyn FnMut(&mut Painter),
+    ) -> bool {
+        let dpi = self.dpi_scale;
+        let (width, height) = (rect.width, rect.height);
+        let (x, y) = (rect.x, rect.y);
+
+        let canvas = self.surface.canvas();
+        canvas.save();
+        // Translate in DEVICE space (the incoming rect is logical, and the
+        // canvas matrix at this point is device-scaled by the walker),
+        // then scale so the painter's own units are logical pixels. Order
+        // matters: scaling first would multiply the translate as well.
+        canvas.translate((x * dpi, y * dpi));
+        canvas.scale((dpi, dpi));
+
+        let mut painter = Painter::new(canvas, width, height, dpi);
+        paint(&mut painter);
+
+        canvas.restore();
+        true
+    }
 }
 
 impl Surface for SkiaEnv {
@@ -917,6 +935,23 @@ impl Surface for SkiaEnv {
         // priority layers paint on top.
         ui.portal_layers.clear();
 
+        // The viewport the anchor policies clamp and flip
+        // against, and the backdrop rect below. Read from the
+        // root's laid-out rect BEFORE Pass A, because anchored
+        // portals resolve their origin during that walk. Zero
+        // until the first layout pass, which `resolve_anchor`
+        // reads as "no viewport known" and leaves alone.
+        let viewport_size = {
+            let root = ui.root.lock().expect("widget lock poisoned");
+            root.get_layout_rect()
+                .map(|r| (r.width, r.height))
+                .unwrap_or((0.0, 0.0))
+        };
+        let anchors = AnchorContext {
+            anchors: &ui.anchors,
+            viewport: viewport_size,
+        };
+
         let focused = ui.get_focused().cloned();
         Self::draw_widget_recursive(
             self,
@@ -925,13 +960,20 @@ impl Surface for SkiaEnv {
             &mut ui.image_cache,
             &mut ui.portal_layers,
             (0.0, 0.0), // accumulated_translate — viewport origin at root
+            anchors,
         );
 
         // Phase 3 M2: synthesize a CursorAttached layer entry
-        // for the in-flight drag preview, if any. Positioned
-        // at the cursor; the preview's own layout rect is
-        // drawn by paint_portal_entry like any other layer
-        // entry.
+        // for the in-flight drag preview, if any.
+        //
+        // This was the prototype the whole anchor mechanism
+        // generalises, and it now goes through that mechanism:
+        // the drag preview is an ordinary anchored entry seated
+        // at the runtime-reserved `__drag_preview` anchor, which
+        // `UI` maintains from drag_start / drag_move. `Raw`
+        // policy with no offset because a drag preview is pinned
+        // to the pointer exactly — including off the edge of the
+        // window, which is where the pointer can be.
         if let Some(preview_state) = ui.active_drag_preview().cloned() {
             let preview_rect = {
                 let g = preview_state.preview.lock().expect("widget lock poisoned");
@@ -939,18 +981,21 @@ impl Surface for SkiaEnv {
                     .cloned()
                     .unwrap_or_else(|| crate::widget::rect::Rect::new(0.0, 0.0, 0.0, 0.0))
             };
-            ui.portal_layers.push(crate::widget::PortalEntry {
-                widget: preview_state.preview.clone(),
-                focus_trap: false,
-                viewport_rect: crate::widget::rect::Rect::new(
-                    preview_state.cursor.x(),
-                    preview_state.cursor.y(),
-                    preview_rect.width.max(0.0),
-                    preview_rect.height.max(0.0),
-                ),
-                layer: crate::widget::portal_layer::PortalLayer::CursorAttached,
-                cursor: crate::widget::portal_layer::CursorPreference::Inherit,
-            });
+            let size = (preview_rect.width.max(0.0), preview_rect.height.max(0.0));
+            if let Some(viewport_rect) = anchors.resolve(
+                crate::widget::DRAG_PREVIEW_ANCHOR,
+                size,
+                crate::widget::portal_layer::AnchorPolicy::Raw,
+                (0.0, 0.0),
+            ) {
+                ui.portal_layers.push(crate::widget::PortalEntry {
+                    widget: preview_state.preview.clone(),
+                    focus_trap: false,
+                    viewport_rect,
+                    layer: crate::widget::portal_layer::PortalLayer::CursorAttached,
+                    cursor: crate::widget::portal_layer::CursorPreference::Inherit,
+                });
+            }
         }
 
         // Pass B: walk layers in priority order. For each
@@ -958,15 +1003,6 @@ impl Surface for SkiaEnv {
         // entry, paint a viewport-sized translucent backdrop
         // first (the runtime backdrop). Then paint the
         // entries in mount order.
-        //
-        // We need the viewport size for the backdrop rect —
-        // pull from the root's layout rect.
-        let viewport_size = {
-            let root = ui.root.lock().expect("widget lock poisoned");
-            root.get_layout_rect()
-                .map(|r| (r.width, r.height))
-                .unwrap_or((0.0, 0.0))
-        };
         for layer in crate::widget::portal_layer::PortalLayer::ALL {
             let entries: Vec<crate::widget::PortalEntry> =
                 ui.portal_layers.entries_in(layer).to_vec();
@@ -979,7 +1015,13 @@ impl Surface for SkiaEnv {
                 Self::paint_layer_backdrop(self, viewport_size);
             }
             for entry in &entries {
-                Self::paint_portal_entry(self, entry, focused.as_ref(), &mut ui.image_cache);
+                Self::paint_portal_entry(
+                    self,
+                    entry,
+                    focused.as_ref(),
+                    &mut ui.image_cache,
+                    anchors,
+                );
             }
         }
 
@@ -996,6 +1038,77 @@ impl Surface for SkiaEnv {
     }
 }
 
+/// Everything the Pass-A walk needs to seat an anchored portal:
+/// the host's anchor map and the viewport its policies resolve
+/// against.
+///
+/// Threaded by value (it's two words and a shared reference)
+/// rather than read off `UI`, because the walk already holds
+/// `&mut ui.portal_layers` and `&mut ui.image_cache` — bundling
+/// the read side keeps the disjoint-field borrow legible instead
+/// of growing the recursion two more parameters.
+#[derive(Clone, Copy)]
+struct AnchorContext<'a> {
+    anchors: &'a std::collections::HashMap<String, crate::widget::point::Point>,
+    viewport: (f32, f32),
+}
+
+impl AnchorContext<'_> {
+    /// The viewport-absolute rect for a box of `size` seated at
+    /// anchor `id` under `policy`, or `None` when the host has
+    /// no anchor for that id this frame.
+    fn resolve(
+        &self,
+        id: &str,
+        size: (f32, f32),
+        policy: crate::widget::portal_layer::AnchorPolicy,
+        offset: (f32, f32),
+    ) -> Option<crate::widget::rect::Rect> {
+        let point = self.anchors.get(id)?;
+        let (x, y) = crate::widget::portal_layer::resolve_anchor(
+            (point.x(), point.y()),
+            offset,
+            policy,
+            size,
+            self.viewport,
+        );
+        Some(crate::widget::rect::Rect::new(x, y, size.0, size.1))
+    }
+}
+
+/// One `eprintln!` per anchor id that a Portal named but no host
+/// ever set. Not an error — "the thing I point at is gone" is the
+/// designed behaviour — but "my tooltip never appears" needs an
+/// answer, and a typo'd anchor id is otherwise indistinguishable
+/// from a host that legitimately has nothing to point at.
+///
+/// Process-global rather than a widget field: `Widget::render`
+/// takes `&self`, reconciliation would reset a per-widget flag
+/// every rerender, and the set surviving reconciliation is the
+/// behaviour you want. Debug builds only, matching
+/// `canvas_widget::warn_blank_canvas_once`.
+#[cfg(debug_assertions)]
+fn warn_missing_anchor_once(id: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static WARNED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    let mut warned = WARNED
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if warned.iter().any(|n| n == id) {
+        return;
+    }
+    warned.push(id.to_string());
+    eprintln!(
+        "[ogham] Portal anchor {:?} has never been set by the host: the portal renders \
+         nothing until `set_anchor({:?}, …)` is called",
+        id, id
+    );
+}
+
+#[cfg(not(debug_assertions))]
+fn warn_missing_anchor_once(_id: &str) {}
+
 impl SkiaEnv {
     fn draw_widget_recursive(
         env: &mut SkiaEnv,
@@ -1004,6 +1117,7 @@ impl SkiaEnv {
         image_cache: &mut ImageCache,
         portal_layers: &mut crate::widget::PortalLayers,
         accumulated_translate: (f32, f32),
+        anchors: AnchorContext,
     ) {
         use crate::widget::RenderContext;
 
@@ -1039,13 +1153,44 @@ impl SkiaEnv {
                         .get_layout_rect()
                         .cloned()
                         .unwrap_or_else(crate::widget::rect::Rect::zero);
+                    // Measured size of what this portal actually
+                    // paints. NOT `local_rect`: the Portal's inner
+                    // flex is grow/grow, so its rect is the whole
+                    // available box, and clamping a tooltip against
+                    // that would pin every anchored portal to the
+                    // inset corner. The children's extent is the
+                    // card, which is what the policies must fit.
+                    let content_size = if info.anchor.is_some() {
+                        Self::children_extent(&children)
+                    } else {
+                        (local_rect.width, local_rect.height)
+                    };
                     drop(widget);
-                    let viewport_rect = crate::widget::rect::Rect::new(
-                        local_rect.x + accumulated_translate.0,
-                        local_rect.y + accumulated_translate.1,
-                        local_rect.width,
-                        local_rect.height,
-                    );
+                    let viewport_rect = match info.anchor.as_deref() {
+                        // Anchored: the host's point replaces the
+                        // declared slot entirely, so
+                        // accumulated_translate plays no part. A
+                        // missing anchor skips the entry — the
+                        // portal paints nothing this frame.
+                        Some(id) => match anchors.resolve(
+                            id,
+                            content_size,
+                            info.anchor_policy,
+                            info.anchor_offset,
+                        ) {
+                            Some(rect) => rect,
+                            None => {
+                                warn_missing_anchor_once(id);
+                                return;
+                            }
+                        },
+                        None => crate::widget::rect::Rect::new(
+                            local_rect.x + accumulated_translate.0,
+                            local_rect.y + accumulated_translate.1,
+                            local_rect.width,
+                            local_rect.height,
+                        ),
+                    };
                     portal_layers.push(crate::widget::PortalEntry {
                         widget: widget_ref.clone(),
                         viewport_rect,
@@ -1123,6 +1268,7 @@ impl SkiaEnv {
                 image_cache,
                 portal_layers,
                 child_accumulated,
+                anchors,
             );
         }
 
@@ -1152,11 +1298,34 @@ impl SkiaEnv {
     /// throwaway PortalLayers here to satisfy the recursion
     /// signature; in M3 use cases (root-level portals) this
     /// path doesn't recursively encounter portals.
+    /// The extent of a portal's laid-out children, measured from
+    /// the portal's own origin — i.e. how much room what it paints
+    /// actually occupies.
+    ///
+    /// Child layout rects are parent-relative (that's the invariant
+    /// `draw_widget_recursive` relies on when it translates by
+    /// `child_origin`), so `x + width` is the child's right edge in
+    /// the portal's space and the max across children is the box the
+    /// anchor policies have to fit inside the viewport. Children with
+    /// no layout rect yet contribute nothing.
+    fn children_extent(children: &[WidgetRef]) -> (f32, f32) {
+        let mut extent = (0.0f32, 0.0f32);
+        for child in children {
+            let g = child.lock().expect("widget lock poisoned");
+            if let Some(r) = g.get_layout_rect() {
+                extent.0 = extent.0.max(r.x + r.width);
+                extent.1 = extent.1.max(r.y + r.height);
+            }
+        }
+        extent
+    }
+
     fn paint_portal_entry(
         env: &mut SkiaEnv,
         entry: &crate::widget::PortalEntry,
         focused: Option<&WidgetRef>,
         image_cache: &mut ImageCache,
+        anchors: AnchorContext,
     ) {
         // Translate from the viewport origin to the portal's
         // viewport-absolute slot.
@@ -1183,6 +1352,7 @@ impl SkiaEnv {
                 image_cache,
                 &mut nested,
                 (entry.viewport_rect.x, entry.viewport_rect.y),
+                anchors,
             );
         }
         // Paint nested portals if any. Pass-through to the
@@ -1190,7 +1360,7 @@ impl SkiaEnv {
         // portals are rare and stacking among them follows
         // the order they appeared in this entry's subtree.
         for nested_entry in nested.iter_paint_order() {
-            Self::paint_portal_entry(env, nested_entry, focused, image_cache);
+            Self::paint_portal_entry(env, nested_entry, focused, image_cache, anchors);
         }
 
         env.surface.canvas().restore();

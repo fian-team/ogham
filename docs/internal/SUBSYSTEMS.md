@@ -357,8 +357,14 @@ This subsystem has its own document:
 **Invariants:**
 - `WidgetRegistry` is keyed by lowercased type name; the built-in
   set is `flex`, `text`, `textinput`, `svg`, `image`, `grid`,
-  `presence`, `portal`. Host-registered widgets override built-ins
-  on name collision.
+  `presence`, `portal`, `canvas`. Host-registered widgets override
+  built-ins on name collision.
+- **Painter names are not widget type names.** `Canvas`'s
+  `painter:` resolves against `Runtime::painters` (populated from
+  `RuntimeConfig::painters`), matched *exactly* rather than
+  lowercased: it is an opaque host-chosen string, not a language
+  identifier. Resolution happens at build time so a typo is a
+  `BridgeError`, not a blank rectangle.
 - The builder is the *only* place a `WidgetRef` is constructed
   from a descriptor. The VM never reaches into widget internals.
   (`INTENT §1`.)
@@ -669,6 +675,14 @@ This subsystem has its own document: [`SURFACE.md`](SURFACE.md).
   `pop_backdrop_blur` scopes for `backdrop_filter` panels;
   backends without backdrop sampling get the trait's no-op
   default and the panel renders without the frost.
+- **`with_local_canvas` is the one backend-native handle that
+  crosses the seam**, and only `canvas_widget.rs` may call it.
+  It hands a host painter a canvas pre-translated to the
+  widget's origin and pre-scaled by DPI, so the painter draws
+  in local logical coordinates from `(0, 0)`. Named exception
+  under `INTENT §6`, with its own drift indicators; backends
+  that can't service it keep the `false` default and the
+  `Canvas` paints nothing.
 
 **Authority:** `widget::Surface` and `widget::RenderContext`
 traits in `src/widget/mod.rs`; `src/skia.rs` is the reference

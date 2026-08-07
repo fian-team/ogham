@@ -11,13 +11,20 @@
 //!   portal as input-blocking; `Runtime::has_input_blocking_portal`
 //!   returns true while any open portal has it set.
 //! - `children: array<widget>` — the portal's contents.
+//! - `anchor` / `anchor_policy` / `anchor_offset` — seat the
+//!   subtree at a host-set viewport point instead of at the slot
+//!   it was declared in. See [`super::portal_layer::resolve_anchor`].
 //!
-//! Backdrop, dismiss-on-outside, anchor positioning, and
-//! escape-to-dismiss are *not* properties — they're consumer-side
-//! composition with regular widgets.
+//! Backdrop, dismiss-on-outside, and escape-to-dismiss are *not*
+//! properties — they're consumer-side composition with regular
+//! widgets. **Anchoring is the exception**, and only because the
+//! policies need the subtree's measured size: `.ogh` cannot see
+//! it, so an author cannot express "flip above the pointer when
+//! the card would overrun the bottom" no matter how the tree is
+//! composed. Anything that *can* be composed still should be.
 
 use super::flex_widget::FlexWidget;
-use super::portal_layer::{CursorPreference, PortalLayer};
+use super::portal_layer::{AnchorPolicy, CursorPreference, PortalLayer};
 use super::style::{Direction, FlexStyle, Size};
 use super::{PortalInfo, RenderEffects, TickResult, UpdateResult, Widget, WidgetRef};
 use crate::widget::event::{Event, EventContext};
@@ -43,6 +50,18 @@ pub struct PortalWidget {
     /// layer's default" (OverlayModal/Popover → Free, others
     /// → Inherit). Some(_) overrides.
     pub cursor: Option<CursorPreference>,
+    /// Host anchor id. `Some(id)` means this portal's viewport
+    /// origin comes from `UI`'s anchor map rather than from the
+    /// slot it was declared in — and that it renders nothing on
+    /// frames where the host hasn't set that id.
+    pub anchor: Option<String>,
+    /// How [`Self::anchor`]'s point is seated against the
+    /// viewport. Defaults to [`AnchorPolicy::Clamp`]; inert
+    /// while `anchor` is `None`.
+    pub anchor_policy: AnchorPolicy,
+    /// Fixed `(x, y)` nudge applied before the policy. Inert
+    /// while `anchor` is `None`.
+    pub anchor_offset: (f32, f32),
     /// Phase 2 lifecycle: the call-stack path captured at
     /// descriptor-build time. Children's hooks (state cells,
     /// effects, on_unmount) live under this path; flushing the
@@ -70,6 +89,9 @@ impl PortalWidget {
             focus_trap: false,
             layer: PortalLayer::OverlayModal,
             cursor: None,
+            anchor: None,
+            anchor_policy: AnchorPolicy::default(),
+            anchor_offset: (0.0, 0.0),
             owned_path_prefix: String::new(),
         }
     }
@@ -104,6 +126,9 @@ impl Widget for PortalWidget {
             focus_trap: self.focus_trap,
             layer: self.layer,
             cursor: self.effective_cursor(),
+            anchor: self.anchor.clone(),
+            anchor_policy: self.anchor_policy,
+            anchor_offset: self.anchor_offset,
         })
     }
 
@@ -123,10 +148,20 @@ impl Widget for PortalWidget {
         let layer_changed = self.layer != new_portal.layer;
         let cursor_changed = self.cursor != new_portal.cursor;
         let _ = cursor_changed; // doesn't itself force a relayout
+
+        // Anchoring only moves where Pass B seats the subtree —
+        // the inner flex lays out against the same box either
+        // way — so a change here is a repaint, never a relayout.
+        let anchor_changed = self.anchor != new_portal.anchor
+            || self.anchor_policy != new_portal.anchor_policy
+            || self.anchor_offset != new_portal.anchor_offset;
         self.open = new_portal.open;
         self.focus_trap = new_portal.focus_trap;
         self.layer = new_portal.layer;
         self.cursor = new_portal.cursor;
+        self.anchor = new_portal.anchor.take();
+        self.anchor_policy = new_portal.anchor_policy;
+        self.anchor_offset = new_portal.anchor_offset;
         // owned_path_prefix is captured at descriptor-build time
         // and shouldn't change for the same path; copy anyway.
         self.owned_path_prefix = new_portal.owned_path_prefix.clone();
@@ -169,6 +204,7 @@ impl Widget for PortalWidget {
             needs_repaint: open_changed
                 || trap_changed
                 || layer_changed
+                || anchor_changed
                 || inner_result.needs_repaint,
             cancelled_unmount_prefixes: inner_result.cancelled_unmount_prefixes,
             drained_path_prefixes: inner_result.drained_path_prefixes,

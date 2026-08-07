@@ -2,6 +2,8 @@ use crate::app::{ClientUI, ClientUpdate};
 use crate::home_page::HOME_PAGE;
 use crate::input::Input;
 use ogham::runtime::config::RuntimeConfig;
+use ogham::runtime::value::Value;
+use ogham::widget::canvas_widget::Painter;
 use ogham::widget::event::Event;
 use ogham::widget::UI;
 use ogham::Ogham;
@@ -18,11 +20,80 @@ pub struct Client {
     path: Option<String>,
 }
 
+/// Demo painter for `examples/canvas.ogh`, registered under the name
+/// `"demo_dial"`. Draws a ring, a sweep whose extent comes from
+/// `props.charge`, and a needle.
+///
+/// Everything here is in **local logical coordinates**: `(0, 0)` is the
+/// widget's top-left, `p.width()` / `p.height()` are its laid-out size, and
+/// the 6px stroke is 6 logical pixels on any display. The painter has no
+/// idea where in the tree the widget sits, and — because it derives every
+/// dimension from `p.width()` / `p.height()` — it works unchanged at the
+/// 180×180 dial and the `width: "grow"` × 28 meter in the same file.
+///
+/// This lives in the `client` binary rather than the library on purpose: a
+/// painter is *host* code. The library ships the seam, not the art.
+fn demo_dial(p: &mut Painter, props: &Value) {
+    use skia_safe::{Paint, PaintStyle, Rect as SkRect};
+
+    let charge = match props {
+        Value::Map(map) => match map.get("charge") {
+            Some(Value::Integer(i)) => *i,
+            Some(Value::Float(f)) => *f as i32,
+            _ => 0,
+        },
+        _ => 0,
+    };
+
+    let (w, h) = (p.width(), p.height());
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let radius = (w.min(h) / 2.0 - 6.0).max(1.0);
+    let oval = SkRect::new(cx - radius, cy - radius, cx + radius, cy + radius);
+    let stroke = (radius * 0.16).clamp(2.0, 8.0);
+
+    let mut track = Paint::default();
+    track.set_anti_alias(true);
+    track.set_style(PaintStyle::Stroke);
+    track.set_stroke_width(stroke);
+    track.set_argb(255, 62, 66, 74);
+    p.canvas().draw_arc(oval, 0.0, 360.0, false, &track);
+
+    // Twelve clicks fill the ring; the modulo keeps the demo looping.
+    let sweep_degrees = (charge.rem_euclid(12) as f32) * 30.0;
+    let mut sweep = Paint::default();
+    sweep.set_anti_alias(true);
+    sweep.set_style(PaintStyle::Stroke);
+    sweep.set_stroke_width(stroke);
+    sweep.set_argb(255, 122, 178, 224);
+    p.canvas()
+        .draw_arc(oval, -90.0, sweep_degrees, false, &sweep);
+
+    let angle = (sweep_degrees - 90.0).to_radians();
+    let mut needle = Paint::default();
+    needle.set_anti_alias(true);
+    needle.set_style(PaintStyle::Stroke);
+    needle.set_stroke_width((stroke * 0.5).max(1.0));
+    needle.set_argb(255, 232, 230, 226);
+    p.canvas().draw_line(
+        (cx, cy),
+        (
+            cx + angle.cos() * radius * 0.78,
+            cy + angle.sin() * radius * 0.78,
+        ),
+        &needle,
+    );
+}
+
 impl Client {
     pub fn new(width: u32, height: u32) -> Self {
         let src = HOME_PAGE.to_string();
-        let ogham = Ogham::from_source(&src, RuntimeConfig::new())
-            .expect("Failed to create Ogham from HOME_PAGE");
+        // Registered on the config, not on the live Runtime: `load_file`
+        // and hot reload both rebuild the runtime from this config, so a
+        // painter registered here survives both. See AGENTS.md,
+        // "Host-painted `Canvas`".
+        let config = RuntimeConfig::new().with_painter("demo_dial", demo_dial);
+        let ogham =
+            Ogham::from_source(&src, config).expect("Failed to create Ogham from HOME_PAGE");
         Self {
             width,
             height,
@@ -82,8 +153,19 @@ impl Client {
         self.dirty = false;
     }
 
-    /// Handle a UI event and return whether it was handled
+    /// Handle a UI event and return whether it was handled.
+    ///
+    /// The previewer also republishes every pointer move as the
+    /// `"cursor"` anchor, so `examples/portals/anchored_tooltip.ogh`
+    /// runs here without a bespoke host. A real host sets whichever
+    /// anchors its own chrome needs; this is the one-liner shape that
+    /// does it.
     pub fn handle_ui_event(&mut self, event: &Event) -> bool {
+        if event.name == "mouse_move" {
+            if let Some(point) = event.point.clone() {
+                self.ogham.set_anchor("cursor", point);
+            }
+        }
         self.ogham.get_ui_mut().call_event(event)
     }
 

@@ -2,6 +2,7 @@ use crate::runtime::{descriptor::WidgetDescriptor, error::VMError, value::Value,
 use crate::widget::animation::{TransitionConfig, TransitionSet};
 use crate::widget::event::Event;
 use crate::widget::{
+    canvas_widget::CanvasWidget,
     flex_widget::FlexWidget,
     grid_widget::{GridPlacement, GridStyle, GridWidget},
     image_widget::ImageWidget,
@@ -56,6 +57,9 @@ impl WidgetRegistry {
         reg.register("portal", |reg, rt, desc| {
             create_portal_widget(reg, rt, desc)
         });
+        // Host-painted leaf — consumer .ogh writes
+        // `Canvas { painter: "name", props: { … }, style: { … } }`.
+        reg.register("canvas", |_reg, rt, desc| create_canvas_widget(rt, desc));
         reg
     }
 
@@ -730,10 +734,7 @@ fn parse_text_outline_value(value: &Value) -> Option<TextOutline> {
     match value {
         Value::Map(map) => {
             let color = map.get("color").and_then(parse_color_value)?;
-            let width = map
-                .get("width")
-                .and_then(value_to_f32)
-                .unwrap_or(1.0);
+            let width = map.get("width").and_then(value_to_f32).unwrap_or(1.0);
             Some(TextOutline { color, width })
         }
         _ => parse_color_value(value).map(|color| TextOutline { color, width: 1.0 }),
@@ -1044,6 +1045,15 @@ fn create_presence_widget(
 /// - `focus_trap: bool` (default false)
 /// - `children: array<widget>` (default empty)
 ///
+/// Anchoring (seats the subtree at a host-set viewport point
+/// instead of at its declared slot):
+/// - `anchor: string` — a host anchor id. `__`-prefixed ids are
+///   reserved for the runtime. Mutually exclusive with
+///   `focus_trap: true`.
+/// - `anchor_policy: string` — `raw`, `clamp` (default), `flip`.
+/// - `anchor_offset: { x, y }` — nudge applied before the policy;
+///   either component may be omitted.
+///
 /// `children` MUST be an array (or a single widget that we
 /// promote to a 1-element array). Anything else triggers
 /// design diagnostic #3.
@@ -1136,6 +1146,126 @@ fn create_portal_widget(
                 ));
             }
         }
+    }
+
+    // Anchored portals: `anchor` names a host-set point that
+    // replaces the portal's declared slot as the subtree's
+    // viewport origin. `anchor_policy` and `anchor_offset` are
+    // inert without it, but are still validated — a typo in a
+    // property that "does nothing today" is exactly how the
+    // `position: "relative"` silent no-op happened.
+    if let Some(value) = descriptor.properties.get("anchor") {
+        match value {
+            Value::String(id) if id.is_empty() => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "anchor".to_string(),
+                    "Portal expects 'anchor' as a non-empty string id".to_string(),
+                ));
+            }
+            // `__`-prefixed ids are the runtime's own (the drag
+            // preview lives at `__drag_preview`). Reserving the
+            // prefix keeps a userspace portal from silently
+            // teleporting onto runtime-owned chrome.
+            Value::String(id) if id.starts_with("__") => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "anchor".to_string(),
+                    format!(
+                        "Portal 'anchor' ids beginning with \"__\" are reserved for the \
+                         runtime; got {:?}",
+                        id
+                    ),
+                ));
+            }
+            Value::String(id) => portal.anchor = Some(id.clone()),
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "anchor".to_string(),
+                    format!("Portal expects 'anchor' as a string; got {:?}", other),
+                ));
+            }
+        }
+    }
+
+    if let Some(value) = descriptor.properties.get("anchor_policy") {
+        match value {
+            Value::String(name) => {
+                match crate::widget::portal_layer::AnchorPolicy::from_source_name(name) {
+                    Some(policy) => portal.anchor_policy = policy,
+                    None => {
+                        return Err(BridgeError::InvalidPropertyType(
+                            "anchor_policy".to_string(),
+                            format!(
+                                "Portal expects 'anchor_policy' to be one of: {}. Got: {:?}",
+                                crate::widget::portal_layer::AnchorPolicy::all_names_for_diagnostic(
+                                ),
+                                name
+                            ),
+                        ));
+                    }
+                }
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "anchor_policy".to_string(),
+                    format!(
+                        "Portal expects 'anchor_policy' as a string; got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+
+    if let Some(value) = descriptor.properties.get("anchor_offset") {
+        match value {
+            Value::Map(map) => {
+                // Both components optional: `{ y: 22 }` is a
+                // perfectly reasonable "below the pointer, not
+                // beside it".
+                let mut offset = (0.0, 0.0);
+                for (axis, slot) in [("x", 0), ("y", 1)] {
+                    if let Some(component) = map.get(axis) {
+                        match value_to_f32(component) {
+                            Some(n) if slot == 0 => offset.0 = n,
+                            Some(n) => offset.1 = n,
+                            None => {
+                                return Err(BridgeError::InvalidPropertyType(
+                                    "anchor_offset".to_string(),
+                                    format!(
+                                        "Portal expects 'anchor_offset.{}' as a number; got {:?}",
+                                        axis, component
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+                portal.anchor_offset = offset;
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "anchor_offset".to_string(),
+                    format!(
+                        "Portal expects 'anchor_offset' as a map with 'x' / 'y'; got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+
+    // A focus-trapping modal that follows a host-computed point
+    // is a design error: the trap gates input to a subtree whose
+    // position the user can't predict, and a host that stops
+    // setting the anchor leaves the trap live over nothing on
+    // screen. Reject the combination rather than let it ship.
+    if portal.anchor.is_some() && portal.focus_trap {
+        return Err(BridgeError::InvalidPropertyType(
+            "anchor".to_string(),
+            "Portal cannot combine 'anchor' with 'focus_trap: true' — a focus trap that \
+             follows a host-set point can strand input over chrome the user can't reach"
+                .to_string(),
+        ));
     }
 
     let mut children: Vec<WidgetRef> = Vec::new();
@@ -1348,6 +1478,90 @@ fn create_image_widget(
     )?;
 
     Ok(Arc::new(Mutex::new(image_widget)))
+}
+
+/// Build a host-painted `Canvas` leaf. Recognized properties:
+/// - `painter` (**required**): the name of a painter registered via
+///   [`RuntimeConfig::with_painter`](crate::runtime::config::RuntimeConfig::with_painter).
+/// - `props`: an arbitrary `Value` (conventionally a map) handed to the
+///   painter verbatim each frame. Defaults to an empty map so painters
+///   can match one shape whether or not the author declared any.
+/// - `style`: the same `FlexStyle` map every other widget takes. `width`
+///   and `height` accept `"grow"` / `"shrink"` / a number — unlike
+///   `Image`, which demands bare numbers and therefore can't participate
+///   in layout.
+/// - `mouse_down` / `mouse_up` / `mouse_enter` / `mouse_leave` /
+///   `contextmenu`: ordinary pointer listeners.
+///
+/// Both failure modes are loud by design (the framework's recurring bug
+/// shape is *silent* degradation): a missing `painter` is a
+/// `MissingProperty`, and an unregistered one is an
+/// `InvalidPropertyType` that lists what *is* registered.
+fn create_canvas_widget(
+    runtime: &Arc<Mutex<Runtime>>,
+    descriptor: &WidgetDescriptor,
+) -> Result<WidgetRef, BridgeError> {
+    let painter_name = match descriptor.properties.get("painter") {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => {
+            return Err(BridgeError::InvalidPropertyType(
+                "painter".to_string(),
+                format!("Expected String, got {:?}", other),
+            ))
+        }
+        None => return Err(BridgeError::MissingProperty("painter".to_string())),
+    };
+
+    // Resolve against the runtime's painter map now, not at paint time: a
+    // typo should surface through the same error channel as any other
+    // bridge failure (which hosts already surface in their chrome), not as
+    // an empty rectangle nobody can explain.
+    let painter = {
+        let rt = runtime.lock().expect("runtime lock poisoned");
+        match rt.painters.get(&painter_name) {
+            Some(p) => p.clone(),
+            None => {
+                let mut registered: Vec<&str> = rt.painters.keys().map(|k| k.as_str()).collect();
+                registered.sort_unstable();
+                return Err(BridgeError::InvalidPropertyType(
+                    "painter".to_string(),
+                    format!(
+                        "No painter named {:?} is registered. Registered painters: {:?}. \
+                         Register one with RuntimeConfig::with_painter(name, f).",
+                        painter_name, registered
+                    ),
+                ));
+            }
+        }
+    };
+
+    let mut canvas = CanvasWidget::new(painter_name);
+    canvas.painter = Some(painter);
+
+    if let Some(props) = descriptor.properties.get("props") {
+        canvas.props = props.clone();
+    }
+
+    if let Some(style_map) = optional_style_map(descriptor) {
+        apply_flex_style_from_map(&mut canvas.style, style_map);
+    }
+
+    for event_name in [
+        "mouse_down",
+        "mouse_up",
+        "mouse_enter",
+        "mouse_leave",
+        "contextmenu",
+    ] {
+        register_event_listener(
+            &mut canvas.event_listeners,
+            &descriptor.properties,
+            runtime,
+            event_name,
+        )?;
+    }
+
+    Ok(Arc::new(Mutex::new(canvas)))
 }
 
 fn create_grid_widget(

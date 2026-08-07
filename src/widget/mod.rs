@@ -18,6 +18,9 @@
 
 /// Spring-driven style transitions.
 pub mod animation;
+/// Host-painted `Canvas` leaf: the `Painter` handle, the `CanvasPainter`
+/// alias, and the widget that seats host paint inside flex layout.
+pub mod canvas_widget;
 /// Flexbox-like layout widget.
 pub mod flex_widget;
 /// Grid layout widget.
@@ -157,7 +160,11 @@ pub struct PortalEntry {
 /// by the renderer to detect the defer-to-portal-layer branch
 /// and by the runtime API `has_input_blocking_portal()` to
 /// derive UL's overlay-active boolean.
-#[derive(Clone, Copy, Debug)]
+///
+/// Not `Copy` since the `anchor` id landed here — every consumer
+/// takes it by value out of `as_portal()` and reads fields off
+/// it, so `Clone` is enough.
+#[derive(Clone, Debug)]
 pub struct PortalInfo {
     pub open: bool,
     pub focus_trap: bool,
@@ -169,6 +176,21 @@ pub struct PortalInfo {
     /// layer's `default_cursor()` if the Portal doesn't
     /// specify; can be overridden via the `cursor` property.
     pub cursor: portal_layer::CursorPreference,
+    /// The host anchor id this Portal seats itself at, if it
+    /// declared one. `Some(id)` switches the renderer from
+    /// translate accumulation to [`UI::anchor`] lookup — and
+    /// makes the Portal render *nothing* on frames where the id
+    /// has no anchor.
+    pub anchor: Option<String>,
+    /// How [`Self::anchor`]'s point is seated against the
+    /// viewport once the subtree's size is known. Ignored when
+    /// `anchor` is `None`.
+    pub anchor_policy: portal_layer::AnchorPolicy,
+    /// Fixed `(x, y)` nudge applied to the anchor point *before*
+    /// the policy, so cursor chrome can sit below-right of the
+    /// pointer rather than under it. Ignored when `anchor` is
+    /// `None`.
+    pub anchor_offset: (f32, f32),
 }
 
 /// Phase 2.5 M0: per-frame storage for portal entries, keyed
@@ -281,6 +303,23 @@ pub struct UI {
     /// exit-animation ghosts); consumed by Pass B (Skia's
     /// `draw` and the hit-test path).
     pub portal_layers: PortalLayers,
+    /// Host-set anchor points, keyed by the id an anchored
+    /// `Portal` names in `anchor:`. The renderer resolves each
+    /// anchored portal's viewport origin from this map instead
+    /// of from Pass-A translate accumulation.
+    ///
+    /// **Anchors are host state, not frame state.** They persist
+    /// until changed or cleared — the same contract as injected
+    /// host state — so a host that only moves a nameplate when
+    /// its entity moves doesn't pay per frame. An id with no
+    /// entry means the anchored thing is gone, and its portal
+    /// simply doesn't render (see `skia.rs`'s portal branch).
+    ///
+    /// Not `pub`: the renderer reads it as a sibling field
+    /// alongside `portal_layers`, but hosts go through
+    /// [`UI::set_anchor`] / [`UI::clear_anchor`] so the repaint
+    /// marking can't be skipped.
+    pub(crate) anchors: std::collections::HashMap<String, Point>,
     /// Phase 2 M4: focus restoration stack. Persists across
     /// frames; reconciled from `portal_layer` via
     /// `sync_focus_stack` after each render. Top of stack
@@ -350,6 +389,19 @@ pub struct UI {
     last_mouse: Option<Point>,
 }
 
+/// The anchor id the runtime keeps its own drag preview at.
+///
+/// The drag preview was the prototype anchoring generalised from
+/// (one host-held point becoming a `PortalEntry`'s viewport
+/// origin); since M4 it *is* an anchored entry, seated through
+/// exactly the path a `Portal { anchor: … }` uses. Nothing about
+/// it is special-cased in the renderer any more.
+///
+/// The `__` prefix is reserved: the builder rejects `.ogh`
+/// anchors starting with it, so no userspace Portal can attach
+/// itself to the drag cursor by naming this id.
+pub const DRAG_PREVIEW_ANCHOR: &str = "__drag_preview";
+
 /// Phase 3 M2: state captured by `UI` during an in-flight
 /// drag so the renderer can paint a drag preview attached to
 /// the cursor each frame.
@@ -362,6 +414,12 @@ pub struct DragPreviewState {
     pub preview: WidgetRef,
     /// Current cursor position. Updated each
     /// `dispatch_drag_move`.
+    ///
+    /// Since M4 the *renderer* reads the position from the
+    /// [`DRAG_PREVIEW_ANCHOR`] anchor rather than from here; this
+    /// field remains the host-facing read-back of the same point
+    /// (`active_drag_preview().cursor`), written alongside the
+    /// anchor by [`UI::seat_drag_preview`].
     pub cursor: Point,
 }
 
@@ -371,6 +429,7 @@ impl UI {
             root,
             image_cache: ImageCache::new(),
             portal_layers: PortalLayers::new(),
+            anchors: std::collections::HashMap::new(),
             focus_stack: Vec::new(),
             needs_layout: true,
             needs_repaint: true,
@@ -400,6 +459,57 @@ impl UI {
         self.last_mouse.as_ref()
     }
 
+    /// Place the anchor `id` at `point`, in the same viewport
+    /// coordinates layout runs in. Any `Portal { anchor: id }`
+    /// seats its subtree there on the next draw.
+    ///
+    /// Idempotent and cheap: setting the same point again is a
+    /// no-op, so a host that calls this unconditionally every
+    /// frame doesn't force a repaint it didn't earn.
+    ///
+    /// For world-anchored chrome the host projects world → screen
+    /// itself and passes the result. Ogham does not learn about
+    /// cameras, and must not.
+    pub fn set_anchor(&mut self, id: impl Into<String>, point: Point) {
+        let id = id.into();
+        let moved = match self.anchors.get(&id) {
+            Some(existing) => existing.x() != point.x() || existing.y() != point.y(),
+            None => true,
+        };
+        if moved {
+            self.anchors.insert(id, point);
+            // Position-only change: the subtree's layout is
+            // unaffected, only where Pass B seats it. Same
+            // reasoning as `dispatch_drag_move`.
+            self.mark_needs_repaint();
+        }
+    }
+
+    /// Drop the anchor `id`. Portals naming it stop rendering
+    /// until it is set again — the honest behaviour for "the
+    /// thing I point at is gone". Idempotent.
+    pub fn clear_anchor(&mut self, id: &str) {
+        if self.anchors.remove(id).is_some() {
+            self.mark_needs_repaint();
+        }
+    }
+
+    /// Drop every anchor. For hosts tearing down a screen whose
+    /// anchors all became meaningless at once.
+    pub fn clear_anchors(&mut self) {
+        if !self.anchors.is_empty() {
+            self.anchors.clear();
+            self.mark_needs_repaint();
+        }
+    }
+
+    /// The point currently set for anchor `id`, if any. Mostly
+    /// for hosts that want to read back what they set (and for
+    /// tests); the renderer reads the map directly.
+    pub fn anchor(&self, id: &str) -> Option<Point> {
+        self.anchors.get(id).cloned()
+    }
+
     /// Phase 3 M2: read-only access to the in-flight drag
     /// preview (if any). Renderers consult this each frame
     /// and push the preview into the `CursorAttached` layer
@@ -416,6 +526,22 @@ impl UI {
             self.active_drag_preview = None;
             self.mark_needs_repaint();
         }
+        self.clear_anchor(DRAG_PREVIEW_ANCHOR);
+    }
+
+    /// Move the drag preview to `point`: the reserved anchor the
+    /// renderer seats it from, plus the host-facing read-back on
+    /// [`DragPreviewState::cursor`].
+    ///
+    /// The single writer for both, so the two can't drift. They
+    /// are two views of one point rather than two sources of
+    /// truth — the anchor is what draws, `cursor` is what
+    /// `active_drag_preview()` reports.
+    fn seat_drag_preview(&mut self, point: Point) {
+        if let Some(preview) = self.active_drag_preview.as_mut() {
+            preview.cursor = point.clone();
+        }
+        self.set_anchor(DRAG_PREVIEW_ANCHOR, point);
     }
 
     pub fn set_font_collection(&mut self, fc: FontCollection) {
@@ -614,6 +740,7 @@ impl UI {
                 preview,
                 cursor: point.clone(),
             });
+            self.seat_drag_preview(point.clone());
             // Preview needs an initial layout pass and a
             // repaint to appear on screen.
             self.mark_needs_layout();
@@ -634,13 +761,13 @@ impl UI {
         point: Point,
     ) -> Option<WidgetRef> {
         state.current_position = point.clone();
-        if let Some(preview) = self.active_drag_preview.as_mut() {
-            preview.cursor = point.clone();
+        if self.active_drag_preview.is_some() {
             // Cursor changed — paint pass needs to re-emit
-            // the synthetic CursorAttached entry at the new
+            // the CursorAttached entry at the new
             // viewport_rect. Layout doesn't have to re-run
-            // (preview's intrinsic size is unchanged).
-            self.mark_needs_repaint();
+            // (preview's intrinsic size is unchanged);
+            // `set_anchor` marks the repaint.
+            self.seat_drag_preview(point.clone());
         }
         let payload = state
             .payload
@@ -688,6 +815,10 @@ impl UI {
         if had_preview {
             self.mark_needs_repaint();
         }
+        // The preview's anchor goes with it; a stale
+        // `__drag_preview` point would otherwise outlive the
+        // drag that set it.
+        self.clear_anchor(DRAG_PREVIEW_ANCHOR);
         target
     }
 
@@ -1275,11 +1406,10 @@ impl UI {
             return false;
         }
 
-        let current = self.focused.as_ref().and_then(|f| {
-            focusables
-                .iter()
-                .position(|w| Arc::ptr_eq(w, f))
-        });
+        let current = self
+            .focused
+            .as_ref()
+            .and_then(|f| focusables.iter().position(|w| Arc::ptr_eq(w, f)));
 
         let n = focusables.len();
         let next_idx = match current {
@@ -1382,6 +1512,14 @@ impl UI {
         // flight when the reload landed — its WidgetRef
         // points into the old tree.
         self.active_drag_preview = None;
+        // Drop host-set anchors. Per INTENT §7 a reload drops
+        // what it cannot verify still means anything, and an
+        // anchor id is a name in the *old* `.ogh` — the reloaded
+        // program may not have a Portal for it any more. Hosts
+        // that set an anchor per frame re-establish it on the
+        // next one; hosts that set it once must re-set it after
+        // a reload (documented in AGENTS.md).
+        self.anchors.clear();
         // Phase 3 M3: drop pending drain prefixes — they
         // refer to paths in the old runtime's state map,
         // which is also being replaced.
@@ -1559,6 +1697,37 @@ pub trait RenderContext {
         _corners: &Corners,
         _shadow: &Shadow,
     ) {
+    }
+
+    /// The `Canvas` painter hatch: hand `paint` a backend-native canvas
+    /// positioned at `rect`'s origin and scaled to device pixels, so the
+    /// host painter draws in local *logical* coordinates from `(0, 0)` to
+    /// `(rect.width, rect.height)` and never sees DPI or its position in
+    /// the widget tree. Implementations must save canvas state before the
+    /// call and restore it after, exactly like `push_clip_rect`.
+    ///
+    /// This is the one place a backend-native handle crosses the
+    /// `RenderContext` boundary, and it is deliberate: it is a *named,
+    /// host-facing* hatch, not convenience drift. See
+    /// [`INTENT.md`] §6 for the exception and its own drift indicators —
+    /// in particular, no `widget/` module other than
+    /// [`canvas_widget`](crate::widget::canvas_widget) may call this, and
+    /// no built-in widget may paint through it instead of through the
+    /// typed primitives above.
+    ///
+    /// Returns `true` if the painter ran. Backends that cannot expose a
+    /// native canvas keep this default and the `Canvas` widget paints
+    /// nothing: a `Canvas` is opt-in host paint, and a backend that can't
+    /// service it is not an error. `CanvasWidget::render` logs once per
+    /// painter name in debug builds so a blank rectangle has an answer.
+    ///
+    /// [`INTENT.md`]: ../../../docs/internal/INTENT.md
+    fn with_local_canvas(
+        &mut self,
+        _rect: &Rect,
+        _paint: &mut dyn FnMut(&mut canvas_widget::Painter),
+    ) -> bool {
+        false
     }
 }
 

@@ -1,0 +1,85 @@
+// Host-painted `Canvas` — a leaf whose pixels come from host Rust while
+// its geometry comes from flex layout.
+//
+// Open this file in the standalone browser (`cargo run --bin client`,
+// then ctrl+O). The client registers a painter named "demo_dial" via
+// `RuntimeConfig::with_painter`; see `src/client/client.rs`.
+//
+// The point of the widget is the two Canvases below: one fixed-size dial
+// seated in a column *above* a card whose height the framework measures,
+// and one `width: "grow"` meter that spans whatever the column resolves
+// to. Neither needs the host to know a single Ogham dimension.
+
+let ink        = { r: 232, g: 230, b: 226, a: 255 };
+let muted      = { r: 150, g: 150, b: 160, a: 255 };
+let page_bg    = { r: 24, g: 26, b: 30, a: 255 };
+let card_bg    = { r: 44, g: 48, b: 56, a: 255 };
+let card_edge  = { r: 84, g: 90, b: 102, a: 255 };
+
+let card = fn (label: String) {
+  Flex {
+    style: {
+      width: "shrink",
+      height: "shrink",
+      padding: { top: 12, right: 18, bottom: 12, left: 18 },
+      background_color: card_bg,
+      corner_radius: 8,
+      border: { width: 1, color: card_edge, style: "solid" },
+    },
+    children: [
+      Text { text: label, style: { size: 16, color: ink } },
+    ],
+  }
+};
+
+let main = fn () {
+  state charge = 0;
+
+  Flex {
+    style: {
+      width: "grow",
+      height: "grow",
+      direction: "column",
+      main_alignment: "center",
+      cross_alignment: "center",
+      gap: 18,
+      padding: 32,
+      background_color: page_bg,
+    },
+    children: [
+      Text {
+        text: "Canvas: host paint, Ogham layout",
+        style: { size: 20, color: ink },
+      },
+
+      // The dial. `props` is the only channel from .ogh into the painter;
+      // everything else it draws comes from host Rust. A click bumps the
+      // charge, the module re-renders, and the painter sees the new props
+      // on the very next frame.
+      Canvas {
+        painter: "demo_dial",
+        props: { charge: charge },
+        style: { width: 180, height: 180, cursor: "pointer" },
+        mouse_down: fn () { charge = charge + 1; },
+      },
+
+      // A real sibling: the column measures this card and seats the dial
+      // above it. Under the old "paint it yourself underneath" approach
+      // this height would be a hardcoded constant on the Rust side.
+      card("clicks: " + charge),
+
+      Text {
+        text: "click the dial",
+        style: { size: 13, color: muted },
+      },
+
+      // The same painter at a completely different aspect, sized by flex
+      // rather than by the host: `width: "grow"` is legal on a Canvas.
+      Canvas {
+        painter: "demo_dial",
+        props: { charge: charge },
+        style: { width: "grow", height: 28, margin: { top: 8 } },
+      },
+    ],
+  }
+};

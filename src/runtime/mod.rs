@@ -20,6 +20,7 @@ use crate::runtime::value::Value;
 use crate::runtime::vm::VM;
 use crate::scanner::Scanner;
 use crate::widget::builder::WidgetRegistry;
+use crate::widget::canvas_widget::CanvasPainter;
 
 pub mod compiler;
 pub mod config;
@@ -208,6 +209,17 @@ pub struct Runtime {
     /// built-in types by default; host applications can add custom widgets
     /// via [`RuntimeConfig::with_widget`].
     pub widget_registry: WidgetRegistry,
+    /// Host paint routines keyed by the name a `.ogh` file writes in
+    /// `Canvas { painter: "name" }`. Populated from
+    /// [`RuntimeConfig::painters`] on creation — never mutated afterwards,
+    /// because a painter registered on a live runtime would silently
+    /// disappear at the next hot reload (which rebuilds the runtime from
+    /// the config).
+    ///
+    /// `create_canvas_widget` reads this at build time and clones the
+    /// matching `Arc` onto the widget, the same shape as
+    /// `widget_registry.clone()` in `Ogham::update`.
+    pub painters: HashMap<String, CanvasPainter>,
     /// Stack of `(name, value)` entries used by the `Context` primitive. The
     /// compiler emits `PushContext` / `PopContext` around a Context widget's
     /// children evaluation; `use_context("name")` walks this stack.
@@ -229,6 +241,7 @@ impl Runtime {
             imports: ImportResolver::new(),
             screen_width: 0.0,
             widget_registry: WidgetRegistry::with_defaults(),
+            painters: HashMap::new(),
             screen_height: 0.0,
             context_stack: Vec::new(),
         }
@@ -678,6 +691,14 @@ impl Runtime {
                     .widget_registry
                     .factories
                     .insert(name.clone(), factory.clone());
+            }
+
+            // Painters land beside custom widgets and for the same reason:
+            // the config is the durable registration surface, so a
+            // hot reload — which rebuilds the Runtime from this config —
+            // carries them forward for free.
+            for (name, painter) in &config.painters {
+                runtime.painters.insert(name.clone(), painter.clone());
             }
         }
 

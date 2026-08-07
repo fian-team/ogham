@@ -23,6 +23,19 @@ use std::sync::{Arc, Mutex};
 use skia_safe::textlayout::FontCollection;
 use skia_safe::{FontMgr, Typeface};
 
+/// The exact `skia_safe` Ogham links against, re-exported for hosts that
+/// paint through the [`Canvas`](widget::canvas_widget) hatch.
+///
+/// [`Painter::canvas`](widget::canvas_widget::Painter::canvas) hands back a
+/// `skia_safe::Canvas`, so a painter has to name Skia types. Depending on
+/// `skia-safe` separately risks two *different* copies of the crate in one
+/// binary — the drawing calls then don't typecheck, with an error message
+/// that blames the wrong thing. Go through this re-export instead.
+///
+/// This is the only backend-native surface Ogham exposes; see
+/// [`INTENT.md`](../docs/internal/INTENT.md) §6.
+pub use skia_safe;
+
 mod file_watcher;
 mod macros;
 pub mod parser;
@@ -293,6 +306,45 @@ impl Ogham {
     /// `UI_RUNTIME.md` §2.
     pub fn consumes_character_key(&self) -> bool {
         self.ui.consumes_character_key()
+    }
+
+    /// Place the anchor `id` at `point`. A
+    /// `Portal { anchor: "<id>" }` in the `.ogh` seats its
+    /// subtree there instead of at the slot it was declared in;
+    /// paint, hit-testing, occlusion and nesting all follow,
+    /// because the anchor resolves into the same
+    /// viewport-absolute rect an unanchored portal computes.
+    ///
+    /// **Anchors are host state, not frame state** — they persist
+    /// until changed or cleared, so chrome pinned to something
+    /// that rarely moves costs nothing per frame. Chrome that
+    /// follows the pointer just calls this every frame; setting
+    /// the same point twice is a no-op.
+    ///
+    /// World-anchored chrome projects world → screen host-side
+    /// and passes the result: Ogham does not know what a camera
+    /// is. Anchors do **not** survive a hot reload (INTENT §7) —
+    /// a host that sets an anchor once must re-set it after one.
+    pub fn set_anchor(&mut self, id: impl Into<String>, point: widget::point::Point) {
+        self.ui.set_anchor(id, point);
+    }
+
+    /// Drop the anchor `id`. Portals naming it render nothing
+    /// until it is set again — the honest behaviour for "the
+    /// thing I was pointing at is gone". Idempotent.
+    pub fn clear_anchor(&mut self, id: &str) {
+        self.ui.clear_anchor(id);
+    }
+
+    /// Drop every anchor at once, for a host tearing down a
+    /// screen whose anchors all became meaningless together.
+    pub fn clear_anchors(&mut self) {
+        self.ui.clear_anchors();
+    }
+
+    /// The point currently set for anchor `id`, if any.
+    pub fn anchor(&self, id: &str) -> Option<widget::point::Point> {
+        self.ui.anchor(id)
     }
 
     /// Phase 3 M1: dispatch `drag_start` on `origin` with the

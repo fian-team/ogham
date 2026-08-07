@@ -100,6 +100,7 @@ pub trait RenderContext {
     fn pop_effects(&mut self);
     fn push_backdrop_blur(&mut self, x, y, w, h, radii, sigma);
     fn pop_backdrop_blur(&mut self);
+    fn with_local_canvas(&mut self, rect, paint) -> bool;
 }
 ```
 
@@ -113,6 +114,76 @@ just without the frosted-glass capture.
 All coordinates are *logical* (pre-DPI). The backend is
 responsible for any scaling. The Skia implementation multiplies
 every argument by `dpi_scale` inside the trait method body.
+
+### `with_local_canvas` — the `Canvas` painter hatch
+
+```rust
+fn with_local_canvas(
+    &mut self,
+    rect: &Rect,
+    paint: &mut dyn FnMut(&mut canvas_widget::Painter),
+) -> bool { false }
+```
+
+The one method that hands a **backend-native** handle across the
+seam, and the only one whose argument is a widget rect rather than
+a primitive. It exists for [`CanvasWidget`](WIDGET_TREE.md), whose
+pixels are drawn by host Rust — arcs, wedges, gradients along a
+path, blend modes — none of which the typed primitives above can
+express. See [INTENT §6](INTENT.md#6-surface-is-the-only-rendering-seam),
+which carves this out as a *named* exception with its own drift
+indicators, and `docs/internal/CANVAS_LEAF.md` for the design.
+
+**The coordinate contract.** The `Painter` handed to the host is a
+canvas that has already been:
+
+1. `save()`d,
+2. translated to `rect`'s origin **in device pixels**
+   (`rect.x * dpi`, `rect.y * dpi`) — the walker's canvas is
+   device-scaled at this point, so the translate must be too,
+3. scaled by `dpi_scale`,
+
+and is `restore()`d when the painter returns. A painter therefore
+draws from `(0, 0)` to `(painter.width(), painter.height())` in
+**logical** pixels and never learns either its position in the tree
+or the display's DPI. `painter.dpi_scale()` is exposed for the rare
+painter that genuinely wants device pixels.
+
+Order matters: scaling before translating would multiply the
+translate as well and seat every canvas at `dpi ×` its real origin.
+
+Backends that cannot expose a native canvas keep the `false`
+default; the `Canvas` widget then paints nothing and logs once per
+painter name in debug builds. A `Canvas` is opt-in host paint, so a
+backend that can't service it is not an error.
+
+#### Tenets — the hatch
+
+- **Only `canvas_widget.rs` may call it.** Built-in widgets paint
+  through the typed primitives; the hatch is for *host* paint.
+
+  *Why:* the seam's live purpose is keeping `skia_safe` out of
+  layout / hit-test / animation so they stay unit-testable
+  (INTENT §6). A built-in reaching for the hatch would put Skia
+  back into `widget/` through the front door.
+
+  *Drift indicators:*
+  - `with_local_canvas` called from any `widget/` module other
+    than `canvas_widget.rs`.
+  - A second `RenderContext` method returning a backend-native
+    handle.
+  - `Painter` growing methods that mutate the widget tree or UI.
+
+- **The painter is not sandboxed.** A panicking painter is host
+  code panicking on the host's own render thread, and is not
+  caught — swallowing it would hide host bugs behind a blank
+  rectangle.
+
+  *Drift indicators:*
+  - `catch_unwind` around the painter call.
+  - A painter that reads or writes runtime host state directly
+    instead of receiving `props` and its own captured handles
+    (violates INTENT §2's direction of flow).
 
 ### Tenets — the contract
 
@@ -317,6 +388,10 @@ Today's widgets:
 - **`ImageWidget::render`** — calls `ctx.draw_image(path, x,
   y, w, h, image_cache)`.
 - **`GridWidget::render`** — paints its inner Flex.
+- **`CanvasWidget::render`** — calls
+  `ctx.with_local_canvas(margin_box, &mut |p| painter(p, props))`.
+  Paints nothing itself; the host painter owns every pixel inside
+  the margin box.
 
 ### Tenets — render methods
 
@@ -442,7 +517,9 @@ If you're shipping a non-Skia `Surface`:
   *Drift indicators:*
   - `use skia_safe::` outside of `src/skia.rs`,
     `src/widget/text_widget.rs`, `src/widget/text_input_widget.rs`,
-    and `src/widget/svg_widget.rs`.
+    and `src/widget/svg_widget.rs` — plus
+    `src/widget/canvas_widget.rs`, where `Painter` carries a
+    native canvas under INTENT §6's named exception.
 
 ---
 
@@ -483,9 +560,13 @@ If you're shipping a non-Skia `Surface`:
   Skia leak. Audit when designing custom backends in earnest.
 - **No primitive for paths or polygons.** A backend can
   implement `draw_line` repeatedly for paths but the
-  triangle-strip / generic-shape case is awkward. If widgets
+  triangle-strip / generic-shape case is awkward. If *widgets*
   ever need them, add primitives rather than letting them
-  reach for `skia_safe`.
+  reach for `skia_safe`. (*Host* paint has an answer already —
+  `with_local_canvas` — and a typed `draw_path` was considered
+  and rejected for it: the real consumers need colour matrices,
+  path effects, blend modes and offscreen surfaces too, and half
+  a hatch is worse than a named one. See `CANVAS_LEAF.md` §5.)
 - **`focused: bool` on `render` is a UI-state leak into paint.**
   The `is_focused` check is more naturally a method on the
   widget (`is_focused()`), but the UI knows focus and the

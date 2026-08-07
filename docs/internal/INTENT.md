@@ -211,10 +211,27 @@ instead of `widget::style::Color`, or a layout pass calls
 `skia_safe::textlayout` for measurement bypassing `LayoutContext`.
 The test seam is the live reason; portability is a lapsed one.
 
+**Exception — the `Canvas` painter hatch.** `RenderContext::with_local_canvas`
+hands a backend-native canvas to a host-registered painter. This is a
+*named, host-facing* hatch, not convenience drift: the widget tree,
+layout, hit-testing, reconciliation, and animation stay
+backend-agnostic, and no `widget/` code paints through it. The seam's
+purpose — keeping `skia_safe` out of layout/hit-test/animation so they
+stay unit-testable — is untouched.
+
+**Drift indicators for the exception:**
+- Any `widget/` module calling `with_local_canvas` other than
+  `canvas_widget.rs`.
+- A second `RenderContext` method returning a backend-native handle.
+- `Painter` growing methods that mutate the widget tree or the UI.
+- A built-in widget (Flex/Text/Image/Grid/Presence/Portal) painting
+  through the hatch instead of through the typed primitives.
+
 **Drift indicators:**
 - `use skia_safe::` outside of `src/skia.rs` and the widgets that
   still depend on Skia for measurement/decode: `text_widget.rs` and
-  `image.rs` (plus the `FontCollection` import in `widget/mod.rs`).
+  `image.rs` (plus the `FontCollection` import in `widget/mod.rs`, and
+  `canvas_widget.rs`'s `Painter` under the exception above).
   `text_input_widget.rs` does **not** leak skia. These are the
   *known* leaks, not a license for more — document any spread as
   drift. (`svg` and its `draw_svg_dom` `RenderContext` method were
