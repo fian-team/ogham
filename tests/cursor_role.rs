@@ -65,7 +65,10 @@ fn settled() -> Ogham {
 /// Route a pointer move so the UI re-tags its hover chain, then read it back.
 fn hover(o: &mut Ogham, x: f32, y: f32) -> (CursorRole, bool) {
     let ui = o.get_ui_mut();
-    ui.call_event(&Event::with_point("mouse_move".to_string(), Point::new(x, y)));
+    ui.call_event(&Event::with_point(
+        "mouse_move".to_string(),
+        Point::new(x, y),
+    ));
     (ui.hovered_cursor(), ui.hovered_blocks())
 }
 

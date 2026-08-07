@@ -16,14 +16,7 @@ use crate::runtime::value::Value;
 /// without being declared in `host_state`, parameters, or `state`.
 /// Kept as a single source of truth so the LSP's completion (M3)
 /// can read the same list.
-pub(crate) const BUILTINS: &[&str] = &[
-    "event",
-    "use_context",
-    "rgb",
-    "rgba",
-    "true",
-    "false",
-];
+pub(crate) const BUILTINS: &[&str] = &["event", "use_context", "rgb", "rgba", "true", "false"];
 
 /// Render a `Vec<TypeRef>` for display in event-signature
 /// diagnostics. e.g. `[Int, String]` → `"int, string"`.

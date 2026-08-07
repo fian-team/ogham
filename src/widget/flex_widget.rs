@@ -928,10 +928,8 @@ impl Widget for FlexWidget {
                     } else {
                         0.0
                     };
-                    let avail_w = (self_content_width
-                        - self.get_children_fixed_width()
-                        - gap_space)
-                        .max(0.0);
+                    let avail_w =
+                        (self_content_width - self.get_children_fixed_width() - gap_space).max(0.0);
                     // Pre-pass: subtract Shrink-on-main siblings from the grow
                     // pool so a grow child isn't measured wider than it renders.
                     let mut shrink_main_total = 0.0;
@@ -2465,15 +2463,24 @@ mod tests {
         row.add_child(rule.clone());
         row.add_child(content);
 
-        let (_w, h) =
-            row.get_dimensions(&ctx, &Direction::Column, 300.0, 300.0, 600.0, 600.0, 0.0);
+        let (_w, h) = row.get_dimensions(&ctx, &Direction::Column, 300.0, 300.0, 600.0, 600.0, 0.0);
         assert_eq!(
             h, 40.0,
             "the shrink row must be its content's height, not the ancestor budget"
         );
 
         // And once the row's size is settled, the rule spans it.
-        row.layout(&ctx, 0.0, 0.0, &Direction::Column, 300.0, 300.0, 600.0, 600.0, 0.0);
+        row.layout(
+            &ctx,
+            0.0,
+            0.0,
+            &Direction::Column,
+            300.0,
+            300.0,
+            600.0,
+            600.0,
+            0.0,
+        );
         let rule = rule.lock().unwrap();
         let rect = rule.get_layout_rect().expect("rule laid out");
         assert_eq!(
@@ -2504,14 +2511,23 @@ mod tests {
         column.add_child(rule.clone());
         column.add_child(content);
 
-        let (w, _h) =
-            column.get_dimensions(&ctx, &Direction::Row, 800.0, 800.0, 100.0, 100.0, 0.0);
+        let (w, _h) = column.get_dimensions(&ctx, &Direction::Row, 800.0, 800.0, 100.0, 100.0, 0.0);
         assert_eq!(
             w, 120.0,
             "the shrink column must be its content's width, not the ancestor budget"
         );
 
-        column.layout(&ctx, 0.0, 0.0, &Direction::Row, 800.0, 800.0, 100.0, 100.0, 0.0);
+        column.layout(
+            &ctx,
+            0.0,
+            0.0,
+            &Direction::Row,
+            800.0,
+            800.0,
+            100.0,
+            100.0,
+            0.0,
+        );
         let rule = rule.lock().unwrap();
         let rect = rule.get_layout_rect().expect("rule laid out");
         assert_eq!(
@@ -2534,7 +2550,17 @@ mod tests {
         log.add_child(Arc::new(Mutex::new(TestWidget::new(50.0, 300.0))));
 
         // First layout: land on the end (no ease-in from the top).
-        log.layout(&ctx, 0.0, 0.0, &Direction::Column, 100.0, 100.0, 400.0, 400.0, 0.0);
+        log.layout(
+            &ctx,
+            0.0,
+            0.0,
+            &Direction::Column,
+            100.0,
+            100.0,
+            400.0,
+            400.0,
+            0.0,
+        );
         assert_eq!(
             log.scroll_y_target, 200.0,
             "first measure pins the target to the end"
@@ -2543,7 +2569,17 @@ mod tests {
 
         // Content grows while the view sits at the bottom: stay pinned.
         log.add_child(Arc::new(Mutex::new(TestWidget::new(50.0, 100.0))));
-        log.layout(&ctx, 0.0, 0.0, &Direction::Column, 100.0, 100.0, 400.0, 400.0, 0.0);
+        log.layout(
+            &ctx,
+            0.0,
+            0.0,
+            &Direction::Column,
+            100.0,
+            100.0,
+            400.0,
+            400.0,
+            0.0,
+        );
         assert_eq!(
             log.scroll_y_target, 300.0,
             "growth at the bottom re-pins to the new end"
@@ -2554,7 +2590,17 @@ mod tests {
         log.scroll_y_target = 40.0;
         log.scroll_y = 40.0;
         log.add_child(Arc::new(Mutex::new(TestWidget::new(50.0, 100.0))));
-        log.layout(&ctx, 0.0, 0.0, &Direction::Column, 100.0, 100.0, 400.0, 400.0, 0.0);
+        log.layout(
+            &ctx,
+            0.0,
+            0.0,
+            &Direction::Column,
+            100.0,
+            100.0,
+            400.0,
+            400.0,
+            0.0,
+        );
         assert_eq!(
             log.scroll_y_target, 40.0,
             "a reader up in the history stays put as the log grows"
@@ -3919,7 +3965,8 @@ mod tests {
 
     #[test]
     fn stagger_offsets_children_by_index_and_sums_authored_delay() {
-        let kids: Vec<WidgetRef> = vec![stagger_child(0.0), stagger_child(0.0), stagger_child(0.02)];
+        let kids: Vec<WidgetRef> =
+            vec![stagger_child(0.0), stagger_child(0.0), stagger_child(0.02)];
         let mut parent = stagger_parent(STEPPED, kids);
         parent.apply_child_stagger_offsets();
 

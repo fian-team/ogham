@@ -289,8 +289,7 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 // only an unconsumed wheel reaches the game `Input` (where
                 // e.g. a map camera reads it as zoom).
                 let cursor_pos = self.input.cursor_position();
-                let ui_event =
-                    Event::scroll(Point::new(cursor_pos.x, cursor_pos.y), dx, dy);
+                let ui_event = Event::scroll(Point::new(cursor_pos.x, cursor_pos.y), dx, dy);
                 if !self.client.handle_ui_event(&ui_event) {
                     self.input.set_scroll_delta(glm::vec2(dx, dy));
                 }
@@ -362,11 +361,8 @@ impl<Client: ClientUpdate + ClientUI> ApplicationHandler for Application<Client>
                 .window
                 .inner_size()
                 .to_logical(self.window.scale_factor());
-            self.client.update_ui_layout(
-                logical_size.width as f32,
-                logical_size.height as f32,
-                dt,
-            );
+            self.client
+                .update_ui_layout(logical_size.width as f32, logical_size.height as f32, dt);
 
             {
                 self.frame += 1;

@@ -561,9 +561,13 @@ impl ModuleSchema {
                 }),
             },
             TypeRef::SelfRef => match enclosing_record {
-                Some(name) => {
-                    self.validate_type(&TypeRef::Record(name.to_string()), None, value, path, errors)
-                }
+                Some(name) => self.validate_type(
+                    &TypeRef::Record(name.to_string()),
+                    None,
+                    value,
+                    path,
+                    errors,
+                ),
                 None => errors.push(SchemaValueError {
                     path: path.to_string(),
                     message: "`Self` outside a record (schema not resolved?)".to_string(),
@@ -1253,5 +1257,4 @@ mod tests {
             err.line
         );
     }
-
 }

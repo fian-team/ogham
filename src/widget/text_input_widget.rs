@@ -163,8 +163,10 @@ impl TextInputWidget {
     /// external value change).
     fn clamp_selection(&mut self) {
         let len = self.value.len();
-        self.selection.anchor = text_layout::snap_to_boundary(&self.value, self.selection.anchor.min(len));
-        self.selection.caret = text_layout::snap_to_boundary(&self.value, self.selection.caret.min(len));
+        self.selection.anchor =
+            text_layout::snap_to_boundary(&self.value, self.selection.anchor.min(len));
+        self.selection.caret =
+            text_layout::snap_to_boundary(&self.value, self.selection.caret.min(len));
     }
 
     // ---- editing primitives (E2: char-boundary safe, selection aware) ----
@@ -460,14 +462,9 @@ impl Widget for TextInputWidget {
         let width = match ctx.effective_width(self.style.width) {
             Size::Fixed(w) => w,
             Size::Shrink => {
-                let intrinsic = text_layout::measure(
-                    fc,
-                    font,
-                    &self.text_style,
-                    &self.value,
-                    f32::INFINITY,
-                )
-                .intrinsic_width;
+                let intrinsic =
+                    text_layout::measure(fc, font, &self.text_style, &self.value, f32::INFINITY)
+                        .intrinsic_width;
                 let min = if self.value.is_empty() {
                     EMPTY_MIN_CONTENT_WIDTH
                 } else {
@@ -861,7 +858,10 @@ mod tests {
     #[test]
     fn typing_replaces_selection() {
         let mut w = input("hello");
-        w.selection = Selection { anchor: 0, caret: 5 };
+        w.selection = Selection {
+            anchor: 0,
+            caret: 5,
+        };
         w.insert_char('y');
         assert_eq!(w.value, "y");
         assert_eq!(w.selection.caret, 1);
@@ -871,7 +871,10 @@ mod tests {
     #[test]
     fn backspace_deletes_selection_not_just_one_char() {
         let mut w = input("hello");
-        w.selection = Selection { anchor: 1, caret: 4 }; // "ell"
+        w.selection = Selection {
+            anchor: 1,
+            caret: 4,
+        }; // "ell"
         assert!(w.delete_backward());
         assert_eq!(w.value, "ho");
         assert_eq!(w.selection.caret, 1);
