@@ -1,7 +1,15 @@
 # Ogham — The `Canvas` leaf: a host-painted, layout-participating widget
 
-> **Status: M0–M4 shipped 2026-08-06. M5 (the regency migration, §8)
-> is outstanding and happens in that repo.**
+> **Status: complete. M0–M4 shipped 2026-08-06; M5 (the regency
+> migration, §8) landed the same day in `regency` as `fb40a6a`, and the
+> dial was confirmed correct in motion by eye.**
+>
+> §8's deletion list was optimistic: `WHEEL_CENTER_Y_FRAC` and
+> `_DANCE` survive, because flex cannot express "prefer 60% of the
+> viewport, but rise if a *measured* sibling crowds you" — that is two
+> anchors on one axis, and a column has one. The measured card wins and
+> the fraction now applies only when the dial stands alone. Read §8
+> against `regency`'s commit, not as-written.
 >
 > Where the shipped code and this plan differ, the code is authority;
 > the divergences are listed in §4.1. The

@@ -1,7 +1,15 @@
 # Ogham — Anchored portal entries: chrome at host-computed coordinates
 
-> **Status: M0–M5 shipped 2026-08-06. M6 (the regency tooltip
-> migration, §6) is outstanding and happens in that repo.**
+> **Status: complete. M0–M5 shipped 2026-08-06; M6 (the regency tooltip
+> migration, §6) landed the same day in `regency` as `fb40a6a`.**
+>
+> Two corrections §6 earned in the field: step 1 was wrong that a
+> `(String, String, String)` tuple rides the `editable`→`Value` visitor
+> "with no new glue" (that derive walks structs, so the tuples became a
+> flat record), and `flip` mirrors `anchor_offset.y`, so `{ y: 22 }`
+> seats the flipped card at `cy − 22 − h` where the hand-rolled version
+> used `cy − 12 − h`. Ten pixels, harmless, but not the literal
+> translation §6 promised.
 >
 > Where the shipped code and this plan differ, the code is authority;
 > the divergences are listed in §4.1. The integration-facing writeup
