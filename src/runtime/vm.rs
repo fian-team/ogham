@@ -841,9 +841,13 @@ impl VM {
                             )))
                         }
                     };
-                    // Fire-and-forget: `event()` always yields Void regardless
-                    // of handler result.
-                    let _ = runtime.emit_event(&event_name, &all_args[1..]);
+                    // Fire-and-forget for the *script* — `event()` always
+                    // yields Void — but a handler error is the HOST failing,
+                    // and swallowing it made a broken wiring indistinguishable
+                    // from a working one. Say what broke.
+                    if let Err(e) = runtime.emit_event(&event_name, &all_args[1..]) {
+                        eprintln!("[ogham] event '{event_name}' handler failed: {e}");
+                    }
                     self.push(Value::Void)?;
                 }
                 OpCode::Log => {

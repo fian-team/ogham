@@ -281,8 +281,15 @@ impl Runtime {
         self.state.get_state_value(name)
     }
 
+    /// Write one host-state binding and propagate it.
+    ///
+    /// Diffs against the stored value and requests a rerender on change —
+    /// the same contract as every other injection door. This used to be the
+    /// one writer that did neither: a host mutating through it changed state
+    /// no widget would ever see until something *else* happened to flag a
+    /// rerender. One mutation, one classification; no silent door.
     pub fn inject_host_state(&mut self, name: String, value: Value) {
-        self.host_state.insert(name, value);
+        self.set_host_state_value(&name, value);
     }
 
     /// Like `inject_host_state`, but only inserts the value when it differs
@@ -362,13 +369,18 @@ impl Runtime {
     /// Dispatch an event to the registered handler, if any.
     ///
     /// Returns `Ok(Value::Void)` when no handler is registered for the name —
-    /// fire-and-forget `event()` calls treat a missing handler as a no-op.
-    /// For tracked mutations, the caller distinguishes success/error via the
-    /// returned `Result`.
+    /// fire-and-forget `event()` calls treat a missing handler as a no-op —
+    /// but says so: a typo'd or un-wired event used to be perfectly silent,
+    /// which in an editor means a click that does nothing and nothing to
+    /// grep for. Strict mode catches undeclared names at compile time; this
+    /// is the runtime's half, for declared-but-unregistered.
     pub fn emit_event(&self, name: &str, args: &[Value]) -> Result<Value, String> {
         match self.event_handlers.get(name) {
             Some(handler) => handler(args),
-            None => Ok(Value::Void),
+            None => {
+                eprintln!("[ogham] event '{name}' has no registered handler; dropped");
+                Ok(Value::Void)
+            }
         }
     }
 
