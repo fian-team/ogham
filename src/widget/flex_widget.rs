@@ -1111,6 +1111,13 @@ impl Widget for FlexWidget {
         _self_ref: &WidgetRef,
     ) -> bool {
         if let Some(point) = &event.point {
+            // An exiting widget is hit-test-invisible (PRESENCE_POP.md
+            // §6): a half-faded subtree must not eat presses aimed at
+            // live content beneath it. Keyboard routing (no point)
+            // is left untouched.
+            if self.exiting {
+                return false;
+            }
             // For click events, first check if this widget contains the point
             if self.contains_point(point) {
                 // Handle scroll events for scrollable containers
@@ -1700,6 +1707,11 @@ impl Widget for FlexWidget {
     }
 
     fn blocks_point(&self, point: &Point) -> bool {
+        // Exiting subtrees are hit-test-invisible; the world beneath a
+        // ghost gets its vote back immediately.
+        if self.exiting {
+            return false;
+        }
         if !self.contains_point(point) {
             return false;
         }
@@ -4201,5 +4213,97 @@ mod tests {
             "the next section starts below the whole first section"
         );
         assert_eq!(second_rect.height, 120.0);
+    }
+
+    // ---- Exiting widgets are hit-test-invisible (PRESENCE_POP.md §6) --
+
+    /// A clickable flex pinned at `rect`: mouse_down listener recording
+    /// into `fired`, plus the layout rect contains_point needs. Styled
+    /// with a bg transition so begin_exit can arm a spring.
+    fn clickable_at(rect: Rect, fired: &Arc<Mutex<bool>>) -> FlexWidget {
+        let mut w = FlexWidget::new();
+        w.layout = Some(rect);
+        w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+        w.style = w.declared_style.clone();
+        let flag = fired.clone();
+        w.event_listeners.insert(
+            "mouse_down".to_string(),
+            vec![Box::new(move |_e: &Event| {
+                *flag.lock().unwrap() = true;
+            })],
+        );
+        w
+    }
+
+    #[test]
+    fn exiting_widget_ignores_pointer_events() {
+        let fired = Arc::new(Mutex::new(false));
+        let mut w = clickable_at(Rect::new(0.0, 0.0, 100.0, 100.0), &fired);
+        w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+        assert!(w.begin_exit());
+
+        let event = Event::with_point("mouse_down".to_string(), Point::new(50.0, 50.0));
+        let mut ctx = EventContext::new();
+        let self_ref: WidgetRef = Arc::new(Mutex::new(FlexWidget::new()));
+        let consumed = w.handle_event(&event, &mut ctx, &self_ref);
+
+        assert!(!consumed, "an exiting widget must not consume presses");
+        assert!(
+            !*fired.lock().unwrap(),
+            "listener on exiting widget must not fire"
+        );
+    }
+
+    #[test]
+    fn press_falls_through_ghost_to_widget_beneath() {
+        // Two overlapping siblings: an exiting ghost above a live
+        // button. The parent's child walk must skip the ghost so the
+        // press lands on the live widget.
+        let ghost_fired = Arc::new(Mutex::new(false));
+        let live_fired = Arc::new(Mutex::new(false));
+
+        let mut ghost = clickable_at(Rect::new(0.0, 0.0, 100.0, 100.0), &ghost_fired);
+        ghost.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+        assert!(ghost.begin_exit());
+        let live = clickable_at(Rect::new(0.0, 0.0, 100.0, 100.0), &live_fired);
+
+        let mut parent = FlexWidget::new();
+        parent.layout = Some(Rect::new(0.0, 0.0, 200.0, 200.0));
+        parent.children = vec![
+            Arc::new(Mutex::new(ghost)) as WidgetRef,
+            Arc::new(Mutex::new(live)) as WidgetRef,
+        ];
+
+        let event = Event::with_point("mouse_down".to_string(), Point::new(50.0, 50.0));
+        let mut ctx = EventContext::new();
+        let self_ref: WidgetRef = Arc::new(Mutex::new(FlexWidget::new()));
+        let consumed = parent.handle_event(&event, &mut ctx, &self_ref);
+
+        assert!(consumed, "the live sibling should consume the press");
+        assert!(
+            !*ghost_fired.lock().unwrap(),
+            "ghost must not see the press"
+        );
+        assert!(
+            *live_fired.lock().unwrap(),
+            "live widget beneath must get it"
+        );
+    }
+
+    #[test]
+    fn exiting_widget_does_not_block_point() {
+        let mut w = FlexWidget::new();
+        w.layout = Some(Rect::new(0.0, 0.0, 100.0, 100.0));
+        w.declared_style = make_transition_style(Color::new(255, 255, 255, 255));
+        w.style = w.declared_style.clone();
+        w.block_interactions = true;
+        assert!(w.blocks_point(&Point::new(50.0, 50.0)));
+
+        w.exit_style = Some(make_transition_style(Color::new(0, 0, 0, 0)));
+        assert!(w.begin_exit());
+        assert!(
+            !w.blocks_point(&Point::new(50.0, 50.0)),
+            "an exiting widget must not occlude the world beneath it"
+        );
     }
 }

@@ -1028,7 +1028,9 @@ impl UI {
         for child in children.iter().rev() {
             let contains = {
                 let cg = child.lock().expect("widget lock poisoned");
-                cg.contains_point(&local)
+                // Exiting widgets are hit-test-invisible
+                // (PRESENCE_POP.md §6).
+                !cg.is_exiting() && cg.contains_point(&local)
             };
             if contains {
                 if let Some(deeper) = Self::deepest_at(child, &local) {
@@ -1061,7 +1063,9 @@ impl UI {
         for child in children.iter().rev() {
             let contains = {
                 let cg = child.lock().expect("widget lock poisoned");
-                cg.contains_point(&local)
+                // Exiting widgets are hit-test-invisible
+                // (PRESENCE_POP.md §6).
+                !cg.is_exiting() && cg.contains_point(&local)
             };
             if contains {
                 if let Some(deeper) = Self::deepest_drop_target(child, &local, payload) {
@@ -1082,12 +1086,19 @@ impl UI {
     /// any widget's hover state changed.
     fn update_hover(&mut self, point: &Point) -> bool {
         let root = self.root.clone();
-        Self::update_hover_recursive(&root, point)
+        Self::update_hover_recursive(&root, point, false)
     }
 
-    fn update_hover_recursive(widget_ref: &WidgetRef, point: &Point) -> bool {
+    fn update_hover_recursive(widget_ref: &WidgetRef, point: &Point, suppressed: bool) -> bool {
         let mut widget = widget_ref.lock().expect("widget lock poisoned");
-        let hit = widget.contains_point(point);
+        // Exiting subtrees are hit-test-invisible (PRESENCE_POP.md §6):
+        // suppress hover for this widget and everything below it so a
+        // ghost can't steal hover from the live content it overlaps.
+        // Suppression still recurses — descendants that were hovered
+        // before the exit began get their hover cleared (and their
+        // mouse_leave fired) like any other miss.
+        let suppressed = suppressed || widget.is_exiting();
+        let hit = !suppressed && widget.contains_point(point);
 
         let was_hovered = widget.is_hovered();
         widget.set_hovered(hit);
@@ -1118,7 +1129,7 @@ impl UI {
         drop(widget);
 
         for child in &children {
-            changed |= Self::update_hover_recursive(child, &child_point);
+            changed |= Self::update_hover_recursive(child, &child_point, suppressed);
         }
 
         changed
