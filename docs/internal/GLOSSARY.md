@@ -139,12 +139,19 @@ second-class.
 
 **Ghost** — A widget that has been removed from the declarative
 tree but is still in the live tree because it is playing an exit
-animation. Drained on the next tick after its springs settle. See
-[ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md).
+animation. Drained on the next tick after its springs settle.
+In-flow ghosts (reconcile removals, wait-mode Presence) keep
+their layout slot; pop-mode Presence ghosts are *popped* —
+pinned outside layout flow at their last rect, painted above the
+live children. All ghosts are hit-test-invisible. See
+[ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md) and
+[PRESENCE_POP.md](PRESENCE_POP.md).
 
-**Pending** (Presence) — Children staged inside a `Presence`
-container while the previous generation finishes exiting. Mounted
-once no ghosts remain. Latest-wins on rapid key changes.
+**Pending** (Presence, wait mode) — Children staged inside a
+`Presence { mode: "wait" }` container while the previous
+generation finishes exiting. Mounted once no ghosts remain.
+Latest-wins on rapid key changes. Pop mode (the default) has no
+pending state — the new generation mounts immediately.
 
 **Portal** — A widget whose children paint into a named
 *portal layer* in a second pass instead of in their parent's

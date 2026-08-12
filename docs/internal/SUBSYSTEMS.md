@@ -459,10 +459,12 @@ hover / exit.
 ## Widget lifecycle (initial / exit / Presence)
 
 **Problem:** support entry animations, exit animations, and a way
-to sequence transitions between content generations (so a "page"
-fully animates out before the next animates in).
+to transition between content generations (a "page" animating out
+while — or before — the next animates in).
 
-This subsystem has its own document: [`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECYCLE.md).
+This subsystem has its own documents:
+[`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECYCLE.md) and
+[`PRESENCE_POP.md`](PRESENCE_POP.md).
 
 **Invariants:**
 - `initial:` is a snapshot the widget is born at; springs
@@ -472,13 +474,19 @@ This subsystem has its own document: [`ANIMATION_LIFECYCLE.md`](ANIMATION_LIFECY
   on unmount.
 - A `key` is required for exit animations to fire — without one,
   removal is indistinguishable from reorder. (`INTENT §5`.)
-- `Presence { key, children }` holds new children as `pending`
-  until every existing child has finished exiting; rapid key
-  changes replace `pending` latest-wins; reverting the key
-  cancels in-flight exits.
+- `Presence { key, mode, children }`: in `pop` mode (default)
+  the outgoing generation is popped out of layout flow as
+  pinned ghosts and the new one mounts immediately, its
+  lifecycle prefixes flushed at replacement time; in `wait`
+  mode new children are held as `pending` until every existing
+  child has finished exiting, rapid key changes replace
+  `pending` latest-wins, and reverting the key cancels
+  in-flight exits.
 - `begin_exit` cascades: a widget without its own exit_style
   becomes a passive ghost if any descendant has a real exit
   animation.
+- Exiting widgets are hit-test-invisible (pointer, hover, drag,
+  occlusion); keyboard routing is untouched.
 
 **Authority:** `src/widget/flex_widget.rs` (own-exit, cascade,
 ghost retention); `src/widget/presence_widget.rs` (generation

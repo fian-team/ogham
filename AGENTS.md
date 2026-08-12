@@ -308,20 +308,24 @@ Flex {
 
 **`key`** — stable identity used by reconciliation to match widgets across frames. Required for exit animations and for preserving animation/hover/scroll state across reorders. Keyless siblings are matched by position.
 
-#### `Presence` — sequencing transitions between generations
+#### `Presence` — transitions between generations of content
 
-`Flex`'s exit animations run *in parallel* with the new content mounting. When you want one to finish before the other starts (e.g., page transitions), wrap the swap point in `Presence`:
+Wrap a swap point (e.g., page transitions) in `Presence` to give the outgoing content an exit animation when `key` changes:
 
 ```ogh
 Presence {
   key: current_route_id,
+  mode: "wait",   // optional; default "pop"
   children: [ render_route(current_route_id) ],
 }
 ```
 
-When `key` changes, every current child is asked to `begin_exit` (cascading through descendants if no own `exit` exists). Children with exit animations stay in the tree as ghosts; the new content is held aside as *pending* and mounts only once all ghosts settle. Rapid key changes replace the pending content latest-wins; reverting the key mid-exit cancels the transition and unwinds the in-flight exits.
+When `key` changes, every current child is asked to `begin_exit` (cascading through descendants if no own `exit` exists). What happens next depends on `mode`:
 
-Use `Presence` for route boundaries; nest one per "slot" that should sequence independently (e.g., separate Presences for a sidebar and a main panel).
+- **`pop`** (default): exiting children are popped out of layout flow — pinned as ghosts at their last layout rect, painted *above* the live children, invisible to input — and the new content mounts immediately, playing its entry animations under the fading ghosts. The transition costs `max(exit, enter)` instead of `exit + enter`. Rapid key changes accumulate self-draining ghost cohorts; reverting the key mounts a fresh subtree (the old generation's state was flushed at replacement — a revert is a re-entry, not a resurrection).
+- **`wait`**: the old serial machine — exiting children stay in the tree as in-flow ghosts, the new content is held aside as *pending* and mounts only once all ghosts settle. Rapid key changes replace pending latest-wins; reverting the key mid-exit cancels the transition and unwinds the in-flight exits. Opt in when the entrance must not start until the exit has finished.
+
+Use `Presence` for route boundaries; nest one per "slot" that should transition independently (e.g., separate Presences for a sidebar and a main panel). Details: `docs/internal/PRESENCE_POP.md`.
 
 #### Opacity and transform style properties
 

@@ -152,8 +152,11 @@ adds custom widgets (and overrides built-ins on collision).
 - **`svg` / `Svg`** — Skia SVG DOM rendering.
 - **`image` / `Image`** — Skia image rendering with caching.
 - **`grid` / `Grid`** — grid layout with placement properties.
-- **`presence` / `Presence`** — generation-keyed sequencer; see
-  [ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md).
+- **`presence` / `Presence`** — generation-keyed transition
+  container; `mode: "pop"` (default, overlapped ghosts) or
+  `"wait"` (serial exit-then-mount); see
+  [ANIMATION_LIFECYCLE.md](ANIMATION_LIFECYCLE.md) and
+  [PRESENCE_POP.md](PRESENCE_POP.md).
 - **`portal` / `Portal`** — deferred-paint container that lifts
   its children into a named layer; see [Portal layers](#portal-layers)
   below.

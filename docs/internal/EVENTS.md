@@ -169,9 +169,31 @@ setting `hovered = true` on every widget on the path from root
 to the deepest hit, and `hovered = false` on every other widget.
 Fires `mouse_enter` / `mouse_leave` listeners for transitions.
 The point is shifted into child coordinate space using the same
-origin-and-scroll rule as click dispatch.
+origin-and-scroll rule as click dispatch. An exiting subtree is
+hover-suppressed as a unit (the walk still recurses so cleared
+descendants get their `mouse_leave`).
 
 ### Tenets
+
+- **Exiting widgets are hit-test-invisible.** A widget whose
+  `is_exiting()` is true — and its whole subtree — receives no
+  pointer events, no hover, no drag targeting, and does not
+  occlude (`blocks_point` is false). Enforced in the pointer
+  branch of `FlexWidget::handle_event`, in `blocks_point`, and
+  in the `update_hover` / `deepest_at` / `deepest_drop_target`
+  walks. Keyboard routing is untouched.
+
+  *Why:* a half-faded button must not eat the click aimed at
+  the live content beneath it. Load-bearing for Presence pop
+  mode, where ghosts overlap the incoming generation
+  (`PRESENCE_POP.md` §6); a bug fix for plain reconcile ghosts,
+  which could consume clicks mid-fade.
+
+  *Drift indicators:*
+  - A new hit-test walk (or widget type's `handle_event`) that
+    forgets the `is_exiting()` skip.
+  - Ghosts intercepting hover/clicks again "because they're
+    still visible".
 
 - **First-hit-in-declaration-order wins for pointer events.**
   The walker iterates `self.children.iter()` and breaks on the

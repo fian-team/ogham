@@ -295,24 +295,39 @@ Authoring:
 ```ogh
 Presence {
   key: current_route_id,
+  mode: "wait",   // optional; default "pop"
   children: [ render_route(current_route_id) ],
 }
 ```
 
 When `key` changes, every child of the inner Flex begins
-exiting. The new children (already evaluated by the VM in this
-render — `Presence`'s children expression runs every render,
-just like every other widget's) are stashed as
-`pending_children` until every existing child has finished
-exiting; then the pending children are committed.
+exiting. What happens to the new children (already evaluated by
+the VM in this render — `Presence`'s children expression runs
+every render, just like every other widget's) depends on `mode`:
+
+- **`pop`** (default): the outgoing children are *popped out of
+  layout flow* — pinned as ghosts at their last layout rect —
+  and the new generation mounts immediately, playing its entry
+  animations while the ghosts fade out above it. The transition
+  costs `max(exit, enter)`, not `exit + enter`.
+- **`wait`**: the new children are stashed as
+  `pending_children` until every existing child has finished
+  exiting; then the pending children are committed. Serial —
+  for deliberately sequenced choreography.
+
+Design rationale and the full decision record:
+[`PRESENCE_POP.md`](PRESENCE_POP.md).
 
 ### Internal state
 
 ```rust
 struct PresenceWidget {
-    inner: FlexWidget,                  // owns layout + the live children incl. ghosts
+    inner: FlexWidget,                  // owns layout + the live children (incl. wait-mode in-flow ghosts)
     generation_key: Option<String>,     // current generation
-    pending_children: Option<Vec<WidgetRef>>,
+    mode: PresenceMode,                 // Pop (default) | Wait
+    ghosts: Vec<Ghost>,                 // pop mode: exiting children pinned outside flow
+    exiting: bool,                      // parent-initiated exit accepted
+    pending_children: Option<Vec<WidgetRef>>,  // wait mode only
     pending_key: Option<String>,
 }
 ```
@@ -322,12 +337,23 @@ struct PresenceWidget {
 `PresenceWidget::update(new)`:
 
 1. Downcast `new` to `PresenceWidget`. If type mismatch, return
-   `REPLACE`.
+   `REPLACE`. Adopt `new`'s inner style and `mode` (the mode
+   governs transitions started from here on).
 2. **Same key**: reconcile children normally via inner.
-   If a transition was in flight (`pending_children.is_some()`),
-   call `cancel_pending` first — author reverted the key
-   mid-exit; unwind the in-flight exits.
-3. **Different key**:
+   If a wait transition was in flight
+   (`pending_children.is_some()`), call `cancel_pending`
+   first — author reverted the key mid-exit; unwind the
+   in-flight exits.
+3. **Different key, pop mode** (and no wait transition in
+   flight): `pop_current` — every current child gets
+   `begin_exit()`; exit-capable children with a layout rect move
+   to `ghosts` pinned at that rect, the rest drop. The
+   `owned_path_prefix` of *every* outgoing child — ghosted or
+   dropped — is pushed into
+   `UpdateResult.drained_path_prefixes` **now** (see the flush
+   tenet below). `new.children` mounts immediately;
+   `generation_key` advances.
+4. **Different key, wait mode**:
    a. If no transition is in flight, call
       `begin_exit_on_current` to start exits on the current
       children (drops any that can't ghost).
@@ -343,51 +369,120 @@ struct PresenceWidget {
 1. Calls `inner.tick_animations(ctx)` (which advances springs
    and drains exit-complete children, pushing their
    `owned_path_prefix`s into `ctx.drained_path_prefixes`).
-2. If `pending_children` is set and `inner.children` is empty,
-   commit pending: swap pending into inner.children, set
-   `generation_key = pending_key`, request layout + repaint.
+2. Wait mode: if `pending_children` is set and `inner.children`
+   is empty, commit pending: swap pending into inner.children,
+   set `generation_key = pending_key`, request layout + repaint.
+3. Pop mode: tick each ghost's springs, then drop ghosts whose
+   exits have settled. A ghost drain requests repaint but **not**
+   relayout (ghosts are out of flow) and pushes **no** prefixes
+   (they were flushed at pop time).
+
+### Layout and paint (pop mode)
+
+- `Presence::layout` re-lays each ghost out *inside its frozen
+  rect* every pass (frozen origin as cursor, frozen size as both
+  parent and available dims, sibling_basis 0), so interior
+  layout-affecting exit animations keep reflowing while the rect
+  itself never moves. The rect is Presence-relative: ghosts move
+  with the Presence; only their slot within it is frozen.
+- `get_children()` returns live children then ghosts, so the
+  render walk paints ghosts last — the dying generation
+  composites *above* the live one.
+- Ghosts receive no input: exiting widgets are globally
+  hit-test-invisible (pointer, hover, drag, `blocks_point`).
+  Keyboard routing is unaffected.
 
 ### Tenets — Presence
 
-- **Latest pending wins on rapid key changes.** A → B → C
-  while A is still exiting: B's pending children are *replaced*
-  by C's. The exit on A continues; once it settles, C mounts
-  (B never appears).
+- **Pop is the default because latency is the common enemy.**
+  Wait mode's serial exit-then-enter doubles every transition
+  and gates the mount on the *slowest* exiting descendant's
+  numerical spring settle. Pop overlaps them. `wait` remains an
+  explicit opt-in for sequenced choreography.
 
-  *Why:* if every key change started a fresh exit cycle, rapid
-  key flicker would queue exits unboundedly. Latest-wins keeps
-  the user's intent — they ended up on C, that's where they
-  should arrive.
+  *Drift indicators:*
+  - New Presence features implemented only for wait mode.
+  - A default flip back to wait "for safety" without a decision
+    record.
+
+- **Pop flushes lifecycle prefixes at replacement, not drain.**
+  Owned paths are call-stack paths, so two generations invoking
+  the same component fn at the same call site own the *same*
+  prefix. The new generation registers state at mount; a ghost
+  flushing that prefix at drain time (~300 ms later) would
+  clobber the live subtree's state. So `pop_current` reports the
+  outgoing prefixes in `UpdateResult.drained_path_prefixes` at
+  pop time — same channel and render-boundary timing as the
+  exit-incapable-drop path — and ghost drains push nothing.
+  Logical unmount happens at replacement; visual death later.
+
+  *Drift indicators:*
+  - Ghost drains pushing prefixes into
+    `ctx.drained_path_prefixes`.
+  - Unmount hooks for a replaced route firing after the new
+    route's mount hooks *for the same path*.
+
+- **Ghosts are never consulted by reconciliation.** They live in
+  a separate vec precisely because `reconcile_children`'s
+  pre-pass cancels exits on key match — and generation swaps
+  frequently reuse keys. An in-`children` ghost would be adopted
+  as the new child instead of dying.
+
+  *Drift indicators:*
+  - Ghosts merged back into `inner.children` "for simplicity".
+  - A new-generation child matching a ghost by key.
+
+- **Latest wins on rapid key changes.** Wait mode: A → B → C
+  while A is still exiting — B's pending children are *replaced*
+  by C's; once A settles, C mounts (B never appears). Pop mode:
+  each change pops the current generation onto the ghost pile
+  and mounts the newcomer; cohorts coexist and self-drain.
+
+  *Why:* the user ended up on C, that's where they should
+  arrive — with no unbounded queueing of intermediate exits.
 
   *Drift indicators:*
   - A queue-based pending model that mounts B before C.
-  - Exits being restarted on every key change (would cancel
-    in-flight A exit and break the visual flow).
+  - Pop mode restarting or canceling older cohorts' exits on a
+    new key change.
 
-- **Reverting the key cancels in-flight exits.** A → B → A
-  while A is still exiting: pending B is dropped; existing
-  exiting children have `cancel_exit` called on them. The A
-  child returns to its declared style smoothly.
-
-  *Why:* a route revert (user clicks "back" mid-transition)
-  should feel like the transition reversed, not like a fresh
-  mount.
+- **Reverting the key: wait cancels, pop remounts.** Wait mode
+  A → B → A drops pending B and calls `cancel_exit` on the
+  exiting children — the transition visually reverses. Pop mode
+  has no special case: the old A ghost keeps dying and a fresh A
+  subtree mounts (its state was already flushed at pop; a revert
+  is a re-entry, not a resurrection).
 
   *Drift indicators:*
-  - A revert path that drops pending without canceling
-    exits — exiting A children would still animate out and
-    then snap back, visually doubled.
+  - A pop-mode revert path that tries to cancel a ghost's exit
+    and re-adopt it — its lifecycle prefix is already flushed;
+    re-adopting would resurrect a widget whose runtime state is
+    gone.
 
 - **`Presence` itself has no own exit animation.** When a
   parent removes a `Presence`, the Presence's `begin_exit`
-  drops `pending_children` (since they would never become
-  visible) and forwards to `inner.begin_exit` so any current
-  generation's children exit normally.
+  drops `pending_children` (they would never become visible),
+  forwards to `inner.begin_exit`, and keeps its ghosts — they
+  are already exiting and visible, and their settling gates
+  `is_exit_complete`. A Presence can accept an exit on the
+  strength of its ghost pile alone.
 
   *Drift indicators:*
   - A Presence with its own `exit_style` field that the
     cascade doesn't honor.
   - Pending children outliving the Presence's removal.
+  - Ghosts dropped instantly when the Presence exits (visible
+    pop-out).
+
+- **A live Presence with ghosts is not "exiting".** The parent's
+  reconciler must never mistake a mid-pop-transition Presence
+  for an exiting ghost; `is_exiting` reflects only a
+  parent-initiated exit (own flag / inner), never the ghost
+  pile.
+
+  *Drift indicators:*
+  - `is_exiting() || !ghosts.is_empty()` leaking into the
+    parent-facing predicate.
 
 - **Generation separation between siblings is per-Presence.** A
   page that has both a sidebar route and a main-panel route
@@ -400,12 +495,14 @@ struct PresenceWidget {
   - Documentation that suggests one Presence per route hierarchy
     instead of per slot.
 
-- **`Presence` delegates everything except update + tick to
-  its inner Flex.** Layout, render, hit-testing, hover, scroll
-  all go through the inner. Don't re-implement these on Presence.
+- **`Presence` delegates everything except update + tick +
+  ghost bookkeeping to its inner Flex.** Layout, render,
+  hit-testing, hover, scroll all go through the inner; pop mode
+  adds only the ghost pass on top (layout-in-frozen-rect, paint
+  above, tick/drain). Don't re-implement the rest on Presence.
 
   *Drift indicators:*
-  - Presence growing its own layout / hit-testing.
+  - Presence growing its own flex algorithm / hit-testing.
 
 ---
 

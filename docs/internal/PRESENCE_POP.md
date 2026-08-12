@@ -1,6 +1,15 @@
 # Ogham — Presence `mode: pop`: overlapped generation transitions
 
-> **Status: plan, not yet implemented.** Drafted 2026-08-12.
+> **Status: complete.** Drafted and shipped 2026-08-12 — M0/M1/M3
+> landed together (mode plumbing, pop machinery, and pop-time prefix
+> flush are one coherent change), M2 (global hit-test invisibility for
+> exiting widgets) as its own commit, M4 docs alongside. One §5 detail
+> refined during implementation: a ghost's *size* is re-derived from
+> its style under the frozen constraints each pass (a `Grow` ghost
+> resolves to the frozen rect; a `Shrink` ghost re-measures its
+> content), rather than being hard-pinned — that is what lets interior
+> layout-affecting exits reflow. Position is frozen as designed. Where
+> the shipped code and this plan differ, the code is authority.
 >
 > Adds a `mode` field to the `Presence` widget with two values: `pop`
 > (new default) and `wait` (the current exit-then-mount behaviour,
