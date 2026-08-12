@@ -6,7 +6,7 @@ use crate::widget::{
     flex_widget::FlexWidget,
     grid_widget::{GridPlacement, GridStyle, GridWidget},
     image_widget::ImageWidget,
-    presence_widget::PresenceWidget,
+    presence_widget::{PresenceMode, PresenceWidget},
     style::*,
     text_input_widget::TextInputWidget,
     text_widget::TextWidget,
@@ -998,6 +998,30 @@ fn create_presence_widget(
 
     if let Some(value) = descriptor.properties.get("key") {
         presence.generation_key = key_to_string(value);
+    }
+
+    if let Some(value) = descriptor.properties.get("mode") {
+        match value {
+            Value::String(name) => match name.as_str() {
+                "pop" => presence.mode = PresenceMode::Pop,
+                "wait" => presence.mode = PresenceMode::Wait,
+                other => {
+                    return Err(BridgeError::InvalidPropertyType(
+                        "mode".to_string(),
+                        format!(
+                            "Presence expects 'mode' to be one of: pop, wait. Got: {:?}",
+                            other
+                        ),
+                    ));
+                }
+            },
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "mode".to_string(),
+                    format!("Presence expects 'mode' as a string; got {:?}", other),
+                ));
+            }
+        }
     }
 
     if let Some(style_map) = optional_style_map(descriptor) {
