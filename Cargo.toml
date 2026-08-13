@@ -23,7 +23,7 @@ path = "src/lib.rs"
 
 [dependencies]
 downcast-rs = "2.0.1"
-skia-safe = { version = "0.91.0", features = ["gl", "textlayout"] }
+skia-safe = { version = "0.91.0", features = ["vulkan", "textlayout"] }
 lodepng = "3.12.1"
 nalgebra-glm = "0.19.0"
 notify = "6.1"
