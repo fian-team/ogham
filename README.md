@@ -42,23 +42,22 @@ the library to compile in that mode.
 
 ## Binaries
 
-The workspace produces three binaries plus the `ogham` library crate:
+The workspace produces two binaries plus the `ogham` library crate:
 
 | Binary       | Path                | Purpose                                                           |
 |--------------|---------------------|-------------------------------------------------------------------|
 | `ogham`      | `src/cli/main.rs`   | CLI. Currently one subcommand: `check` (validates `.ogh` files against typed-bindings manifests). |
 | `ogham-lsp`  | `src/lsp/main.rs`   | Language Server (LSP over stdio). Used by the VS Code extension and any LSP-capable editor. |
-| `client`     | `src/client/main.rs`| Standalone `.ogh` viewer with a winit + Skia window.              |
 
 ## Quick start
 
 ```sh
-# Build everything (library + 3 binaries).
+# Build everything (library + 2 binaries).
 cargo build
 
-# Run the standalone client. Opens a built-in home page; press Ctrl+O
-# to load any .ogh file from disk (e.g. examples/counter.ogh).
-cargo run --bin client
+# Preview an .ogh file (hot-reloads on save). The previewer lives in the
+# lorekeeper workspace and runs on the engine's own window host:
+#   cd ../lorekeeper && cargo run -p ogham_preview -- ../ogham/examples/counter.ogh
 
 # Validate every .ogh file in the workspace against host bindings.
 cargo run --bin ogham -- check --all

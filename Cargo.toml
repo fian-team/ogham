@@ -14,10 +14,6 @@ keywords = ["ui", "framework", "language", "flexbox"]
 categories = ["gui"]
 
 [[bin]]
-name = "client"
-path = "src/client/main.rs"
-
-[[bin]]
 name = "ogham-lsp"
 path = "src/lsp/main.rs"
 
@@ -29,13 +25,7 @@ path = "src/lib.rs"
 downcast-rs = "2.0.1"
 skia-safe = { version = "0.91.0", features = ["gl", "textlayout"] }
 lodepng = "3.12.1"
-winit = "0.30.2"
-glutin = { version = "0.32.0", features = ["egl", "glx", "wgl"] }
-glutin-winit = "0.5.0"
 nalgebra-glm = "0.19.0"
-gl-rs = { version = "0.14.0", package = "gl" }
-raw-window-handle = "0.6.0"
-rfd = "0.14"
 notify = "6.1"
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }

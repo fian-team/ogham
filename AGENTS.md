@@ -63,7 +63,6 @@ Source (.ogh)
 | `src/diagnostics/` | Schema-diagnostic engine used by `ogham check` and the LSP |
 | `src/cli/` | `ogham` CLI binary (currently `check`; `render.rs` is the diagnostic-formatting helper, not a subcommand) |
 | `src/lsp/` | `ogham-lsp` language server binary |
-| `src/client/` | Standalone browser binary |
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
 
@@ -620,8 +619,9 @@ let config = RuntimeConfig::new()
     });
 ```
 
-Run `examples/canvas.ogh` in the `client` binary (ctrl+O) for a working
-one; its painter is `demo_dial` in `src/client/client.rs`.
+Run `examples/canvas.ogh` in the previewer (`cargo run -p ogham_preview`
+in `../lorekeeper`, Ctrl+O) for a working one; its painter is `demo_dial`
+in lorekeeper's `ogham_preview/src/main.rs`.
 
 **The painter contract.**
 
