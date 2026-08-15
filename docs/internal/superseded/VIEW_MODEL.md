@@ -1,7 +1,38 @@
 # Ogham — The View Model: Applications, Views, and Instances
 
-> **Status: Proposed.**
+> **Status: SUPERSEDED — built in full, never adopted, code deleted 2026-08.**
 >
+> This design was implemented completely: `src/view/`, 1,106 lines plus
+> 1,273 lines of tests — `Application` / `View` / `Instance`, scope chains
+> with leaf→root resolution, `ChildStack` reconcile-by-key under `Strict`
+> and `Layered` policies, lazy leaf construction that seeds `host_state`
+> before first execution, `catch_unwind` isolation per leaf, and
+> `Fallback`-role error boundaries. It never acquired a single consumer in
+> either downstream repo, and it was deleted rather than left standing as
+> a second, more capable composition model that new code would half-adopt.
+>
+> **Two things overtook it.** The consumer it was modelled on —
+> Untold Lore's host-side `OghamPresence`, cited throughout this document
+> — no longer exists. What replaced it is the in-language `Presence`
+> widget, keyed on a mode string, which does the exit-then-mount
+> single-occupancy that `StackPolicy::Strict` was designed to generalise.
+> That half of the problem was solved one layer *down* rather than one
+> layer up. The remaining half — several separate `Ogham` instances
+> arbitrated by a host — is real, but its live instance is a handful of
+> booleans in one game's client, and an enum fixes it far more cheaply
+> than adopting this model would.
+>
+> **If you are here because you need multi-instance composition:** the
+> design below is sound and was cheap to build (about a week). Rebuild it
+> against the consumer you actually have, rather than restoring code
+> written against one that is gone. `STAGE.md`, the host-side "Stage"
+> orchestrator this document superseded, was never built at all and has
+> been deleted.
+>
+> Everything below is the original document, unedited.
+
+---
+
 > This document specifies Ogham's *composition and embedding* contract:
 > how a host assembles many `.ogh` sources into one running UI, how
 > state flows across them, and what the framework owns versus what the

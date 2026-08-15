@@ -42,7 +42,6 @@ pub mod parser;
 pub mod runtime;
 pub mod scanner;
 pub mod skia;
-pub mod view;
 pub mod widget;
 
 /// Top-level Ogham instance that owns the runtime, widget tree, and
