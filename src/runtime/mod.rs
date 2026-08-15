@@ -183,9 +183,16 @@ impl ImportResolver {
         }
     }
 
-    /// Returns the canonical paths of all modules that were imported.
+    /// Returns the canonical paths of all modules that were imported —
+    /// excluding embedded (in-memory) sources, which have no file behind
+    /// them: a watcher handed one would refuse to start over a path that
+    /// cannot exist.
     pub(crate) fn get_imported_paths(&self) -> Vec<PathBuf> {
-        self.loaded.iter().cloned().collect()
+        self.loaded
+            .iter()
+            .filter(|p| !self.embedded.contains_key(*p))
+            .cloned()
+            .collect()
     }
 }
 
@@ -425,6 +432,73 @@ impl Runtime {
         result
     }
 
+    /// Collect the top-level `let` names each of `module`'s imports
+    /// provides, resolving sources the same way [`Self::execute_import`]
+    /// will (embedded first, then prefix-mapped paths, then the project
+    /// root). Best-effort by design: an import that cannot be resolved or
+    /// parsed here contributes nothing, and the real import reports the
+    /// real error at execution time with its own diagnostics. Direct
+    /// imports only — a fragment's *internal* helpers resolve through the
+    /// environment at call time, not through the importer's compile.
+    fn peek_import_names(&self, module: &Function) -> std::collections::BTreeSet<String> {
+        let mut names = std::collections::BTreeSet::new();
+        for statement in &module.body.statement_list {
+            let crate::parser::Statement::Import(import_stmt) = statement else {
+                continue;
+            };
+            let path_str = import_stmt.get_path();
+            let source = match self.imports.embedded.get(std::path::Path::new(path_str)) {
+                Some(src) => src.clone(),
+                None => {
+                    let Some(project_root) = self.imports.project_root.as_ref() else {
+                        continue;
+                    };
+                    let mut resolved = None;
+                    for (prefix, base) in &self.imports.import_paths {
+                        if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
+                            let rest = rest.strip_prefix('/').unwrap_or(rest);
+                            resolved = Some(base.join(rest));
+                            break;
+                        }
+                    }
+                    let mut resolved = resolved.unwrap_or_else(|| project_root.join(path_str));
+                    if resolved.extension().is_none() {
+                        resolved.set_extension("ogh");
+                    }
+                    match fs::read_to_string(&resolved) {
+                        Ok(src) => src,
+                        Err(_) => continue,
+                    }
+                }
+            };
+            let mut scanner = Scanner::new(source);
+            let tokens = scanner.scan();
+            let mut parser = Parser::new(tokens);
+            let Ok(imported) = parser.parse() else {
+                continue;
+            };
+            let provided: Vec<String> = imported
+                .body
+                .statement_list
+                .iter()
+                .filter_map(|s| match s {
+                    crate::parser::Statement::Declare(d) => Some(d.get_identifier().get()),
+                    _ => None,
+                })
+                .collect();
+            // A named import narrows what arrives in the environment; the
+            // pre-scan narrows with it so the compiler and the runtime
+            // agree on what is in scope.
+            match import_stmt.get_names() {
+                Some(wanted) => {
+                    names.extend(provided.into_iter().filter(|n| wanted.contains(n)))
+                }
+                None => names.extend(provided),
+            }
+        }
+        names
+    }
+
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
         self.state.active_state_paths.clear();
         self.state.call_stack.clear();
@@ -437,7 +511,11 @@ impl Runtime {
         let proto = if let Some(ref cached) = self.compiled_module {
             cached.clone()
         } else {
-            let proto = Compiler::compile_module(module)?;
+            // Pre-scan the module's imports for the names they provide, so
+            // a strict (`host_state {}`) module can reference imported
+            // helpers — the promise the strict-mode diagnostic makes.
+            let import_names = self.peek_import_names(module);
+            let proto = Compiler::compile_module_with_imports(module, import_names)?;
             self.set_compiled_module(proto.clone());
             proto
         };

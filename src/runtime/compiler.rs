@@ -67,6 +67,15 @@ pub struct Compiler {
     /// ownership headaches. `None` means loose mode — the compiler
     /// emits the same bytecode it always has.
     schema: Option<Arc<ModuleSchema>>,
+    /// Top-level names this module's imports provide, pre-scanned by
+    /// the runtime (which alone can resolve import sources) and passed
+    /// into [`Self::compile_module_with_imports`]. Strict-mode
+    /// identifier resolution accepts these — the runtime import copies
+    /// them into the environment, so a strict module referencing an
+    /// imported helper is exactly the promise the strict-mode
+    /// diagnostic makes ("… state, imports, records, and built-ins").
+    /// Empty in loose mode and for callers with nothing to pre-scan.
+    import_values: Arc<std::collections::BTreeSet<String>>,
 }
 
 impl Compiler {
@@ -82,6 +91,7 @@ impl Compiler {
             current_line: 0,
             stack_depth: 0,
             schema: None,
+            import_values: Arc::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -91,6 +101,7 @@ impl Compiler {
     /// resolution applies inside nested closures too.
     fn child(self, name: String, arity: u8) -> Self {
         let schema = self.schema.clone();
+        let import_values = self.import_values.clone();
         Self {
             function: FunctionProto::new(name, arity),
             locals: Vec::new(),
@@ -100,6 +111,7 @@ impl Compiler {
             current_line: 0,
             stack_depth: 0,
             schema,
+            import_values,
         }
     }
 
@@ -128,6 +140,9 @@ impl Compiler {
     /// this), so this only checks the schema-level slots.
     fn is_known_in_schema(&self, name: &str) -> bool {
         if BUILTINS.contains(&name) {
+            return true;
+        }
+        if self.import_values.contains(name) {
             return true;
         }
         let Some(schema) = self.schema.as_ref() else {
@@ -280,6 +295,7 @@ impl Compiler {
             candidates.extend(schema.records.keys().map(|s| s.as_str()));
             candidates.extend(schema.imports.keys().map(|s| s.as_str()));
         }
+        candidates.extend(self.import_values.iter().map(|s| s.as_str()));
         // Locals are also valid candidates but only at the level
         // we're compiling at; including them is best-effort.
         for local in &self.locals {
@@ -586,6 +602,18 @@ impl Compiler {
     /// declared schema. Strict-mode violations surface as
     /// `VMError::StrictMode(SyntaxError)` carrying rich diagnostics.
     pub fn compile_module(module: &Function) -> Result<FunctionProto, VMError> {
+        Self::compile_module_with_imports(module, std::collections::BTreeSet::new())
+    }
+
+    /// [`Self::compile_module`], with the top-level names this module's
+    /// imports provide (pre-scanned by the runtime, which alone can
+    /// resolve import sources). Strict-mode identifier resolution
+    /// accepts them, keeping `host_state {}` modules able to compose
+    /// shared `.ogh` fragments.
+    pub fn compile_module_with_imports(
+        module: &Function,
+        import_values: std::collections::BTreeSet<String>,
+    ) -> Result<FunctionProto, VMError> {
         // Build the module schema first. Loose-mode modules return
         // a schema with `host_state == None`; strict-mode modules
         // return a fully-resolved schema. Either way, the compiler
@@ -593,6 +621,7 @@ impl Compiler {
         let schema = ModuleSchema::from_module(module).map_err(VMError::StrictMode)?;
         let mut compiler = Compiler::new("<module>".to_string(), 0);
         compiler.schema = Some(Arc::new(schema));
+        compiler.import_values = Arc::new(import_values);
         compiler.compile_block(&module.body)?;
 
         // After executing the module body, look up `main` and call it.
