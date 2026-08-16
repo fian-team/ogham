@@ -424,6 +424,20 @@ impl Ogham {
         self.path.as_deref()
     }
 
+    /// The loaded module's resolved schema — its records, its
+    /// `host_state {}`, its declared events and its `screen` blocks.
+    ///
+    /// `None` when no module is loaded, or when the module does not
+    /// resolve; a document that will not compile has a real error waiting
+    /// with real diagnostics, and a host checking its screen ids against a
+    /// route table should not bury that under a second complaint.
+    pub fn module_schema(&self) -> Option<runtime::schema::ModuleSchema> {
+        self.with_runtime_mut(|rt| {
+            let module = rt.get_module()?;
+            runtime::schema::ModuleSchema::from_module(module).ok()
+        })
+    }
+
     /// Set a default font family that will be used by all text widgets
     /// that don't explicitly specify a `font` in their style.
     pub fn set_default_font(&mut self, name: &str) {
