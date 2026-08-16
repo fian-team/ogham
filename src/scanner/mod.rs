@@ -471,12 +471,15 @@ impl Scanner {
             "record" => self.create_token(TokenType::Record),
             "host_state" => self.create_token(TokenType::HostState),
             "events" => self.create_token(TokenType::Events),
-            // `screen` is a keyword; `view` is deliberately not. A screen's
-            // body reads `view { ... }`, recognized contextually inside
-            // `parse_screen_decl` — `view` is too plausible a variable name
-            // to take from every document in every repo. `state` needs no
-            // decision: it is already a keyword.
-            "screen" => self.create_token(TokenType::Screen),
+            // `screen` and `view` are deliberately NOT keywords. Both are
+            // recognized contextually by the parser — `screen` only at
+            // statement start when a string literal follows it, `view` only
+            // inside a screen body. Making `screen` a keyword broke three
+            // shipped documents on the first run: celia has a `screen()`
+            // layout helper and regency a `screen` host-state field, and
+            // both failed as "Expected identifier" pointing at a line that
+            // had not changed in months. `state` needs no decision — it was
+            // already a keyword before any of this.
             "Self" => self.create_token(TokenType::SelfTy),
             _ => self.create_token(TokenType::Identifier(value)),
         }

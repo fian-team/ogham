@@ -263,22 +263,24 @@ impl Parser {
                 }
                 self.parse_events_decl()
             }
-            scanner::TokenType::Screen => {
-                if !allow_import {
-                    let t = current_token.clone();
-                    return Err(SyntaxError::new(
-                        t.line,
-                        t.column,
-                        "`screen` is only allowed at module top level",
-                    )
-                    .with_length(6));
-                }
-                self.parse_screen_decl()
-            }
             scanner::TokenType::If => self.parse_conditional(),
             scanner::TokenType::Return => self.parse_return(),
             scanner::TokenType::Let => self.parse_let(),
             scanner::TokenType::State => self.parse_state(),
+            // `screen "<id>" { … }` is recognized here rather than by the
+            // scanner, because `screen` is far too plausible a name to
+            // take from every document in every repo — celia has a
+            // `screen()` layout helper and regency a `screen` host-state
+            // field, and both are still legal. The declaration is only a
+            // declaration at module top level with a string literal
+            // following, which no other use of the name can look like.
+            scanner::TokenType::Identifier(ref name)
+                if name == "screen"
+                    && allow_import
+                    && matches!(self.peek(), scanner::TokenType::String(_)) =>
+            {
+                self.parse_screen_decl()
+            }
             scanner::TokenType::Identifier(_) => self.parse_identifier_statement(),
             scanner::TokenType::Log => self.parse_log(),
             scanner::TokenType::For => self.parse_for_loop_statement(),
@@ -656,7 +658,9 @@ impl Parser {
     fn parse_screen_decl(&mut self) -> Result<Statement, SyntaxError> {
         use typed_bindings::ScreenDecl;
         let start = self.span_start();
-        self.consume_if(scanner::TokenType::Screen)?;
+        // The caller has already established that this is the contextual
+        // keyword: a top-level `screen` with a string literal after it.
+        self.consume();
 
         let id_start = self.span_start();
         let id_token = self.current().ok_or_else(|| {

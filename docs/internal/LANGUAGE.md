@@ -176,9 +176,22 @@ half of `lorekeeper/docs/ROUTING.md`; the rules that matter here:
 - **`state` is optional; `view` is not.** A screen with no slice reads
   only the root scope, which is common. A screen with no view is an
   error naming the screen.
-- **`state` is a keyword already; `view` is contextual.** Taking `view`
-  from every document in every repo is a cost the feature does not need
-  to impose, so it is matched by text inside `parse_screen_decl`.
+- **Neither `screen` nor `view` is a keyword.** Both are recognized
+  contextually: `screen` only at module top level with a string literal
+  following it, `view` only inside a screen body. `state` needed no
+  decision — it was a keyword before any of this.
+
+  This is not caution, it is a measurement. `screen` *was* a keyword for
+  about an hour, and it broke three shipped documents across the repos
+  on the first full test run: celia has a `screen(width, children)`
+  layout helper, regency a `screen` host-state field. Both failed as
+  `Expected identifier`, pointing at lines that had not changed in
+  months — the same silent-at-a-distance shape as `import` and its
+  friends being unusable as `host_state` keys. **A new keyword in this
+  language costs every document in every repo that already used the
+  word, and the error never says so.** Prefer a contextual form whenever
+  one exists; here the declaration is narrow enough that no other use of
+  either name can be mistaken for it.
 - **Scoping is own-slice-then-root.** A screen's field compiles to the
   host-state key `"<id>::<field>"`, so two screens may both declare
   `rows` and neither can name the other's — a name a screen did not

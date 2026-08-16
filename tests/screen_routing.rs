@@ -272,19 +272,38 @@ let main = fn () { outlet() };
 }
 
 #[test]
-fn a_screen_is_top_level_only() {
+fn a_screen_is_only_a_declaration_at_module_top_level() {
+    // Inside a function body `screen` is an ordinary identifier, so this
+    // is a syntax error rather than a nested declaration — which is the
+    // point: the declaration form is narrow enough that no other use of
+    // the name can be mistaken for it.
     let tokens = Scanner::new(
         r#"let main = fn () { screen "x" { view Text { content: "a" } }; };"#.to_string(),
     )
     .scan();
-    let err = Parser::new(tokens)
-        .parse()
-        .expect_err("a nested screen must not parse");
     assert!(
-        err.message.contains("only allowed at module top level"),
-        "unexpected message: {}",
-        err.message
+        Parser::new(tokens).parse().is_err(),
+        "a nested screen must not parse as a declaration"
     );
+}
+
+#[test]
+fn screen_is_still_usable_as_an_ordinary_name() {
+    // This is not hypothetical. Making `screen` a keyword broke three
+    // shipped documents on the first run across the repos: celia has a
+    // `screen(width, children)` layout helper and regency a `screen`
+    // host-state field, and both failed as "Expected identifier"
+    // pointing at a line that had not changed in months.
+    let mut rt = runtime(
+        r#"
+host_state { screen: string = "" };
+let screen = fn (label: string) { Text { content: "in " + label } };
+screen "world" { view screen("world") };
+let main = fn () { outlet() };
+"#,
+    );
+    rt.set_route_path(&["world"]);
+    assert_eq!(texts(&render(&mut rt)), vec!["in world"]);
 }
 
 // ── the table and the document are checked against each other ──────────
