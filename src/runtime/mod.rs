@@ -498,6 +498,16 @@ impl Runtime {
             // compile time, with real diagnostics. Nothing useful to seed.
             return;
         };
+        if schema.screens.is_empty() {
+            return;
+        }
+        // The path itself is seeded for the same reason the fields are: a
+        // document with screens is executed before any host has injected
+        // one — at load, and by every test that renders without routing —
+        // and an absent path is an empty path, not a failure.
+        self.host_state
+            .entry(compiler::ROUTE_PATH_KEY.to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
         for (id, screen) in &schema.screens {
             for (field, spec) in &screen.state.fields {
                 let key = compiler::scoped_key(id, field);
