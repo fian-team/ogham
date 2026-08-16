@@ -214,8 +214,19 @@ fn schema_literal_value(lit: &schema::SchemaLiteral) -> Value {
 /// Empty, not absent: `""` concatenates, `0` adds, and an empty array
 /// iterates zero times, where `Void` would take the frame down. An
 /// optional is the one case where absent *is* the empty value.
-fn empty_value_of(ty: &schema::TypeRef) -> Value {
+///
+/// A **record** recurses, and that is not a nicety: a screen whose slice
+/// is one nested record — which is the natural shape when a route projects
+/// a view struct — renders `view.pane` on its first frame, and `Void` has
+/// no properties. Getting this wrong looks exactly like a host that forgot
+/// to push, one level down from where the mistake is.
+fn empty_value_of(ty: &schema::TypeRef, schema: &schema::ModuleSchema, depth: u32) -> Value {
     use schema::{PrimType, TypeRef};
+    // A record may hold an optional of itself. Ten levels is far past any
+    // real UI shape and terminates a cycle the schema resolver allows.
+    if depth > 10 {
+        return Value::Void;
+    }
     match ty {
         TypeRef::Primitive(PrimType::Int) => Value::Integer(0),
         TypeRef::Primitive(PrimType::Float) => Value::Float(0.0),
@@ -223,7 +234,23 @@ fn empty_value_of(ty: &schema::TypeRef) -> Value {
         TypeRef::Primitive(PrimType::String) => Value::String(String::new()),
         TypeRef::Array(_) => Value::Array(Vec::new()),
         TypeRef::Map(_, _) => Value::Map(HashMap::new()),
-        TypeRef::Optional(_) | TypeRef::Record(_) | TypeRef::SelfRef => Value::Void,
+        TypeRef::Record(name) => match schema.lookup_record(name) {
+            Some(record) => Value::Map(
+                record
+                    .fields
+                    .iter()
+                    .map(|(field, spec)| {
+                        let value = match &spec.default {
+                            Some(lit) => schema_literal_value(lit),
+                            None => empty_value_of(&spec.ty, schema, depth + 1),
+                        };
+                        (field.clone(), value)
+                    })
+                    .collect(),
+            ),
+            None => Value::Void,
+        },
+        TypeRef::Optional(_) | TypeRef::SelfRef => Value::Void,
     }
 }
 
@@ -498,6 +525,22 @@ impl Runtime {
             // compile time, with real diagnostics. Nothing useful to seed.
             return;
         };
+        // Root-scope fields are seeded too, and for the same reason: a
+        // document must be renderable before its host has pushed
+        // anything. A declared field with a default that is not there to
+        // read is a declaration that does not mean what it says.
+        if let Some(root) = &schema.host_state {
+            for (field, spec) in &root.fields {
+                if self.host_state.contains_key(field) {
+                    continue;
+                }
+                let value = match &spec.default {
+                    Some(lit) => schema_literal_value(lit),
+                    None => empty_value_of(&spec.ty, &schema, 0),
+                };
+                self.host_state.insert(field.clone(), value);
+            }
+        }
         if schema.screens.is_empty() {
             return;
         }
@@ -516,7 +559,7 @@ impl Runtime {
                 }
                 let value = match &spec.default {
                     Some(lit) => schema_literal_value(lit),
-                    None => empty_value_of(&spec.ty),
+                    None => empty_value_of(&spec.ty, &schema, 0),
                 };
                 self.host_state.insert(key, value);
             }
