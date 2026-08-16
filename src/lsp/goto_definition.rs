@@ -162,6 +162,9 @@ fn def_in_statement(
         Statement::RecordDeclaration(_)
         | Statement::HostStateDeclaration(_)
         | Statement::EventsDeclaration(_) => None,
+        // A screen's `view` is code, not metadata, so unlike the three
+        // declarations above it is walked.
+        Statement::ScreenDeclaration(decl) => def_in_expression(&decl.view, line, col, defs),
     }
 }
 

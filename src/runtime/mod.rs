@@ -198,6 +198,35 @@ impl ImportResolver {
 
 /// The Ogham runtime: holds module state, component state, import caches,
 /// and the environment used during execution.
+/// A declared literal default, as a runtime value.
+fn schema_literal_value(lit: &schema::SchemaLiteral) -> Value {
+    match lit {
+        schema::SchemaLiteral::Int(i) => Value::Integer(*i),
+        schema::SchemaLiteral::Float(f) => Value::Float(*f),
+        schema::SchemaLiteral::Bool(b) => Value::Boolean(*b),
+        schema::SchemaLiteral::String(s) => Value::String(s.clone()),
+    }
+}
+
+/// The empty value of a declared type — what a field reads before its
+/// host has pushed anything and no default was written.
+///
+/// Empty, not absent: `""` concatenates, `0` adds, and an empty array
+/// iterates zero times, where `Void` would take the frame down. An
+/// optional is the one case where absent *is* the empty value.
+fn empty_value_of(ty: &schema::TypeRef) -> Value {
+    use schema::{PrimType, TypeRef};
+    match ty {
+        TypeRef::Primitive(PrimType::Int) => Value::Integer(0),
+        TypeRef::Primitive(PrimType::Float) => Value::Float(0.0),
+        TypeRef::Primitive(PrimType::Bool) => Value::Boolean(false),
+        TypeRef::Primitive(PrimType::String) => Value::String(String::new()),
+        TypeRef::Array(_) => Value::Array(Vec::new()),
+        TypeRef::Map(_, _) => Value::Map(HashMap::new()),
+        TypeRef::Optional(_) | TypeRef::Record(_) | TypeRef::SelfRef => Value::Void,
+    }
+}
+
 pub struct Runtime {
     pub(crate) environment: Environment,
     host_state: HashMap<String, Value>,
@@ -341,6 +370,51 @@ impl Runtime {
         self.host_state.clone()
     }
 
+    /// Set one field of one screen's own state slice.
+    ///
+    /// Screens do not share a namespace: `set_screen_state("journal",
+    /// "rows", …)` and `set_screen_state("roster", "rows", …)` are two
+    /// values, and neither screen's view can name the other. Diffs and
+    /// rerender-on-change work exactly as for root-scope state.
+    pub fn set_screen_state(&mut self, screen: &str, name: &str, value: impl IntoHostValue) {
+        self.set_host_state_value(
+            &compiler::scoped_key(screen, name),
+            value.into_host_value(),
+        );
+    }
+
+    /// Set the active route path: screen ids, outermost first.
+    ///
+    /// This is the *visible* chain, not the router's whole path — which
+    /// ids survive occlusion is the host's decision, made before it gets
+    /// here. A document renders these in order, so a deeper route draws
+    /// over a shallower one.
+    ///
+    /// Injecting a path is the only way a screen is ever selected. There
+    /// is no navigation inside a document (`ogham INTENT §10`).
+    pub fn set_route_path<S: AsRef<str>>(&mut self, path: &[S]) {
+        let value = Value::Array(
+            path.iter()
+                .map(|s| Value::String(s.as_ref().to_string()))
+                .collect(),
+        );
+        self.set_host_state_value(compiler::ROUTE_PATH_KEY, value);
+    }
+
+    /// The active route path as last injected.
+    pub fn route_path(&self) -> Vec<String> {
+        match self.host_state.get(compiler::ROUTE_PATH_KEY) {
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Inject multiple host state values at once. Only values that differ
     /// from the currently stored value are inserted, and `request_rerender`
     /// is called automatically if anything changed.
@@ -400,9 +474,43 @@ impl Runtime {
     }
 
     pub fn set_module(&mut self, module: Function) {
+        self.seed_screen_defaults(&module);
         self.module = Some(module);
         // Invalidate cached bytecode so the next execution recompiles.
         self.compiled_module = None;
+    }
+
+    /// Give every declared screen field a value, so that a view can be
+    /// rendered before its host has pushed anything.
+    ///
+    /// A screen's slice is readable from the first frame or the frame is
+    /// not renderable at all: a route that mounts and immediately draws —
+    /// which is every route — would otherwise fail on whichever field the
+    /// host had not got to yet. The declared default wins; failing that, a
+    /// value of the declared shape, which is empty rather than absent.
+    ///
+    /// Never clobbers a value the host has already set, so a hot reload
+    /// carries live state across (`Ogham::reload` restores the snapshot
+    /// before the new module is executed).
+    fn seed_screen_defaults(&mut self, module: &Function) {
+        let Ok(schema) = schema::ModuleSchema::from_module(module) else {
+            // A module that does not resolve has a real error waiting at
+            // compile time, with real diagnostics. Nothing useful to seed.
+            return;
+        };
+        for (id, screen) in &schema.screens {
+            for (field, spec) in &screen.state.fields {
+                let key = compiler::scoped_key(id, field);
+                if self.host_state.contains_key(&key) {
+                    continue;
+                }
+                let value = match &spec.default {
+                    Some(lit) => schema_literal_value(lit),
+                    None => empty_value_of(&spec.ty),
+                };
+                self.host_state.insert(key, value);
+            }
+        }
     }
 
     pub fn get_module(&self) -> Option<&Function> {

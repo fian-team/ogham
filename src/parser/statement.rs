@@ -1,4 +1,4 @@
-use super::typed_bindings::{EventsDecl, HostStateDecl, RecordDecl};
+use super::typed_bindings::{EventsDecl, HostStateDecl, RecordDecl, ScreenDecl};
 use super::{block::*, expression::*, identifier::*, span::Span};
 
 #[derive(PartialEq, Clone, Debug)]
@@ -18,6 +18,8 @@ pub enum Statement {
     HostStateDeclaration(HostStateDecl),
     /// `events { ... };` — top-level only, at most one per module.
     EventsDeclaration(EventsDecl),
+    /// `screen "<id>" { ... };` — top-level only, ids unique per module.
+    ScreenDeclaration(ScreenDecl),
 }
 
 impl Statement {
@@ -103,6 +105,7 @@ impl Statement {
             Statement::RecordDeclaration(s) => s.span,
             Statement::HostStateDeclaration(s) => s.span,
             Statement::EventsDeclaration(s) => s.span,
+            Statement::ScreenDeclaration(s) => s.span,
         }
     }
 }

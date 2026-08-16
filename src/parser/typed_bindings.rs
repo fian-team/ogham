@@ -15,6 +15,9 @@
 //! RecordDecl    ::= 'record' Ident '{' FieldList '}' ';'
 //! HostStateDecl ::= 'host_state' '{' FieldList '}' ';'
 //! EventsDecl    ::= 'events' '{' EventList '}' ';'
+//! ScreenDecl    ::= 'screen' String '{' StateBlock? ViewBlock '}' ';'
+//! StateBlock    ::= 'state' '{' FieldList '}'
+//! ViewBlock     ::= 'view' Expression
 //!
 //! FieldList     ::= (FieldDecl (',' FieldDecl)* ','?)?
 //! FieldDecl     ::= Ident ':' TypeRef ('=' Literal)?
@@ -125,6 +128,26 @@ pub struct HostStateDecl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventsDecl {
     pub events: Vec<EventSigDecl>,
+    pub span: Span,
+}
+
+/// A `screen "<id>" { state { ... } view <expr> };` declaration.
+///
+/// One routable surface. The `id` is what a host's route table names —
+/// **not** a path — so a screen reachable from two places is still one
+/// declaration and one state slice. `state` is the slice this screen
+/// alone reads; the module's `host_state {}` stays visible from inside
+/// it, and nothing else is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScreenDecl {
+    pub id: String,
+    /// Span of the id literal alone, so a duplicate-id or unknown-id
+    /// diagnostic underlines the name rather than the whole block.
+    pub id_span: Span,
+    /// Empty when the screen declares no `state {}` block — a screen
+    /// that reads only the root scope is legal and common.
+    pub state: Vec<FieldDecl>,
+    pub view: crate::parser::Expression,
     pub span: Span,
 }
 

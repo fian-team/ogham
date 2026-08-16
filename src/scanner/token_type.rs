@@ -62,6 +62,10 @@ pub enum TokenType {
     /// `events` — declares the event signatures the module
     /// emits via `event(...)`.
     Events,
+    /// `screen` — declares one routable surface: an id, the slice of
+    /// host state that only this surface reads, and the view it
+    /// renders. The host owns the path; a screen never navigates.
+    Screen,
     /// `Self` — refers to the enclosing record type from inside
     /// its own field declarations. Legal only there.
     SelfTy,

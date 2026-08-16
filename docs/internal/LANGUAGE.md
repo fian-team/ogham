@@ -149,11 +149,55 @@ Statements are dispatched by the leading token in
 | `record`      | `RecordDeclaration` (top-level only, Phase 1) |
 | `host_state`  | `HostStateDeclaration` (top-level only, ≤1 per module) |
 | `events`      | `EventsDeclaration` (top-level only, ≤1 per module) |
+| `screen`      | `ScreenDeclaration` (top-level only, ids unique) — see below |
 | `on_mount`    | `OnMount` lifecycle hook (fn-body only, Phase 2)   |
 | `on_unmount`  | `OnUnmount` lifecycle hook (fn-body only, Phase 2) |
 | `effect`      | `Effect` lifecycle hook (fn-body only, Phase 2)    |
 | `cleanup`     | `Cleanup` (effect-body only, Phase 2)              |
 | (anything else) | `ExpressionStatement` via `expression()` |
+
+### `screen` — routable surfaces
+
+```
+screen "world" {
+  state { rows: array<Row>, composing: string = "" }
+  view world_panel()
+};
+```
+
+A `screen` declares **one routable surface**: an id, the slice of host
+state that surface alone reads, and the view it renders. It is the ogham
+half of `lorekeeper/docs/ROUTING.md`; the rules that matter here:
+
+- **The id is a route id, not an identifier.** `"map-edit"` is legal and
+  would scan as three tokens if screens were named after it — so the
+  compiler names each screen's closure `__ogh_screen_<index>` by its
+  position in the (sorted) schema map.
+- **`state` is optional; `view` is not.** A screen with no slice reads
+  only the root scope, which is common. A screen with no view is an
+  error naming the screen.
+- **`state` is a keyword already; `view` is contextual.** Taking `view`
+  from every document in every repo is a cost the feature does not need
+  to impose, so it is matched by text inside `parse_screen_decl`.
+- **Scoping is own-slice-then-root.** A screen's field compiles to the
+  host-state key `"<id>::<field>"`, so two screens may both declare
+  `rows` and neither can name the other's — a name a screen did not
+  declare falls through to `host_state {}` as it always did.
+- **`outlet` renders the injected path.** The host sets
+  `__route_path` (an array of ids, outermost first) through
+  `Runtime::set_route_path`, and `outlet()` renders those screens in
+  order. It is forward-declared before the module body and assigned
+  after it, because `main` is written last and the dispatcher it calls
+  can only be built once every screen's closure exists — a module-level
+  slot stays an open upvalue for the whole module frame, so `main` reads
+  the real dispatcher when it finally runs.
+- **A document never navigates.** There is no way to *set* the path from
+  inside ogham, and that is `INTENT §10` holding rather than an
+  omission.
+
+Screen fields are seeded with their declared default (or an empty value
+of the declared type) when the module is set, so a route that mounts and
+immediately draws cannot fail on a field the host has not pushed yet.
 
 `parse_identifier_statement` peeks one token to decide:
 - `Identifier (` → call → expression statement

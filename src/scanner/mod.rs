@@ -471,6 +471,12 @@ impl Scanner {
             "record" => self.create_token(TokenType::Record),
             "host_state" => self.create_token(TokenType::HostState),
             "events" => self.create_token(TokenType::Events),
+            // `screen` is a keyword; `view` is deliberately not. A screen's
+            // body reads `view { ... }`, recognized contextually inside
+            // `parse_screen_decl` — `view` is too plausible a variable name
+            // to take from every document in every repo. `state` needs no
+            // decision: it is already a keyword.
+            "screen" => self.create_token(TokenType::Screen),
             "Self" => self.create_token(TokenType::SelfTy),
             _ => self.create_token(TokenType::Identifier(value)),
         }

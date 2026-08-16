@@ -142,12 +142,28 @@ impl Parser {
     }
 
     /// Enforce one-per-module uniqueness for `host_state {}` and
-    /// `events {}`. Multiple `record` declarations are allowed.
+    /// `events {}`, and per-id uniqueness for `screen`. Multiple
+    /// `record` declarations are allowed.
     fn check_unique_top_level_decls(block: &Block) -> Result<(), SyntaxError> {
         let mut host_state_seen = false;
         let mut events_seen = false;
+        let mut screen_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for stmt in &block.statement_list {
             match stmt {
+                Statement::ScreenDeclaration(decl) => {
+                    if !screen_ids.insert(decl.id.clone()) {
+                        return Err(SyntaxError::new(
+                            decl.id_span.start_line,
+                            decl.id_span.start_column,
+                            &format!("duplicate screen id `{}`", decl.id),
+                        )
+                        .with_length(decl.id.len() + 2)
+                        .with_note(
+                            "a screen id names one surface; a surface reachable from \
+                             several places is still one screen",
+                        ));
+                    }
+                }
                 Statement::HostStateDeclaration(decl) => {
                     if host_state_seen {
                         return Err(SyntaxError::new(
@@ -246,6 +262,18 @@ impl Parser {
                     .with_length(6));
                 }
                 self.parse_events_decl()
+            }
+            scanner::TokenType::Screen => {
+                if !allow_import {
+                    let t = current_token.clone();
+                    return Err(SyntaxError::new(
+                        t.line,
+                        t.column,
+                        "`screen` is only allowed at module top level",
+                    )
+                    .with_length(6));
+                }
+                self.parse_screen_decl()
             }
             scanner::TokenType::If => self.parse_conditional(),
             scanner::TokenType::Return => self.parse_return(),
@@ -614,6 +642,88 @@ impl Parser {
         self.consume_if(scanner::TokenType::Semicolon)?;
         let span = self.span_from(start);
         Ok(Statement::EventsDeclaration(EventsDecl { events, span }))
+    }
+
+    /// Parse `screen "<id>" { state { FieldList } view <expr> };`.
+    ///
+    /// The `state` block is optional — a screen that reads only the root
+    /// scope declares none. `view` is required and is the whole point of
+    /// the declaration, so its absence is an error naming the screen.
+    ///
+    /// `state` is already a keyword; `view` is matched as a contextual
+    /// identifier so that documents using `view` as a variable name keep
+    /// compiling (see the scanner's note).
+    fn parse_screen_decl(&mut self) -> Result<Statement, SyntaxError> {
+        use typed_bindings::ScreenDecl;
+        let start = self.span_start();
+        self.consume_if(scanner::TokenType::Screen)?;
+
+        let id_start = self.span_start();
+        let id_token = self.current().ok_or_else(|| {
+            SyntaxError::new(0, 0, "unexpected end of input after `screen`")
+        })?;
+        let scanner::TokenType::String(id) = id_token.token_type.clone() else {
+            return Err(SyntaxError::new(
+                id_token.line,
+                id_token.column,
+                "expected a screen id string after `screen`",
+            )
+            .with_note("a screen is declared as `screen \"world\" { ... };`"));
+        };
+        self.consume();
+        let id_span = self.span_from(id_start);
+        if id.is_empty() {
+            return Err(SyntaxError::new(
+                id_span.start_line,
+                id_span.start_column,
+                "a screen id may not be empty",
+            )
+            .with_length(2));
+        }
+
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+
+        let mut state: Vec<typed_bindings::FieldDecl> = Vec::new();
+        if self.next_is(vec![scanner::TokenType::State]) {
+            self.consume();
+            self.consume_if(scanner::TokenType::LeftBracket)?;
+            state = self.parse_field_list(false)?;
+            self.consume_if(scanner::TokenType::RightBracket)?;
+        }
+
+        // `view` is contextual: match the identifier by text.
+        let view_token = self
+            .current()
+            .ok_or_else(|| SyntaxError::new(0, 0, "unexpected end of input inside `screen`"))?;
+        let is_view = matches!(
+            &view_token.token_type,
+            scanner::TokenType::Identifier(name) if name == "view"
+        );
+        if !is_view {
+            return Err(SyntaxError::new(
+                view_token.line,
+                view_token.column,
+                format!("screen `{}` declares no `view`", id),
+            )
+            .with_length(4)
+            .with_note(
+                "every screen renders something: `view <expression>` follows \
+                 the optional `state { ... }` block",
+            ));
+        }
+        self.consume();
+        let view = self.expression()?;
+
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        self.consume_if(scanner::TokenType::Semicolon)?;
+        let span = self.span_from(start);
+        Ok(Statement::ScreenDeclaration(ScreenDecl {
+            id,
+            id_span,
+            state,
+            view,
+            span,
+        }))
     }
 
     /// Parse a field list shared by `record` and `host_state` blocks:

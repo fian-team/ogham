@@ -65,6 +65,22 @@ pub struct ModuleSchema {
     /// scope: aliasing is not yet wired through the import grammar;
     /// names match the source module's declarations.
     pub imports: BTreeMap<String, RecordSchema>,
+    /// Screens declared by this module, keyed by id. Each carries the
+    /// slice of host state that screen alone reads; the module's
+    /// `host_state {}` remains readable from every screen and is the
+    /// only scope they share.
+    pub screens: BTreeMap<String, ScreenSchema>,
+}
+
+/// One declared `screen`, resolved.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScreenSchema {
+    /// The screen's own host-state slice. Reads of these names inside
+    /// this screen's view compile to the namespaced key
+    /// `"<id>::<field>"`, which is what keeps two screens' identically
+    /// named fields apart.
+    pub state: RecordSchema,
+    pub decl_span: Option<Span>,
 }
 
 /// A resolved record: ordered by field name.
@@ -122,6 +138,49 @@ impl ModuleSchema {
         self.records.get(name).or_else(|| self.imports.get(name))
     }
 
+    /// The ids this module declares a `screen` for, in sorted order.
+    pub fn screen_ids(&self) -> Vec<&str> {
+        self.screens.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Check this module's screens against the ids a host's route table
+    /// registered. A registered id with no `screen` block, or a block
+    /// with no registered id, is an error naming both — the drift that
+    /// is silent today, where a `.ogh` accumulates modes nobody routes
+    /// to and a router names modes nobody drew.
+    ///
+    /// Called once at load. A module that declares no screens at all is
+    /// vacuously fine: it is a document that predates routing, or one
+    /// that a host mounts whole.
+    pub fn validate_screens(&self, registered: &[&str]) -> Result<(), String> {
+        if self.screens.is_empty() {
+            return Ok(());
+        }
+        let declared: std::collections::BTreeSet<&str> = self.screen_ids().into_iter().collect();
+        let registered: std::collections::BTreeSet<&str> = registered.iter().copied().collect();
+
+        let undrawn: Vec<&str> = registered.difference(&declared).copied().collect();
+        let unrouted: Vec<&str> = declared.difference(&registered).copied().collect();
+        if undrawn.is_empty() && unrouted.is_empty() {
+            return Ok(());
+        }
+
+        let mut msg = String::from("the route table and this document disagree about screens");
+        if !undrawn.is_empty() {
+            msg.push_str(&format!(
+                "\n  registered with no `screen` block: {}",
+                undrawn.join(", ")
+            ));
+        }
+        if !unrouted.is_empty() {
+            msg.push_str(&format!(
+                "\n  declared but not registered: {}",
+                unrouted.join(", ")
+            ));
+        }
+        Err(msg)
+    }
+
     /// Build a schema from a parsed module. Walks the top-level
     /// statement list, collects declarations, and runs the
     /// two-pass resolver. Returns either a complete schema or a
@@ -150,9 +209,26 @@ impl ModuleSchema {
         let mut host_state: Option<RecordSchema> = None;
         let mut events: BTreeMap<String, EventSig> = BTreeMap::new();
         let mut record_decl_order: Vec<RecordDecl> = Vec::new();
+        let mut screens: BTreeMap<String, ScreenSchema> = BTreeMap::new();
 
         for stmt in &module.body.statement_list {
             match stmt {
+                Statement::ScreenDeclaration(decl) => {
+                    // Id uniqueness is the parser's; here we just convert.
+                    screens.insert(
+                        decl.id.clone(),
+                        ScreenSchema {
+                            state: RecordSchema {
+                                fields: collect_fields(
+                                    &decl.state,
+                                    &format!("screen \"{}\"", decl.id),
+                                )?,
+                                decl_span: Some(decl.span),
+                            },
+                            decl_span: Some(decl.span),
+                        },
+                    );
+                }
                 Statement::RecordDeclaration(decl) => {
                     if records.contains_key(&decl.name) {
                         return Err(SyntaxError::new(
@@ -184,6 +260,7 @@ impl ModuleSchema {
             host_state,
             events,
             imports: imports.clone(),
+            screens,
         };
 
         // -----------------------------------------------------------------
@@ -208,6 +285,11 @@ impl ModuleSchema {
         for (_, sig) in &schema.events {
             for ty in &sig.args {
                 resolve_type_ref(ty, None, &schema, sig.decl_span)?;
+            }
+        }
+        for (_, screen) in &schema.screens {
+            for (_, field) in &screen.state.fields {
+                resolve_type_ref(&field.ty, None, &schema, field.decl_span)?;
             }
         }
 

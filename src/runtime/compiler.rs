@@ -18,6 +18,86 @@ use crate::runtime::value::Value;
 /// can read the same list.
 pub(crate) const BUILTINS: &[&str] = &["event", "use_context", "rgb", "rgba", "true", "false"];
 
+/// Host-state key carrying the active route path: an array of screen ids,
+/// outermost first. The host owns it; a document reads it only through
+/// `outlet`, never by name (`ogham INTENT §10` — ogham never navigates
+/// itself).
+pub const ROUTE_PATH_KEY: &str = "__route_path";
+
+/// The module-level local a screen's view compiles to.
+///
+/// Named by *index* rather than by id, because a screen id is a route id
+/// and route ids are not ogham identifiers — `map-edit` would scan as
+/// three tokens. The index is the screen's position in the schema's
+/// (sorted) map, so it is stable across the two places that compute it.
+fn screen_fn_name(index: usize) -> String {
+    format!("__ogh_screen_{}", index)
+}
+
+/// The host-state key a screen's own `state` field reads.
+///
+/// `"<id>::<field>"`. Two screens may both declare `rows`; this is why
+/// neither can see the other's.
+pub fn scoped_key(id: &str, field: &str) -> String {
+    format!("{}::{}", id, field)
+}
+
+/// The placeholder `outlet`, compiled before the module body so that a
+/// `main` written above the dispatcher still resolves the name.
+const OUTLET_FORWARD_DECL: &str = "let outlet = fn () { Flex { style: {} } };";
+
+/// Source for the real dispatcher, built from the module's screen ids.
+///
+/// Generated rather than hand-emitted because the alternative is a lot of
+/// bytecode for a for-loop and a match, and because generating it means
+/// the feature is expressed in the language it extends — if this source
+/// does not compile, the language cannot express routing and that is worth
+/// finding out loudly.
+///
+/// The stack is rendered outermost-first, so a deeper route draws over a
+/// shallower one. Which ids are *in* the path is the host's decision
+/// (occlusion is the router's, not the document's).
+fn outlet_source(screen_ids: &[String]) -> String {
+    let arms: String = screen_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| format!("    {:?} => {}(),\n", id, screen_fn_name(i)))
+        .collect();
+    format!(
+        "let __ogh_dispatch = fn (__ogh_id: string) {{
+  match __ogh_id {{
+{arms}    _ => Flex {{ style: {{}} }},
+  }}
+}};
+outlet = fn () {{
+  Flex {{
+    style: {{ width: \"grow\", height: \"grow\" }},
+    block_interactions: false,
+    children: for (__ogh_i in 0..{path}.length()) {{
+      __ogh_dispatch({path}[__ogh_i])
+    }},
+  }}
+}};",
+        arms = arms,
+        path = ROUTE_PATH_KEY,
+    )
+}
+
+/// Scan and parse a synthesized snippet into top-level statements.
+///
+/// A failure here is a compiler bug, not a user error, so it surfaces as
+/// an `InvalidOperation` naming the snippet rather than as a syntax error
+/// pointing at a line the author never wrote.
+fn parse_synthetic(src: &str) -> Result<Vec<Statement>, VMError> {
+    let tokens = crate::scanner::Scanner::new(src.to_string()).scan();
+    let module = crate::parser::Parser::new(tokens).parse().map_err(|e| {
+        VMError::InvalidOperation(format!(
+            "internal: synthesized routing source failed to parse ({e:?}); source was:\n{src}"
+        ))
+    })?;
+    Ok(module.body.statement_list)
+}
+
 /// Render a `Vec<TypeRef>` for display in event-signature
 /// diagnostics. e.g. `[Int, String]` → `"int, string"`.
 fn type_args_for_display(args: &[crate::parser::typed_bindings::TypeRef]) -> String {
@@ -76,6 +156,17 @@ pub struct Compiler {
     /// diagnostic makes ("… state, imports, records, and built-ins").
     /// Empty in loose mode and for callers with nothing to pre-scan.
     import_values: Arc<std::collections::BTreeSet<String>>,
+    /// The id of the `screen` whose view is currently being compiled, if
+    /// any. Inherited by child compilers, because a view's helpers are
+    /// nested `fn`s and a screen's slice must be readable from inside
+    /// them.
+    ///
+    /// This is the whole of scoped host state at compile time: a name
+    /// that is one of this screen's `state` fields is emitted as the
+    /// namespaced key `"<id>::<field>"`, so two screens may both declare
+    /// `rows` and neither can see the other's. A name that is not
+    /// resolves as it always did — to the module's `host_state {}`.
+    current_screen: Option<String>,
 }
 
 impl Compiler {
@@ -92,6 +183,7 @@ impl Compiler {
             stack_depth: 0,
             schema: None,
             import_values: Arc::new(std::collections::BTreeSet::new()),
+            current_screen: None,
         }
     }
 
@@ -102,6 +194,7 @@ impl Compiler {
     fn child(self, name: String, arity: u8) -> Self {
         let schema = self.schema.clone();
         let import_values = self.import_values.clone();
+        let current_screen = self.current_screen.clone();
         Self {
             function: FunctionProto::new(name, arity),
             locals: Vec::new(),
@@ -112,6 +205,7 @@ impl Compiler {
             stack_depth: 0,
             schema,
             import_values,
+            current_screen,
         }
     }
 
@@ -148,6 +242,12 @@ impl Compiler {
         let Some(schema) = self.schema.as_ref() else {
             return false;
         };
+        if name == ROUTE_PATH_KEY {
+            return true;
+        }
+        if self.screen_field(name).is_some() {
+            return true;
+        }
         if let Some(hs) = &schema.host_state {
             if hs.fields.contains_key(name) {
                 return true;
@@ -157,6 +257,26 @@ impl Compiler {
             return true;
         }
         false
+    }
+
+    /// If `name` is a `state` field of the screen currently being
+    /// compiled, the namespaced host-state key it reads.
+    ///
+    /// Returning `None` for a name outside any screen — or for a name a
+    /// screen did not declare — is what makes the scoping work in both
+    /// directions: the field falls through to the module's
+    /// `host_state {}`, and a screen's private field is simply not a
+    /// name anywhere else, so it fails strict resolution rather than
+    /// silently reading a neighbour's value.
+    fn screen_field(&self, name: &str) -> Option<String> {
+        let id = self.current_screen.as_ref()?;
+        let schema = self.schema.as_ref()?;
+        let screen = schema.screens.get(id.as_str())?;
+        screen
+            .state
+            .fields
+            .contains_key(name)
+            .then(|| scoped_key(id, name))
     }
 
     /// Build a strict-mode "unknown identifier" diagnostic, with a
@@ -619,10 +739,31 @@ impl Compiler {
         // return a fully-resolved schema. Either way, the compiler
         // attaches it so identifier resolution can consult it.
         let schema = ModuleSchema::from_module(module).map_err(VMError::StrictMode)?;
+        let screen_ids: Vec<String> = schema.screens.keys().cloned().collect();
         let mut compiler = Compiler::new("<module>".to_string(), 0);
         compiler.schema = Some(Arc::new(schema));
         compiler.import_values = Arc::new(import_values);
+
+        // `outlet` is forward-declared, because `main` is written last and
+        // the dispatcher it calls can only be built once every screen's
+        // closure exists. A module-level slot stays an *open* upvalue for
+        // the whole module frame, so `main` captures the slot and reads
+        // whatever is in it when it finally runs — which is the real
+        // dispatcher, assigned below.
+        if !screen_ids.is_empty() {
+            for stmt in &parse_synthetic(OUTLET_FORWARD_DECL)? {
+                compiler.compile_statement(stmt, false)?;
+            }
+        }
+
         compiler.compile_block(&module.body)?;
+
+        if !screen_ids.is_empty() {
+            let src = outlet_source(&screen_ids);
+            for stmt in &parse_synthetic(&src)? {
+                compiler.compile_statement(stmt, false)?;
+            }
+        }
 
         // After executing the module body, look up `main` and call it.
         // We emit this as: GetLocal/GetUpvalue for "main", Call(0), Return.
@@ -826,6 +967,49 @@ impl Compiler {
             | Statement::HostStateDeclaration(_)
             | Statement::EventsDeclaration(_) => {
                 // Intentionally empty.
+            }
+            // A `screen` is not pure metadata: its `view` is code. It
+            // compiles to an ordinary zero-arg module-level closure
+            // named `__screen__<id>`, which the synthesized dispatcher
+            // (see `compile_module_with_imports`) calls by id. The only
+            // thing that makes it different from a hand-written `let`
+            // is `current_screen`, which is what puts the screen's own
+            // `state` fields in scope for the body and nothing else.
+            Statement::ScreenDeclaration(decl) => {
+                let index = self
+                    .schema
+                    .as_ref()
+                    .and_then(|s| s.screens.keys().position(|k| k == &decl.id))
+                    .ok_or_else(|| {
+                        VMError::InvalidOperation(format!(
+                            "screen `{}` is not in the module schema",
+                            decl.id
+                        ))
+                    })?;
+                let func = Function {
+                    arguments: Vec::new(),
+                    return_type: crate::parser::Identifier::synthetic("infer"),
+                    body: Block {
+                        // A `Return`, not an expression statement: a
+                        // function body's trailing value reaches its caller
+                        // only through one, because `finish_child` appends
+                        // `Void; Return` and would otherwise bury it. This
+                        // is what the parser does for every hand-written
+                        // `fn` whose last expression has no semicolon.
+                        statement_list: vec![Statement::new_return(
+                            Some(decl.view.clone()),
+                            decl.span,
+                        )],
+                        span: decl.span,
+                    },
+                    span: decl.span,
+                };
+                let name = screen_fn_name(index);
+                let outer = self.current_screen.replace(decl.id.clone());
+                let result = self.compile_function(&func, &name);
+                self.current_screen = outer;
+                result?;
+                self.add_local(name, false);
             }
         }
         Ok(())
@@ -1287,7 +1471,15 @@ impl Compiler {
                     );
                     return Err(VMError::StrictMode(err));
                 }
-                // 4. Loose mode (or strict-mode known identifier):
+                // 4. A `state` field of the screen we are inside reads
+                //    its namespaced key. This is the whole of scoped
+                //    host state: two screens may both declare `rows`,
+                //    and neither can name the other's.
+                let name = match self.screen_field(&name) {
+                    Some(scoped) => scoped,
+                    None => name,
+                };
+                // 5. Loose mode (or strict-mode known identifier):
                 //    emit GetState which falls through to host-state
                 //    in the VM. We cannot distinguish state from
                 //    host-state at compile time because state depends
