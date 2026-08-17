@@ -424,6 +424,20 @@ impl Ogham {
         self.path.as_deref()
     }
 
+    /// The font families registered on this instance, in registration
+    /// order.
+    ///
+    /// A document names a family and ogham falls back to a system face
+    /// for one it does not know — silently, because a missing font is not
+    /// an error. So "the typefaces are registered" is a thing a host has
+    /// to be able to assert, and it could not.
+    pub fn registered_font_families(&self) -> Vec<String> {
+        self.registered_typefaces
+            .iter()
+            .map(|(family, _)| family.clone())
+            .collect()
+    }
+
     /// The loaded module's resolved schema — its records, its
     /// `host_state {}`, its declared events and its `screen` blocks.
     ///

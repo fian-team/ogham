@@ -413,3 +413,20 @@ tests.
   widget literal, and assignment by single-token lookahead. If
   an `Identifier { ... }` ever needs a different meaning, the
   whole shape needs revisiting.
+
+### `for` in an array literal does not splice
+
+```
+children: for (i in 0..rows.length()) { row(rows[i]) }   // n children
+children: [ header(), for (i in 0..rows.length()) { … } ] // ONE child
+```
+
+The first form is the whole `children` value and expands to one child per
+iteration. The second puts the loop *inside* an array literal, where it is
+a single element — and one that renders as nothing, so a list simply does
+not appear while everything around it does.
+
+Nothing warns. Ashworth Manor's pause overlay drew its heading and none of
+its rows for exactly this reason, and the route projecting them was
+verified correct first. Put the loop in its own container when it needs
+siblings.
