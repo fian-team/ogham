@@ -39,6 +39,7 @@ pub use skia_safe;
 mod file_watcher;
 mod macros;
 pub mod parser;
+pub mod route;
 pub mod runtime;
 pub mod scanner;
 pub mod skia;

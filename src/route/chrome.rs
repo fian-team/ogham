@@ -1,0 +1,178 @@
+//! One ogham instance, one projection, one reload-failure surface.
+//!
+//! Three games hand-rolled this wrapper — `untold_lore::chrome::Chrome`,
+//! `regency::chrome::Chrome`, `celia::chrome::Chrome` — and the three
+//! converged on the same shape except where they diverged by accident:
+//! each handles a `.ogh` that stops compiling differently, so the same
+//! mistake fails three ways depending on which game you were in. This
+//! crate owns it, which means a route bringing another crate's document
+//! (`Route::own_ui`) fails the same way as the shared one.
+//!
+//! What it adds over a bare `Ogham`: the route path and each active
+//! route's state slice go in as *scoped* host state, so a screen block
+//! reads its own fields and the root scope and nothing else.
+
+use std::collections::HashMap;
+
+use crate::runtime::value::Value;
+use crate::Ogham;
+
+use crate::route::RouteId;
+
+/// A mounted ogham document plus the projection that feeds it.
+pub struct Chrome {
+    ui: Ogham,
+    /// The last values pushed, per key, so a frame that changes nothing
+    /// pushes nothing. Per-key rather than whole-struct, which is what
+    /// makes per-route projection cheaper than the union-struct compare
+    /// it replaces rather than merely tidier.
+    last: HashMap<String, Value>,
+    /// Set when the document failed to reload, cleared when it compiles
+    /// again. Reported by the host once rather than per frame — the whole
+    /// reason this is here and not in three places.
+    error: Option<String>,
+}
+
+impl Chrome {
+    pub fn new(ui: Ogham) -> Self {
+        Self {
+            ui,
+            last: HashMap::new(),
+            error: None,
+        }
+    }
+
+    /// A chrome standing in for a document that could not be loaded.
+    ///
+    /// The blank fallback *compiles*, so without this the error is
+    /// invisible: `error()` reports frame failures, and a document that
+    /// never loaded never fails a frame. A game asking "did my document
+    /// load?" would be told yes.
+    pub fn failed(ui: Ogham, why: String) -> Self {
+        eprintln!("route: the document could not be loaded: {why}");
+        Self {
+            ui,
+            last: HashMap::new(),
+            error: Some(why),
+        }
+    }
+
+    pub fn ui(&self) -> &Ogham {
+        &self.ui
+    }
+
+    pub fn ui_mut(&mut self) -> &mut Ogham {
+        &mut self.ui
+    }
+
+    /// The reload error, if the document is currently broken.
+    ///
+    /// A `.ogh` that stops compiling must *say so*. The failure mode this
+    /// exists to prevent is a blank screen that reads as a hang, which is
+    /// what two of the three hand-rolled wrappers produced.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Check the document's ids against a route table's, once at load.
+    ///
+    /// A registered id with no `screen` block, or a block nobody routes
+    /// to, is an error naming both (axiom 11). `untold_lore`'s
+    /// `host_state` comment listed 13 modes against 16 real ones; that
+    /// drift was silent, and this is what makes it impossible.
+    pub fn validate_against(&mut self, ids: &[RouteId]) -> Result<(), String> {
+        let Some(schema) = self.ui.module_schema() else {
+            // A document that will not compile has a real error waiting
+            // with real diagnostics; do not bury it under a second one.
+            return Ok(());
+        };
+        schema.validate_screens(ids)
+    }
+
+    /// Check the document's declared events against the names this host
+    /// registered handlers for.
+    ///
+    /// The other end of the same wire as
+    /// [`validate_against`](Self::validate_against): a declared raise with
+    /// no handler is a button that draws, clicks and reaches nobody. That
+    /// is not hypothetical — celia's Back button was exactly this, a
+    /// `back()` in the document's `events {}` block with no matching entry
+    /// in the host's list, and nothing anywhere said so.
+    pub fn validate_raises(&mut self, registered: &[&str]) -> Result<(), String> {
+        let Some(schema) = self.ui.module_schema() else {
+            return Ok(());
+        };
+        schema.validate_events(registered)
+    }
+
+    /// Push the active path. The document renders these screens in order,
+    /// so a deeper route draws over a shallower one.
+    pub fn set_path(&mut self, path: &[RouteId]) {
+        self.ui.with_runtime_mut(|rt| rt.set_route_path(path));
+    }
+
+    /// Push one route's state slice into its own scope.
+    ///
+    /// Only changed keys reach the runtime, so an idle frame costs a
+    /// compare and nothing else.
+    pub fn project_route(&mut self, id: RouteId, fields: Option<HashMap<String, Value>>) {
+        let Some(fields) = fields else {
+            return;
+        };
+        self.project_fields(id, fields);
+    }
+
+    /// [`project_route`](Self::project_route) with the walk already run —
+    /// what a host uses when it must end its borrow of the route before it
+    /// can borrow the chrome.
+    pub fn project_fields(&mut self, id: RouteId, fields: HashMap<String, Value>) {
+        for (name, value) in fields {
+            let key = format!("{id}::{name}");
+            if self.last.get(&key) == Some(&value) {
+                continue;
+            }
+            self.last.insert(key.clone(), value.clone());
+            self.ui
+                .with_runtime_mut(|rt| rt.inject_host_state(key, value));
+        }
+    }
+
+    /// Push a root-scope value — chrome-global and session-global keys,
+    /// the measured remainder that does not partition per route
+    /// (`ROUTING.md` §5).
+    pub fn project_root(&mut self, name: &str, value: Value) {
+        if self.last.get(name) == Some(&value) {
+            return;
+        }
+        self.last.insert(name.to_string(), value.clone());
+        self.ui
+            .with_runtime_mut(|rt| rt.inject_host_state(name.to_string(), value));
+    }
+
+    /// Advance the document a frame, recording a reload failure rather
+    /// than dropping it.
+    pub fn frame(&mut self, width: f32, height: f32, dt: f32) {
+        match self.ui.frame(width, height, dt) {
+            // A document that never loaded keeps its error: a blank
+            // fallback frames perfectly and would otherwise clear it.
+            Ok(_) => {}
+            Err(e) => {
+                let msg = format!("{e:?}");
+                if self.error.as_deref() != Some(msg.as_str()) {
+                    eprintln!("route: the mounted document failed: {msg}");
+                }
+                self.error = Some(msg);
+            }
+        }
+    }
+
+    /// Drop the projection cache.
+    ///
+    /// A hot reload replaces the runtime, so every key has to be pushed
+    /// again — a cache that survives it would leave the fresh document
+    /// holding the config's initial values for everything that happened
+    /// not to change this frame.
+    pub fn forget_projection(&mut self) {
+        self.last.clear();
+    }
+}
