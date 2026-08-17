@@ -24,6 +24,13 @@ pub(crate) const BUILTINS: &[&str] = &["event", "use_context", "rgb", "rgba", "t
 /// itself).
 pub const ROUTE_PATH_KEY: &str = "__route_path";
 
+/// Host-state key carrying the active path as one string.
+///
+/// `Presence` sequences on a scalar key, and the path is an array. This is
+/// the same information, joined — set beside it so a document never has to
+/// build a key out of the array itself.
+pub const ROUTE_KEY: &str = "__route_key";
+
 /// The module-level local a screen's view compiles to.
 ///
 /// Named by *index* rather than by id, because a screen id is a route id
@@ -54,9 +61,23 @@ const OUTLET_FORWARD_DECL: &str = "let outlet = fn () { Flex { style: {} } };";
 /// does not compile, the language cannot express routing and that is worth
 /// finding out loudly.
 ///
-/// The stack is rendered outermost-first, so a deeper route draws over a
-/// shallower one. Which ids are *in* the path is the host's decision
-/// (occlusion is the router's, not the document's).
+/// Two things it does that a bare loop over the path does not, both of
+/// which showed up as visible defects the first time a real document used
+/// it:
+///
+/// - **`Presence`, keyed on the path.** Without it a screen change swaps
+///   the child in place, and any keyed widget with an `exit` animation
+///   stays in *layout flow* while it plays — so the outgoing and incoming
+///   pages push each other around as they cross-fade. Presence pops the
+///   outgoing generation out of flow and pins it, which is exactly the job
+///   every consumer's hand-written root `Presence { key: mode }` did.
+/// - **Each layer is absolutely positioned.** The path is a stack: a
+///   deeper route draws *over* a shallower one, not beside it. Flex
+///   children flow, so two visible views laid out normally would sit side
+///   by side.
+///
+/// Which ids are *in* the path is the host's decision — occlusion is the
+/// router's, not the document's.
 fn outlet_source(screen_ids: &[String]) -> String {
     let arms: String = screen_ids
         .iter()
@@ -69,17 +90,34 @@ fn outlet_source(screen_ids: &[String]) -> String {
 {arms}    _ => Flex {{ style: {{}} }},
   }}
 }};
-outlet = fn () {{
+let __ogh_layer = fn (__ogh_id: string) {{
   Flex {{
-    style: {{ width: \"grow\", height: \"grow\" }},
-    block_interactions: false,
-    children: for (__ogh_i in 0..{path}.length()) {{
-      __ogh_dispatch({path}[__ogh_i])
+    key: __ogh_id,
+    style: {{
+      position: {{ type: \"absolute\", x: 0, y: 0 }},
+      width: \"grow\", height: \"grow\",
     }},
+    block_interactions: false,
+    children: [ __ogh_dispatch(__ogh_id) ],
+  }}
+}};
+outlet = fn () {{
+  Presence {{
+    key: {route_key},
+    children: [
+      Flex {{
+        style: {{ width: \"grow\", height: \"grow\" }},
+        block_interactions: false,
+        children: for (__ogh_i in 0..{path}.length()) {{
+          __ogh_layer({path}[__ogh_i])
+        }},
+      }},
+    ],
   }}
 }};",
         arms = arms,
         path = ROUTE_PATH_KEY,
+        route_key = ROUTE_KEY,
     )
 }
 
@@ -242,7 +280,7 @@ impl Compiler {
         let Some(schema) = self.schema.as_ref() else {
             return false;
         };
-        if name == ROUTE_PATH_KEY {
+        if name == ROUTE_PATH_KEY || name == ROUTE_KEY {
             return true;
         }
         if self.screen_field(name).is_some() {

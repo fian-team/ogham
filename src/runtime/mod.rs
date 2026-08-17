@@ -426,6 +426,15 @@ impl Runtime {
                 .collect(),
         );
         self.set_host_state_value(compiler::ROUTE_PATH_KEY, value);
+        // The same information as one string, because `Presence`
+        // sequences on a scalar key and a document should never have to
+        // build one out of the array itself.
+        let key = path
+            .iter()
+            .map(|s| s.as_ref())
+            .collect::<Vec<&str>>()
+            .join("/");
+        self.set_host_state_value(compiler::ROUTE_KEY, Value::String(key));
     }
 
     /// The active route path as last injected.
@@ -551,6 +560,9 @@ impl Runtime {
         self.host_state
             .entry(compiler::ROUTE_PATH_KEY.to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
+        self.host_state
+            .entry(compiler::ROUTE_KEY.to_string())
+            .or_insert_with(|| Value::String(String::new()));
         for (id, screen) in &schema.screens {
             for (field, spec) in &screen.state.fields {
                 let key = compiler::scoped_key(id, field);
