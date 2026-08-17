@@ -143,6 +143,52 @@ impl ModuleSchema {
         self.screens.keys().map(|s| s.as_str()).collect()
     }
 
+    /// The event names this module declares it raises, sorted.
+    pub fn event_names(&self) -> Vec<&str> {
+        self.events.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Check this module's declared events against the names a host has
+    /// registered handlers for.
+    ///
+    /// A declared raise with no handler is a button that draws, clicks and
+    /// reaches nobody — the exact failure `screen`/route-id validation
+    /// prevents for surfaces, at the other end of the same wire. A
+    /// registered handler the document never raises is the milder half and
+    /// is reported too, because it is usually a rename that only landed on
+    /// one side.
+    ///
+    /// A module declaring no `events {}` is vacuously fine: it has opted
+    /// out of static checking of its raises entirely.
+    pub fn validate_events(&self, registered: &[&str]) -> Result<(), String> {
+        if self.events.is_empty() {
+            return Ok(());
+        }
+        let declared: std::collections::BTreeSet<&str> = self.event_names().into_iter().collect();
+        let registered: std::collections::BTreeSet<&str> = registered.iter().copied().collect();
+
+        let unhandled: Vec<&str> = declared.difference(&registered).copied().collect();
+        let unraised: Vec<&str> = registered.difference(&declared).copied().collect();
+        if unhandled.is_empty() && unraised.is_empty() {
+            return Ok(());
+        }
+
+        let mut msg = String::from("the host and this document disagree about events");
+        if !unhandled.is_empty() {
+            msg.push_str(&format!(
+                "\n  declared but no handler registered: {}",
+                unhandled.join(", ")
+            ));
+        }
+        if !unraised.is_empty() {
+            msg.push_str(&format!(
+                "\n  handler registered but never declared: {}",
+                unraised.join(", ")
+            ));
+        }
+        Err(msg)
+    }
+
     /// Check this module's screens against the ids a host's route table
     /// registered. A registered id with no `screen` block, or a block
     /// with no registered id, is an error naming both — the drift that
