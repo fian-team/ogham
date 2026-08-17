@@ -156,17 +156,31 @@ fn a_deeper_route_renders_over_a_shallower_one() {
 }
 
 #[test]
-fn the_stack_is_layered_rather_than_flowed() {
-    // The path is a stack: a deeper route draws *over* a shallower one.
-    // Flex children flow, so laid out normally two visible views sit side
-    // by side — which is what they did, and it read as "elements offset".
+fn a_screen_is_presences_child_with_no_wrapper() {
+    // The outlet emits exactly the shape every consumer hand-wrote:
+    // `Presence { key, children: [ <the screen> ] }`. A wrapper is what a
+    // stack of two visible views would need, and adding one cost the entry
+    // animations — an absolutely-positioned layer sets the child's paint
+    // transform, so a widget whose `initial` also sets one snapped to its
+    // final place while its ghost still faded out.
     let mut rt = runtime(THREE_SCREENS);
-    rt.set_route_path(&["world", "journal"]);
+    rt.set_route_path(&["title"]);
     let tree = render(&mut rt);
-    let layers = absolute_layers(&tree);
+    let Value::Widget(root) = &tree else {
+        panic!("the outlet renders a widget, got {tree:?}")
+    };
+    assert_eq!(root.identifier.get(), "Presence");
+    let Some(Value::Array(children)) = root.properties.get("children") else {
+        panic!("Presence takes children")
+    };
+    assert_eq!(children.len(), 1);
+    let Value::Widget(child) = &children[0] else {
+        panic!("the screen is the child")
+    };
     assert_eq!(
-        layers, 2,
-        "each visible screen gets its own absolutely-positioned layer"
+        child.identifier.get(),
+        "Text",
+        "the screen's own view is Presence's direct child — no layer between"
     );
 }
 
@@ -187,39 +201,6 @@ fn the_path_is_also_published_as_one_key() {
         rt.get_host_state("__route_key"),
         Some(Value::String(String::new()))
     );
-}
-
-/// How many absolutely-positioned Flex layers the tree contains.
-fn absolute_layers(value: &Value) -> usize {
-    fn walk(value: &Value, out: &mut usize) {
-        match value {
-            Value::Widget(w) => {
-                let absolute = w
-                    .properties
-                    .get("style")
-                    .and_then(|s| match s {
-                        Value::Map(m) => m.get("position"),
-                        _ => None,
-                    })
-                    .and_then(|p| match p {
-                        Value::Map(m) => m.get("type"),
-                        _ => None,
-                    })
-                    .is_some_and(|t| matches!(t, Value::String(s) if s == "absolute"));
-                if absolute {
-                    *out += 1;
-                }
-                for (_, v) in &w.properties {
-                    walk(v, out);
-                }
-            }
-            Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
-            _ => {}
-        }
-    }
-    let mut out = 0;
-    walk(value, &mut out);
-    out
 }
 
 // ── a screen's slice is its own ─────────────────────────────────────────

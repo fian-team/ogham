@@ -61,23 +61,25 @@ const OUTLET_FORWARD_DECL: &str = "let outlet = fn () { Flex { style: {} } };";
 /// does not compile, the language cannot express routing and that is worth
 /// finding out loudly.
 ///
-/// Two things it does that a bare loop over the path does not, both of
-/// which showed up as visible defects the first time a real document used
-/// it:
+/// **`Presence`, keyed on the path.** Every consumer hand-wrote one
+/// (`Presence { key: mode }`) and the comment above celia's said why:
+/// "without this the two pages would cross-fade through each other". The
+/// outgoing generation is popped out of layout flow and pinned as a ghost;
+/// the incoming one mounts fresh and plays its entry animations.
 ///
-/// - **`Presence`, keyed on the path.** Without it a screen change swaps
-///   the child in place, and any keyed widget with an `exit` animation
-///   stays in *layout flow* while it plays — so the outgoing and incoming
-///   pages push each other around as they cross-fade. Presence pops the
-///   outgoing generation out of flow and pins it, which is exactly the job
-///   every consumer's hand-written root `Presence { key: mode }` did.
-/// - **Each layer is absolutely positioned.** The path is a stack: a
-///   deeper route draws *over* a shallower one, not beside it. Flex
-///   children flow, so two visible views laid out normally would sit side
-///   by side.
+/// The screens are Presence's children **directly**, with no wrapper of
+/// any kind. That is not an omission — a wrapper is what a stack of two
+/// visible views would need, and adding one cost the entry animations:
+/// an absolutely-positioned layer sets the child's paint transform, and a
+/// widget whose `initial` also sets one snapped to its final place while
+/// its ghost still faded out. Screens clipped in and faded out.
 ///
-/// Which ids are *in* the path is the host's decision — occlusion is the
-/// router's, not the document's.
+/// So the shape here is exactly the shape every consumer already had, and
+/// **rendering more than one visible view at once is not yet supported**.
+/// No migrated consumer has two — occlusion collapses the path to one in
+/// all of them — and the first that does (untold_lore's exit prompts,
+/// which sit *over* the workspace they are leaving) is what should drive
+/// the design. `ROUTING.md` §13.5 is the record.
 fn outlet_source(screen_ids: &[String]) -> String {
     let arms: String = screen_ids
         .iter()
@@ -90,29 +92,12 @@ fn outlet_source(screen_ids: &[String]) -> String {
 {arms}    _ => Flex {{ style: {{}} }},
   }}
 }};
-let __ogh_layer = fn (__ogh_id: string) {{
-  Flex {{
-    key: __ogh_id,
-    style: {{
-      position: {{ type: \"absolute\", x: 0, y: 0 }},
-      width: \"grow\", height: \"grow\",
-    }},
-    block_interactions: false,
-    children: [ __ogh_dispatch(__ogh_id) ],
-  }}
-}};
 outlet = fn () {{
   Presence {{
     key: {route_key},
-    children: [
-      Flex {{
-        style: {{ width: \"grow\", height: \"grow\" }},
-        block_interactions: false,
-        children: for (__ogh_i in 0..{path}.length()) {{
-          __ogh_layer({path}[__ogh_i])
-        }},
-      }},
-    ],
+    children: for (__ogh_i in 0..{path}.length()) {{
+      __ogh_dispatch({path}[__ogh_i])
+    }},
   }}
 }};",
         arms = arms,
