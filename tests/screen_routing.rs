@@ -203,6 +203,41 @@ fn the_path_is_also_published_as_one_key() {
     );
 }
 
+#[test]
+fn a_document_chooses_its_presence_mode() {
+    // Pop overlaps the generations; wait sequences them. Which one a
+    // document wants is a presentation decision — a game whose every
+    // screen is the whole window wants wait, because two of them
+    // overlapped is two rooms at once — so both entry points exist and
+    // the document picks.
+    let mut rt = runtime(&THREE_SCREENS.replace(
+        "let main = fn () { outlet() };",
+        "let main = fn () { outlet_wait() };",
+    ));
+    rt.set_route_path(&["title"]);
+    let tree = render(&mut rt);
+    let Value::Widget(root) = &tree else {
+        panic!("the outlet renders a widget")
+    };
+    assert_eq!(root.identifier.get(), "Presence");
+    assert_eq!(
+        root.properties.get("mode"),
+        Some(&Value::String("wait".to_string()))
+    );
+
+    let mut rt = runtime(THREE_SCREENS);
+    rt.set_route_path(&["title"]);
+    let tree = render(&mut rt);
+    let Value::Widget(root) = &tree else {
+        panic!("the outlet renders a widget")
+    };
+    assert_eq!(
+        root.properties.get("mode"),
+        Some(&Value::String("pop".to_string())),
+        "`outlet()` is pop"
+    );
+}
+
 // ── a screen's slice is its own ─────────────────────────────────────────
 
 #[test]

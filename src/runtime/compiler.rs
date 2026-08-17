@@ -49,9 +49,10 @@ pub fn scoped_key(id: &str, field: &str) -> String {
     format!("{}::{}", id, field)
 }
 
-/// The placeholder `outlet`, compiled before the module body so that a
-/// `main` written above the dispatcher still resolves the name.
-const OUTLET_FORWARD_DECL: &str = "let outlet = fn () { Flex { style: {} } };";
+/// The placeholders, compiled before the module body so that a `main`
+/// written above the dispatcher still resolves either name.
+const OUTLET_FORWARD_DECL: &str = "let outlet = fn () { Flex { style: {} } };
+let outlet_wait = fn () { Flex { style: {} } };";
 
 /// Source for the real dispatcher, built from the module's screen ids.
 ///
@@ -74,6 +75,14 @@ const OUTLET_FORWARD_DECL: &str = "let outlet = fn () { Flex { style: {} } };";
 /// widget whose `initial` also sets one snapped to its final place while
 /// its ghost still faded out. Screens clipped in and faded out.
 ///
+/// Two entry points, because the choice of `Presence` mode is a
+/// presentation decision and belongs to the document rather than to the
+/// host. `outlet()` is *pop*: the outgoing generation is pinned as a ghost
+/// and the incoming one mounts immediately, so the two overlap.
+/// `outlet_wait()` is *wait*: the outgoing screen finishes leaving before
+/// the incoming one mounts, which is what a game whose every screen is the
+/// whole window wants — two of them overlapped is two rooms at once.
+///
 /// So the shape here is exactly the shape every consumer already had, and
 /// **rendering more than one visible view at once is not yet supported**.
 /// No migrated consumer has two — occlusion collapses the path to one in
@@ -92,14 +101,17 @@ fn outlet_source(screen_ids: &[String]) -> String {
 {arms}    _ => Flex {{ style: {{}} }},
   }}
 }};
-outlet = fn () {{
+let __ogh_outlet = fn (__ogh_mode: string) {{
   Presence {{
     key: {route_key},
+    mode: __ogh_mode,
     children: for (__ogh_i in 0..{path}.length()) {{
       __ogh_dispatch({path}[__ogh_i])
     }},
   }}
-}};",
+}};
+outlet = fn () {{ __ogh_outlet(\"pop\") }};
+outlet_wait = fn () {{ __ogh_outlet(\"wait\") }};",
         arms = arms,
         path = ROUTE_PATH_KEY,
         route_key = ROUTE_KEY,
