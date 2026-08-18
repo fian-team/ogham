@@ -40,6 +40,15 @@ pub struct RuntimeConfig {
     /// runtime from this config, so a painter added post-hoc to the old
     /// runtime would vanish on the next file save.
     pub painters: HashMap<String, CanvasPainter>,
+    /// Set by [`RuntimeConfig::with_strict_vocabulary`]. Every widget
+    /// built under a runtime made from this config reports its
+    /// unrecognised keys and values here.
+    ///
+    /// On the config rather than on the runtime because hot reload
+    /// rebuilds the runtime *from the config*: a sink owned by the
+    /// runtime would forget everything it had found on every file save,
+    /// which is precisely when a author is looking at it.
+    pub vocabulary: Option<crate::widget::vocabulary::SinkHandle>,
 }
 
 impl RuntimeConfig {
@@ -149,6 +158,39 @@ impl RuntimeConfig {
     ///         .draw_circle((p.width() / 2.0, p.height() / 2.0), p.width() / 2.0, &paint);
     /// });
     /// ```
+    /// Report every style key and enum value this runtime does not
+    /// recognise, instead of dropping it silently.
+    ///
+    /// Off by default, and deliberately: ogham has always dropped what it
+    /// did not recognise, five repositories were written against that,
+    /// and a hard default would break four codebases nobody asked to
+    /// touch. Turning it on changes nothing about what is drawn — a key
+    /// the builder ignores today goes on being ignored — it only says so.
+    ///
+    /// Findings arrive in [`crate::Ogham::vocabulary_violations`], and
+    /// each one is printed once as it is first seen. Nothing fails: a UI
+    /// language that panicked mid-frame over a style key would be worse
+    /// than the silence it replaced.
+    pub fn with_strict_vocabulary(mut self) -> Self {
+        self.vocabulary = Some(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::widget::vocabulary::Sink::default(),
+        )));
+        self
+    }
+
+    /// Everything the strict vocabulary check has found so far, or an
+    /// empty vector when it is off.
+    pub fn vocabulary_violations(&self) -> Vec<crate::widget::vocabulary::Violation> {
+        match &self.vocabulary {
+            Some(sink) => sink
+                .lock()
+                .expect("vocabulary sink poisoned")
+                .violations()
+                .to_vec(),
+            None => Vec::new(),
+        }
+    }
+
     pub fn with_painter<S, F>(mut self, name: S, painter: F) -> Self
     where
         S: Into<String>,

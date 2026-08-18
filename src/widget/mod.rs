@@ -54,6 +54,7 @@ pub mod text_widget;
 
 /// Constructs UI widgets from runtime `Value::Widget` descriptors.
 pub mod builder;
+pub mod vocabulary;
 
 use std::sync::{Arc, Mutex};
 

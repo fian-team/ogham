@@ -17,6 +17,10 @@ categories = ["gui"]
 name = "ogham-lsp"
 path = "src/lsp/main.rs"
 
+[[bin]]
+name = "ogham-vocab"
+path = "src/bin/vocab.rs"
+
 [lib]
 name = "ogham"
 path = "src/lib.rs"

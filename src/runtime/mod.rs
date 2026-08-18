@@ -467,6 +467,13 @@ impl Runtime {
         }
     }
 
+    /// The names this runtime has event handlers registered for, sorted.
+    pub fn event_handler_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.event_handlers.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     pub fn register_event_handler<S, F>(&mut self, name: S, handler: F)
     where
         S: Into<String>,
@@ -960,6 +967,9 @@ impl Runtime {
             // the config is the durable registration surface, so a
             // hot reload — which rebuilds the Runtime from this config —
             // carries them forward for free.
+            if let Some(sink) = config.vocabulary.as_ref() {
+                runtime.widget_registry.check_vocabulary_into(sink.clone());
+            }
             for (name, painter) in &config.painters {
                 runtime.painters.insert(name.clone(), painter.clone());
             }

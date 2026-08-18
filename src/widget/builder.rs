@@ -32,6 +32,15 @@ pub type WidgetFactory = Arc<
 #[derive(Clone, Default)]
 pub struct WidgetRegistry {
     pub(crate) factories: HashMap<String, WidgetFactory>,
+    /// Where unrecognised keys and values are reported, when the host
+    /// asked to hear about them. `None` — the default — is the language
+    /// as it has always behaved: drop what is not recognised, silently.
+    ///
+    /// Held by the registry rather than the runtime because the registry
+    /// is what a factory already has in hand, and because `Ogham::update`
+    /// clones it out of the runtime once per frame: a lock per widget to
+    /// read a flag is a cost the default mode should not pay.
+    pub(crate) vocabulary: Option<crate::widget::vocabulary::SinkHandle>,
 }
 
 impl WidgetRegistry {
@@ -83,6 +92,11 @@ impl WidgetRegistry {
 
     pub fn get(&self, name: &str) -> Option<&WidgetFactory> {
         self.factories.get(name)
+    }
+
+    /// Report every unrecognised key and value into `sink` from here on.
+    pub fn check_vocabulary_into(&mut self, sink: crate::widget::vocabulary::SinkHandle) {
+        self.vocabulary = Some(sink);
     }
 }
 
@@ -294,6 +308,19 @@ pub fn widget_value_to_widget_ref(
 ) -> Result<WidgetRef, BridgeError> {
     if let Value::Widget(runtime_widget) = widget_value {
         let identifier = runtime_widget.identifier.get().to_lowercase();
+        // Every widget in the tree is built through here — the root from
+        // `Ogham::update`, every child from its parent's factory — so
+        // this is the one place the check has to sit to be complete.
+        // Diagnostics only: what the builder does with the descriptor
+        // below is byte for byte what it did before.
+        if let Some(sink) = registry.vocabulary.as_ref() {
+            crate::widget::vocabulary::check_descriptor(
+                sink,
+                &identifier,
+                &runtime_widget.owned_path,
+                &runtime_widget.properties,
+            );
+        }
         let factory = registry.get(&identifier).ok_or_else(|| {
             BridgeError::InvalidWidgetType(format!("Unknown widget type: {}", identifier))
         })?;

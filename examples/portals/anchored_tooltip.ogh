@@ -29,16 +29,16 @@ let card = fn (title: String, body: String) {
       gap: 4,
       background_color: { r: 22, g: 22, b: 26, a: 242 },
       border: { width: 1, color: { r: 90, g: 90, b: 104, a: 255 } },
-      radius: 6,
+      corner_radius: 6,
     },
     children: [
       Text {
         text: title,
-        style: { font_size: 15, color: { r: 236, g: 236, b: 242, a: 255 } },
+        style: { size: 15, color: { r: 236, g: 236, b: 242, a: 255 } },
       },
       Text {
         text: body,
-        style: { font_size: 13, color: { r: 158, g: 158, b: 172, a: 255 } },
+        style: { size: 13, color: { r: 158, g: 158, b: 172, a: 255 } },
       },
     ],
   }
@@ -50,19 +50,19 @@ let main = fn () {
       width: "grow",
       height: "grow",
       direction: "column",
-      justify: "center",
-      align: "center",
+      main_alignment: "center",
+      cross_alignment: "center",
       gap: 8,
       background_color: { r: 14, g: 14, b: 17, a: 255 },
     },
     children: [
       Text {
         text: "Move the pointer — the card follows it.",
-        style: { font_size: 16, color: { r: 222, g: 222, b: 230, a: 255 } },
+        style: { size: 16, color: { r: 222, g: 222, b: 230, a: 255 } },
       },
       Text {
         text: "Near the bottom edge it flips above the pointer; near the right edge it pulls back inside.",
-        style: { font_size: 13, color: { r: 140, g: 140, b: 156, a: 255 } },
+        style: { size: 13, color: { r: 140, g: 140, b: 156, a: 255 } },
       },
 
       // The tooltip itself. `flip` reproduces the hand-rolled rule

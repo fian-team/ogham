@@ -25,4 +25,11 @@ impl Identifier {
     pub fn get(&self) -> String {
         *self.name.clone()
     }
+
+    /// The name without cloning it. `get` hands back an owned `String`,
+    /// which is fine for the compiler's one-shot reads and wrong for a
+    /// walk that touches every identifier in a document.
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
 }

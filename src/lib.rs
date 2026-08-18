@@ -453,6 +453,27 @@ impl Ogham {
         })
     }
 
+    /// Every unrecognised key and value the builder has met, when the
+    /// config asked for
+    /// [`with_strict_vocabulary`](runtime::config::RuntimeConfig::with_strict_vocabulary).
+    /// Empty otherwise, and empty is the answer a repo's test wants.
+    ///
+    /// De-duplicated, so a mistake in a widget rebuilt every frame is one
+    /// entry rather than one per frame, and it survives a hot reload —
+    /// which is the moment an author is most likely to be reading it.
+    pub fn vocabulary_violations(&self) -> Vec<widget::vocabulary::Violation> {
+        self.config.vocabulary_violations()
+    }
+
+    /// The event names this instance has handlers registered for.
+    ///
+    /// The other half of what a document's `events {}` block declares —
+    /// see [`route::Chrome::validate_raises`], which is the one caller
+    /// that matters.
+    pub fn registered_event_names(&self) -> Vec<String> {
+        self.with_runtime_mut(|rt| rt.event_handler_names())
+    }
+
     /// Set a default font family that will be used by all text widgets
     /// that don't explicitly specify a `font` in their style.
     pub fn set_default_font(&mut self, name: &str) {
