@@ -433,6 +433,22 @@ pub trait Route<Cx, A> {
         None
     }
 
+    /// This route's screen lives in a document of its own, so the shared
+    /// chrome declares no `screen` block for its id.
+    ///
+    /// Read only by the startup check ([`Chrome::validate`]), which would
+    /// otherwise name every editor a game mounts from another crate as
+    /// drift. Not derived from [`own_ui`](Route::own_ui): an editor
+    /// mounted on `enter` has none yet at startup, which is exactly when
+    /// the check runs.
+    ///
+    /// Declaring it wrong costs one thing and it is the right one — a
+    /// missing `screen` block stops being reported for this id, so the
+    /// route that lied is the route that loses the check.
+    fn brings_own_document(&self) -> bool {
+        false
+    }
+
     /// A name for diagnostics. Defaults to the id the table registered.
     fn debug_name(&self) -> Option<&'static str> {
         None

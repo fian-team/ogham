@@ -122,6 +122,10 @@ impl Chrome {
     /// build cost — and the failure its own doc comment cites, celia's
     /// `back()` with no handler, went on shipping the whole time.
     ///
+    /// `ids` is what the host expects this document to draw — the table's
+    /// ids less any route that brings a document of its own
+    /// ([`Route::brings_own_document`](crate::route::Route::brings_own_document)).
+    ///
     /// The registered event names come from the instance itself rather
     /// than from an argument, so there is no list for a caller to forget
     /// to update — the drift this is trying to catch is exactly the drift
