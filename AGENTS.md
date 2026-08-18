@@ -728,6 +728,73 @@ for (i in 0..items.length()) {
 log expression;  // prints value to stderr
 ```
 
+## Strict Vocabulary
+
+Ogham drops what it does not recognise — **keys and values alike**. A
+widget with a misspelled property parses, lays out, draws, and is wrong,
+with no error and nothing in a test: `on_click` where the listener is
+`mouse_down`, `font_size` where the text style key is `size`, `wrap`
+where the Flex property is `flex_wrap`, `cross_alignment: "stretch"`
+where the closed set has no such member and the builder reads `start`.
+
+`widget::vocabulary` is the vocabulary written down once, beside
+`widget::builder`, and two things read it.
+
+**A source scan**, which knows where things are:
+
+```bash
+cargo run -p ogham --bin ogham-vocab -- data/ui/*.ogh
+```
+
+```rust
+let source = std::fs::read_to_string(path)?;
+let found = ogham::widget::vocabulary::scan_source(path, &source);
+assert!(found.is_empty(), "{found:#?}");   // the shape a repo's test takes
+```
+
+It sees what an author literally wrote. A style map reached through a
+`let` — the idiomatic shape, because a `{` after `=>` is a block — is
+invisible to it, deliberately: guessing there is the false positive that
+gets a lint switched off.
+
+**The builder**, which cannot be fooled by that indirection:
+
+```rust
+let config = RuntimeConfig::new().with_strict_vocabulary();
+let ogham = Ogham::from_source(src, config)?;
+assert!(ogham.vocabulary_violations().is_empty());
+```
+
+Off by default. Turning it on changes nothing about what is drawn — a key
+the builder ignores today goes on being ignored, it is only said out
+loud — and nothing fails: findings are collected (de-duplicated, so a
+widget rebuilt every frame is one entry) and printed once each. A UI
+language that panicked mid-frame over a style key would be worse than the
+silence it replaced.
+
+A widget type this crate does not own is checked against nothing, because
+a host reads whatever properties it likes off its own widgets.
+
+**Adding a key to `widget::builder` means adding it to the matching table
+in `widget::vocabulary`.** The tables mirror one `match` each; a key in
+one and not the other turns a working property into a reported violation.
+
+## The startup check
+
+`Chrome::validate(ids)` compares a mounted document against the host it is
+mounted in, once, at startup: `screen` blocks against the route table's
+ids, and the document's declared `events {}` against the handlers the
+instance registered. `lorekeeper`'s `RouterHost::new` calls it, which is
+the one place both halves are known.
+
+A route that mounts an editor from another crate declares
+`Route::brings_own_document`, and comes out of the screen half — its
+surface is in another `.ogh` and the shared one is right not to declare
+it.
+
+It reports rather than refuses, and `Chrome::validation()` is what a test
+asserts on.
+
 ## Integration Guide
 
 This section uses examples from [Untold Lore](../untold_lore), a game client that uses Ogham for all of its UI.
