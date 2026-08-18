@@ -234,6 +234,18 @@ impl Widget for PresenceWidget {
         // inner Flex has no transitions exposed via the builder, so `style`
         // and `declared_style` are always equal. If transitions ever get
         // exposed on Presence, replace this with a proper retarget path.
+        //
+        // Asked before the clobber, because the same-generation path below
+        // reports what actually changed and this is one of the two things
+        // that can have.
+        let own_layout_changed = !self
+            .inner
+            .declared_style
+            .layout_equal(&new_presence.inner.declared_style);
+        let own_paint_changed = !self
+            .inner
+            .declared_style
+            .paint_equal(&new_presence.inner.declared_style);
         self.inner.declared_style = new_presence.inner.declared_style.clone();
         self.inner.style = self.inner.declared_style.clone();
 
@@ -254,7 +266,27 @@ impl Widget for PresenceWidget {
             };
             let mut new_children = std::mem::take(&mut new_presence.inner.children);
             let inner_result = self.inner.reconcile_children(&mut new_children);
-            let mut result = UpdateResult::layout_changed();
+            // **Report what changed, not that something might have.** This
+            // returned a flat `layout_changed()` and threw `inner_result`
+            // away, so *any* rerender of a document rooted in a Presence —
+            // which is every document the route tier mounts — laid the whole
+            // tree out again, whatever had actually moved. A host animating
+            // one opacity through host_state therefore paid a full layout per
+            // frame; `untold_lore`'s three-second title arrival showed up as
+            // ~135 `layout()` calls a second under the runtime's own
+            // dirty-marking warning, and the field it was blamed on was
+            // innocent. Nothing about the same-generation path needs a
+            // relayout of its own: reconciling the children is exactly the
+            // question, and the Presence's own inner style is asked above.
+            let mut result = UpdateResult {
+                absorbed: true,
+                needs_layout: own_layout_changed || inner_result.needs_layout,
+                needs_repaint: own_layout_changed
+                    || own_paint_changed
+                    || inner_result.needs_repaint,
+                cancelled_unmount_prefixes: Vec::new(),
+                drained_path_prefixes: Vec::new(),
+            };
             cancelled.extend(inner_result.cancelled_unmount_prefixes);
             result.cancelled_unmount_prefixes = cancelled;
             result.drained_path_prefixes = inner_result.drained_path_prefixes;
@@ -625,6 +657,83 @@ mod tests {
         p.generation_key = key.map(|s| s.to_string());
         p.inner.children = children;
         Arc::new(Mutex::new(p))
+    }
+
+    /// A plain child at a stated opacity and padding, so a reconcile can be
+    /// handed a paint-only change or a geometry one.
+    fn styled_child(opacity: f32, padding: f32) -> WidgetRef {
+        let mut w = FlexWidget::new();
+        let mut style = FlexStyle::default();
+        style.opacity = crate::widget::style::Opacity(opacity);
+        style.padding = crate::widget::style::Spacing::new(padding, padding, padding, padding);
+        w.declared_style = style.clone();
+        w.style = style;
+        Arc::new(Mutex::new(w))
+    }
+
+    /// **A same-generation reconcile reports what changed**, and a
+    /// paint-only change is not a relayout.
+    ///
+    /// This path returned a flat `UpdateResult::layout_changed()` and threw
+    /// the children's own result away, so *any* rerender of a document
+    /// rooted in a Presence — every document the route tier mounts — laid
+    /// the whole tree out again. A host animating one opacity through
+    /// host_state paid a full layout every frame: `untold_lore`'s title
+    /// arrival tripped the runtime's own dirty-marking warning at ~135
+    /// `layout()` calls a second, and the projected field it was blamed on
+    /// was innocent.
+    #[test]
+    fn a_same_generation_reconcile_relayouts_only_when_geometry_moved() {
+        let mut presence = PresenceWidget::new();
+        presence.generation_key = Some("title".to_string());
+        presence.inner.children = vec![styled_child(1.0, 8.0)];
+
+        // Same opacity, same padding: nothing at all.
+        let result = presence.update(presence_ref(
+            PresenceMode::Wait,
+            Some("title"),
+            vec![styled_child(1.0, 8.0)],
+        ));
+        assert!(!result.needs_layout, "an identical tree moved nothing");
+
+        // Opacity alone — the shape of a fade driven from host state.
+        let result = presence.update(presence_ref(
+            PresenceMode::Wait,
+            Some("title"),
+            vec![styled_child(0.4, 8.0)],
+        ));
+        assert!(
+            !result.needs_layout,
+            "an opacity is paint: a fade must not relayout the tree"
+        );
+        assert!(result.needs_repaint, "…but it does have to be redrawn");
+
+        // Padding — geometry, and it must still reach the layout pass.
+        let result = presence.update(presence_ref(
+            PresenceMode::Wait,
+            Some("title"),
+            vec![styled_child(0.4, 20.0)],
+        ));
+        assert!(result.needs_layout, "geometry still relayouts");
+    }
+
+    /// The Presence's *own* inner style is adopted here rather than through
+    /// `FlexWidget::update`, so it is the one change `reconcile_children`
+    /// cannot see — and it has to be asked before the clobber.
+    #[test]
+    fn the_presences_own_geometry_still_relayouts() {
+        let mut presence = PresenceWidget::new();
+        presence.generation_key = Some("title".to_string());
+        presence.inner.declared_style.gap = 4.0;
+
+        let mut incoming = PresenceWidget::new();
+        incoming.generation_key = Some("title".to_string());
+        incoming.inner.declared_style.gap = 12.0;
+        let result = presence.update(Arc::new(Mutex::new(incoming)));
+        assert!(
+            result.needs_layout,
+            "the Presence's own gap moved its children"
+        );
     }
 
     #[test]
