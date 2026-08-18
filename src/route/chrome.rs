@@ -31,6 +31,11 @@ pub struct Chrome {
     /// again. Reported by the host once rather than per frame — the whole
     /// reason this is here and not in three places.
     error: Option<String>,
+    /// What [`validate`](Self::validate) found, if it has been run and
+    /// found anything. Kept rather than merely printed, so a test can
+    /// assert on it — a startup check nothing can fail is a check that
+    /// gets ignored.
+    validation: Option<String>,
 }
 
 impl Chrome {
@@ -39,6 +44,7 @@ impl Chrome {
             ui,
             last: HashMap::new(),
             error: None,
+            validation: None,
         }
     }
 
@@ -54,6 +60,7 @@ impl Chrome {
             ui,
             last: HashMap::new(),
             error: Some(why),
+            validation: None,
         }
     }
 
@@ -103,6 +110,56 @@ impl Chrome {
             return Ok(());
         };
         schema.validate_events(registered)
+    }
+
+    /// Both halves of the startup check, against the host this document
+    /// is actually mounted in.
+    ///
+    /// This is where the two above are *called from*. Written in July,
+    /// tested in July, and wired to nothing until this: `validate_raises`
+    /// had no callers anywhere in five repositories and `validate_against`
+    /// had one, in a test. A guard nobody runs is documentation with a
+    /// build cost — and the failure its own doc comment cites, celia's
+    /// `back()` with no handler, went on shipping the whole time.
+    ///
+    /// The registered event names come from the instance itself rather
+    /// than from an argument, so there is no list for a caller to forget
+    /// to update — the drift this is trying to catch is exactly the drift
+    /// a hand-maintained argument would acquire.
+    ///
+    /// Reports; does not fail. A router whose table has drifted from its
+    /// document still stands up, because the alternative is a game that
+    /// will not boot over a screen nobody has routed yet, and that is how
+    /// a check gets deleted rather than fixed.
+    pub fn validate(&mut self, ids: &[RouteId]) -> Option<&str> {
+        let registered = self.ui.registered_event_names();
+        let registered: Vec<&str> = registered.iter().map(|s| s.as_str()).collect();
+
+        let mut report = String::new();
+        if let Err(why) = self.validate_against(ids) {
+            report.push_str(&why);
+        }
+        if let Err(why) = self.validate_raises(&registered) {
+            if !report.is_empty() {
+                report.push('\n');
+            }
+            report.push_str(&why);
+        }
+
+        self.validation = match report.is_empty() {
+            true => None,
+            false => {
+                eprintln!("route: {report}");
+                Some(report)
+            }
+        };
+        self.validation.as_deref()
+    }
+
+    /// What the last [`validate`](Self::validate) found. `None` when it
+    /// found nothing, or has not run.
+    pub fn validation(&self) -> Option<&str> {
+        self.validation.as_deref()
     }
 
     /// Push the active path. The document renders these screens in order,

@@ -753,3 +753,60 @@ fn a_claim_not_cleared_on_leave_comes_back_stale() {
         "this is the defect; `leave` clearing the claim is what prevents it"
     );
 }
+
+// ── the startup check ──────────────────────────────────────────────────
+//
+// `Chrome::validate_raises` and `Chrome::validate_against` were written
+// with tests and wired to nothing. `Chrome::validate` is where they are
+// called from; these are the two failures their own doc comments cite.
+
+fn chrome(source: &str, handlers: &[&str]) -> ogham::route::Chrome {
+    let mut config = ogham::runtime::config::RuntimeConfig::new();
+    for name in handlers {
+        config = config.with_event_handler(*name, |_| Ok(ogham::runtime::value::Value::Void));
+    }
+    ogham::route::Chrome::new(ogham::Ogham::from_source(source, config).expect("from_source"))
+}
+
+/// celia's Back button: a `back()` in the document's `events {}` block
+/// with no matching handler on the host. It drew, it clicked, and it
+/// reached nobody, for months, and nothing anywhere said so.
+#[test]
+fn a_declared_raise_with_no_handler_is_named() {
+    let mut c = chrome(
+        r#"events { menu(string), back() };
+           screen "title" { view Flex { mouse_down: fn () { event("back") } } };
+           let main = fn () { outlet() };"#,
+        &["menu"],
+    );
+    let report = c.validate(&["title"]).expect("the drift is reported");
+    assert!(report.contains("back"), "{report}");
+    assert!(report.contains("no handler registered"), "{report}");
+}
+
+/// The other end of the same wire: a route the table registers that the
+/// document draws no `screen` for, and a `screen` nobody routes to.
+#[test]
+fn a_screen_and_a_route_id_that_disagree_are_named() {
+    let mut c = chrome(
+        r#"screen "title" { view Flex {} };
+           screen "credits" { view Flex {} };
+           let main = fn () { outlet() };"#,
+        &[],
+    );
+    let report = c.validate(&["title", "settings"]).expect("the drift is reported");
+    assert!(report.contains("credits"), "{report}");
+    assert!(report.contains("settings"), "{report}");
+}
+
+#[test]
+fn a_document_that_agrees_with_its_host_reports_nothing() {
+    let mut c = chrome(
+        r#"events { back() };
+           screen "title" { view Flex { mouse_down: fn () { event("back") } } };
+           let main = fn () { outlet() };"#,
+        &["back"],
+    );
+    assert_eq!(c.validate(&["title"]), None);
+    assert_eq!(c.validation(), None);
+}
