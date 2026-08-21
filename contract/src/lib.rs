@@ -187,6 +187,9 @@ pub struct Mount {
     document: PathBuf,
     scopes: Vec<Scope>,
     screens: Vec<RouteId>,
+    /// The ids in `screens` that **may** have a `screen` block rather than
+    /// must (see [`may_draw`](Mount::may_draw)).
+    optional: Vec<RouteId>,
     /// Where this document's imports resolve from. `None` roots the walk
     /// at the document's own directory, which is where a `./sibling.ogh`
     /// lives in every shipped document; a host that maps prefixes or
@@ -202,6 +205,7 @@ impl Mount {
             document: document.into(),
             scopes: Vec::new(),
             screens: Vec::new(),
+            optional: Vec::new(),
             space: None,
         }
     }
@@ -239,6 +243,27 @@ impl Mount {
     /// The registered ids this document draws `screen` blocks for.
     pub fn drawing(mut self, screens: &[RouteId]) -> Self {
         self.screens.extend_from_slice(screens);
+        self
+    }
+
+    /// Registered ids this document **may** draw a `screen` block for,
+    /// and is not asked about either way.
+    ///
+    /// There is exactly one of these per mount and it is the instance
+    /// root itself. A root is where a document is *mounted*; whether it
+    /// is also a surface is the document's business, and both answers are
+    /// ordinary — celia's muster draws its own screen, regency's table
+    /// draws only its five pages, and the engine's `front.ogh` draws none
+    /// for its root. Nothing in the table can tell those apart (a root's
+    /// occlusion says what it hides, not whether it is a screen), so
+    /// asserting either direction reported drift that was not drift.
+    ///
+    /// The exemption is one id wide and cuts both ways: a screen block
+    /// this mount does not register is still `Unrouted`, so a misspelt
+    /// `screen "lobbi"` is caught exactly as before.
+    pub fn may_draw(mut self, screens: &[RouteId]) -> Self {
+        self.screens.extend_from_slice(screens);
+        self.optional.extend_from_slice(screens);
         self
     }
 
@@ -370,7 +395,15 @@ impl Mount {
             );
         }
         into.raises(&document, &self.scopes, &raises_of(schema));
-        into.draws(&document, &schema.screen_ids(), &self.screens);
+        // An optional id is asked about only if the document answered:
+        // present in both lists, or in neither.
+        let registered: Vec<RouteId> = self
+            .screens
+            .iter()
+            .copied()
+            .filter(|id| !self.optional.contains(id) || schema.screens.contains_key(*id))
+            .collect();
+        into.draws(&document, &schema.screen_ids(), &registered);
 
         for (id, screen) in &schema.screens {
             if screen.state.fields.is_empty() {
