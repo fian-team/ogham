@@ -21,7 +21,12 @@ Last updated 2026-08-20, end of the first build session.
 | WP-1.1 | **landed** (acceptance amended, below) | ogham `6c8c847` + consumer lockfiles `d0d689a` / `1508f05` / `0eb1a95` / `7f29d20` |
 | WP-1.2 | **landed** | ogham `fa7092e` |
 | **Phase 1 gate** | **passed** 2026-08-20 | — |
-| P2 onward | not started | — |
+| WP-2.1 | **landed** | ogham `8f76f9c` + `e0dca27` (parser cut), lorekeeper `cb33238` + `f5dbb6b` |
+| WP-2.2 | **landed** | ogham `a21c05e` |
+| WP-2.3 | **landed** (+ the at-mount fix) | ogham `c04b25a`, `dd375c8`; lorekeeper `d20c774`, `0f51ba6` |
+| WP-2.4 | **landed** | ogham `d292cea`, `ba65ae2` |
+| **Phase 2 gate** | **passed** 2026-08-21 | — |
+| P3 onward | not started | — |
 
 **Phase 1 gate, as run:** ogham, untold_lore, regency and
 stargazer-celia-game all green; lorekeeper green except the baseline
@@ -121,7 +126,74 @@ WP-1.2's table API, for the packages that build on it:
   double declarations (two guards on one door, instance-root-and-
   structural, an area declared twice).
 
-**Resume at:** Phase 2, WP-2.1 (schemas and derived reflection).
+### Phase 2, as it landed
+
+**Phase 2 gate, as run (2026-08-21):** ogham 810 passed; untold_lore,
+regency and stargazer-celia-game all green; lorekeeper green except
+the one baseline red above. `cargo tree -p structure` still one line —
+the crate reached the end of the store with an empty `[dependencies]`.
+`structure` went 23 tests → **101**.
+
+**Three properties are now held by construction rather than by
+convention**, which is worth recording because each replaces a
+discipline the audit found being hand-maintained:
+
+- **§5.4's intra-tick order is enforced by the borrow checker.** The
+  outbox drain happens inside `Store::tick` before the producer
+  closure runs; a set is reachable only through a `Writer`, a
+  `Writer` only through the `Barrier`, and the `Barrier` only inside
+  that closure. The `Barrier` holds `&mut Store` for its whole life,
+  so no consumer can read while producers run. The FRP glitch is not
+  guarded against — it is unrepresentable.
+- **§4.4's stringly decoding is unwritable.** `Raise` exposes
+  `name()` and `parameters(intent, arity)` and no way to reach an
+  argument before naming an intent, so `text(0)? == "focus"` dispatch
+  has no expression. `Args::take::<T>` takes no index and moves a
+  cursor, so re-reading argument 0 is not a rule broken but a call
+  that does not exist; `bool` is one of its types, so the
+  missing-`as_bool` workaround has nothing to work around.
+- **§4.1's declared at-mount value cannot disagree with the
+  schema.** The derive emits the field's literal into
+  `Field::starting_at` and into the at-mount value in one pass, and
+  `Store::provides::<T>(scope)` no longer takes a value. The old test
+  fixture was itself an instance of the bug — `Session::reflect`
+  declared `stage = "lobby"` while `Session::default()` gave `""`.
+
+**One acceptance criterion was read down, deliberately.** WP-2.1
+first shipped `Kind: FromStr` beside `Display` to satisfy "a
+struct's reflection round-trips". Nothing in the design can reach a
+parser — providers own schemas as Rust types, the derive is the only
+thing that builds a `Kind`, and every validator is in-process and
+typed — so the reading half was cut (`e0dca27`) and the round trip
+restated as what survives it (`f5dbb6b`): every declared field
+reaches the reflection under its own name, resolves through
+`field_at`, and prints.
+
+**A grade change P6 must plan against.** §4.1 names "a screen no node
+reaches" and "a published intent no shipped document raises" as
+coverage drift, so WP-2.4 grades both as **reports**, not errors.
+Today three games assert on exactly those with `.expect()` and fail
+CI. The framework grades the finding; **the consumer decides whether
+a report is fatal for it**, by asserting on `found.reports()` when it
+instantiates the harness. Every game migration that deletes a
+bespoke guard test must carry that assertion across, or the
+guarantee silently weakens from "CI fails" to "a line of output".
+The affected tests are named per game in WP-2.4's coverage list
+below.
+
+**What P6 does not inherit from the harness**, and must answer
+another way: the *path* half of celia's `every_button_reaches_a_route`
+(the harness asks whether some scope in a document's mount accepts an
+intent; it cannot ask whether the accepting scope sits on the path a
+particular button is drawn on — the document does not say which
+screen raises what), and `pause_does_not_survive_a_trip_to_the_menu`,
+which is a scope-lifetime property whose successor is WP-2.2's
+"scope state dies with its node", not the contract harness.
+Appendix C lists only the wire half of the former for deletion, so
+this is consistent — but the remaining half stays until P4's driver
+can answer it.
+
+**Resume at:** Phase 3 and Phase 4 (parallel).
 
 ## 0. How to use this document
 
@@ -296,7 +368,7 @@ the baseline reds recorded in §0.5.
 
 The order inside this phase matters; each WP builds on the last.
 
-### WP-2.1 Schemas and derived reflection (§4.1, §4.3)
+### WP-2.1 Schemas and derived reflection (§4.1, §4.3) — **landed**
 
 Extend the `#[derive(Editable)]` lineage
 (`lorekeeper/editable-derive`, `editable-ogham`) so a schema
@@ -312,7 +384,7 @@ projected by `chrome::project`
 (`untold_lore/ul-client/src/chrome.rs:706-1240` is the corpus —
 grids, string lists, tuples, nested records, `Vec`s).
 
-### WP-2.2 The store core (§5.1-5.5, §5.7)
+### WP-2.2 The store core (§5.1-5.5, §5.7) — **landed**
 
 Scoped fields keyed by route node; single-writer, equality-checked
 sets (generalize `Chrome`'s compare, `chrome.rs:189-199`);
@@ -329,7 +401,7 @@ same-tick intent→producer→commit lands in that tick (celia's
 tile-focus scenario, §5.4); scope state provably dropped when its
 node leaves the path; an out-of-scope set is an error.
 
-### WP-2.3 The write side (§4.4)
+### WP-2.3 The write side (§4.4) — **landed**
 
 A scope publishes its accepted intents (typed, derived alongside
 the schema); a document's raises validate at load against them;
@@ -341,7 +413,7 @@ is the anti-corpus — its `text(0)? == "focus"` parsing and the
 "RaiseArg has no as_bool" workaround at `chrome.rs:544-547` must
 be unwritable in the replacement).
 
-### WP-2.4 Validation, two grades (§4.1)
+### WP-2.4 Validation, two grades (§4.1) — **landed**
 
 Selection errors **refuse**, named, at load and at every hot
 reload (a hot-reload refusal rejects the new document without
@@ -355,6 +427,46 @@ guard tests delete in P6 without regressing the guarantee from
 `cargo test` to first boot. Also validate the unread direction as
 a report ("provided but read by nothing" — celia's dead root
 `status` and arena `status` are the live examples).
+
+> **Landed** as `ogham::contract::Documents` (`src/contract.rs`) over
+> `structure`'s grading (`structure/src/validate.rs`) — the §2 edge
+> again: grading has no I/O and stays in the dependency-free crate,
+> while translation and file reading live where the parser is. A
+> consumer instantiates it with `Mount { document, scopes
+> (nearest-first), screens }` per shipped document; when P4/P5 land,
+> the binding supplies all three from the table (`document_of`, the
+> walk, the ids under the enclosing instance). It is a `cargo test`
+> guarantee because `Documents::new` takes a `Store` with only its
+> registrations run — no route walked, no scope mounted, no frame,
+> no window, no Skia surface — and parses the shipped `.ogh` files
+> without compiling bytecode.
+>
+> **Refusals:** `Unprovided`, `Shape`, `Unaccepted`, `Raise`,
+> `Unpublished`. **Reports:** `Unread`, `Unraised`, `Undrawn`,
+> `Unrouted`, `Shadowed`.
+>
+> **Appendix C coverage, per game.** untold_lore:
+> `every_declared_key_is_projected` — forward half a refusal, reverse
+> half *unrepresentable* (a producer can only set fields the schema
+> declares, checked at startup), so it deletes;
+> `every_declared_raise_reaches_a_handler` — forward half a refusal,
+> reverse half now a **report**. regency: the `lobby.rs`
+> schema-conformance test and `every_declared_raise_has_a_handler`
+> delete; `the_shipped_document_declares_exactly_the_registered_screens`
+> is covered as a **report**. celia: `every_declared_raise_has_a_handler`
+> and the wire half of `every_button_reaches_a_route` delete;
+> `the_shipped_document_declares_exactly_the_registered_screens` is a
+> **report**. Not covered, staying: the path half of
+> `every_button_reaches_a_route`, and
+> `pause_does_not_survive_a_trip_to_the_menu`. Not in the ledger and
+> correctly untouched: `every_registered_screen_renders` (celia and
+> regency) and `the_documents_typefaces_are_registered`.
+>
+> **Also fixed in passing:** `reload_file` cleared the surviving
+> tree's focus stack and portal layers *before* building the
+> candidate runtime, so a hot edit that failed to compile took the
+> running document's focus and portals with it. The clear now runs
+> below the gate.
 
 ---
 
