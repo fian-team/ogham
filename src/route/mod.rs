@@ -78,7 +78,7 @@ pub mod chrome;
 pub mod router;
 
 // The moved halves, at their old paths. Scaffolding: deletes in P4.
-pub use structure::{outbox, table};
+pub use structure::{guard, outbox, table};
 
 use std::collections::HashMap;
 
@@ -87,8 +87,10 @@ use crate::runtime::value::Value;
 pub use chrome::Chrome;
 pub use outbox::Outbox;
 pub use router::Router;
-pub use structure::{Departure, Escape, Handled, Occlusion, RaiseArg, RouteId};
-pub use table::{RouteTable, TableError};
+pub use structure::{
+    Area, Departure, Escape, Guard, Handled, Occlusion, RaiseArg, Refusal, RouteId, Store,
+};
+pub use table::{RouteTable, TableError, Tier};
 
 /// What a route is offered.
 ///
