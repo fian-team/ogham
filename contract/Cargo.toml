@@ -1,0 +1,30 @@
+# `contract` is a working name (APPLICATION.md §8.4): the real name waits
+# until the seam is settled. Never publish this crate under this name.
+[package]
+name = "contract"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "The document contract: a selection translated into the structure framework's vocabulary, and the harness that holds every shipped document to it"
+license = "MIT"
+publish = false
+
+# APPLICATION.md §2 says "only the binding depends on both". This crate is
+# a binding by that sentence's own definition: holding a document to its
+# scopes' contract needs the parser (to read what the document says) and
+# the store (to read what the provider publishes), and nothing else in the
+# world.
+#
+# It is *not* `lorekeeper/driver`, deliberately. The whole point of WP-2.4
+# is that a consumer answers "do my shipped documents agree with my
+# schemas?" under `cargo test`, with no path walked, no instance mounted,
+# no frame taken and no window opened. Putting it in the driver would link
+# `app`, `winit` and Skia into that answer and forfeit the property it was
+# built for.
+#
+# Two dependencies, and there will never be a third: `ogham` for the
+# document's language, `structure` for the provider's schema. That is what
+# `cargo tree -p contract --depth 1` is checked for at every gate.
+[dependencies]
+ogham = { path = ".." }
+structure = { path = "../structure" }

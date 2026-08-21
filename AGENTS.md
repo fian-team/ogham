@@ -30,17 +30,23 @@ scoped facts, the frame barrier, the two consumption verbs —
 `structure/src/intent.rs` holds the write side: the intents a scope
 publishes, and the typed raise that lands on the outbox — and
 `structure/src/validate.rs` grades a document's selection against
-both, in §4.1's two grades. `src/contract.rs` is this crate's half of
-that seam: it turns a `host_state {}` / `events {}` block into the
-structure framework's vocabulary, and `contract::Documents` is the
-"load every shipped document against its schemas" harness a consumer
-instantiates in one test. The binding has not landed.
+both, in §4.1's two grades. The `contract/` workspace member is the
+seam itself: it turns a `host_state {}` / `select` / `events {}`
+block into the structure framework's vocabulary, and
+`contract::Documents` is the "load every shipped document against its
+schemas" harness a consumer instantiates in one test. `lorekeeper/
+driver` holds the other binding.
 
 The rule that outranks convenience: **`structure` depends on nothing
 of the surface framework, and vice versa.** `structure/`'s empty
-`[dependencies]` is load-bearing. The one edge that does exist,
-`ogham → structure`, is declared scaffolding for the re-export that
-keeps consumers compiling, and it is deleted in Phase 4.
+`[dependencies]` is load-bearing. §2's "only the binding depends on
+both" is what makes `contract/` a crate rather than a module of this
+one — it depends on `ogham` and `structure` and nothing else, and it
+must stay reachable without a window, because its whole purpose is a
+`cargo test`-time answer. The one edge that should not exist,
+`ogham → structure`, is declared scaffolding for `src/route/`'s
+re-export, and it is deleted at the Phase 6 gate when the three
+games' `impl Route` blocks are rewritten.
 
 ## Architecture
 
@@ -93,8 +99,8 @@ Source (.ogh)
 | `src/runtime/imports.rs` | The import graph: where a path resolves from (`ImportSpace`), what crosses an import (`Crossing`), and the one transitive walk the compiler, the schema and the watcher all read |
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
-| `src/contract.rs` | The surface side of the contract seam: a document's declarations in the structure framework's vocabulary, the `Documents` load-validation harness, and the hot-reload gate's check |
-| `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver in `docs/internal/APPLICATION_BUILD.md` Phase 4 |
+| `contract/` | **The document contract** (workspace member, working name): a document's declarations in the structure framework's vocabulary, the `Documents` load-validation harness, and the `Checked` hot-reload gate. Depends on `ogham` and `structure` and *nothing else* — it is a binding by §2's own definition, and it stays out of `lorekeeper/driver` so a consumer can ask its question with no window |
+| `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver when the games' `impl Route` blocks are rewritten (`docs/internal/APPLICATION_BUILD.md` Phase 6) |
 | `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, `schema` — §4.3's derived reflection, the thing a document's selection validates against — `store` — §5's scoped facts, their frame-transactional commit, and the subscribe/read verbs — `intent` — §4.4's write side, the vocabulary a scope publishes and the typed raise that lands on the outbox — and `validate` — §4.1's two grades, where a selection that names a missing field refuses and coverage drift reports. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
 
 ## LSP Server
@@ -509,7 +515,7 @@ select { sea_panel, sea_duration };          // a fragment: from wherever this m
   mounting document's scopes (§4.7).
 - `host_state {}` is unchanged and still supported; the games migrate in
   `APPLICATION_BUILD.md` Phase 6.
-- `ogham::contract::Mount::at_mount(&store)` gives the values a
+- `contract::Mount::at_mount(&store)` gives the values a
   selection holds at mount, for
   `RuntimeConfig::with_host_state` — a selection declares no defaults,
   so its seed comes from the provider.
@@ -1226,10 +1232,14 @@ ogham/
       client.rs              -- client implementation
       app.rs                 -- application wrapper
     route/                  -- surface-typed route remainder (Route trait, RouteEvent,
-                            --   Chrome, Router newtype); moves to the driver in Phase 4
+                            --   Chrome, Router newtype); moves to the driver in Phase 6
   structure/                 -- THE STRUCTURE FRAMEWORK (workspace member): route table,
                             --   walk, outbox, guards, schema reflection, and the
                             --   scoped store. Zero dependencies, by design
+  contract/                  -- THE DOCUMENT CONTRACT (workspace member): a document's
+                            --   selection in the structure framework's vocabulary, the
+                            --   `Documents` harness, and the hot-reload gate. Depends on
+                            --   ogham + structure, and on nothing else, ever
   crates/
     ogham-derive/           -- #[derive(OghamState)] / #[derive(OghamMsg)] proc macros
   examples/                  -- .ogh example files (incl. portals/components.ogh)

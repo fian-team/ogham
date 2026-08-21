@@ -36,7 +36,6 @@ use skia_safe::{FontMgr, Typeface};
 /// [`INTENT.md`](../docs/internal/INTENT.md) §6.
 pub use skia_safe;
 
-pub mod contract;
 mod file_watcher;
 mod macros;
 pub mod parser;

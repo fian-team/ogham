@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "structure"]
+members = [".", "structure", "contract"]
 resolver = "2"
 
 [package]
@@ -27,21 +27,20 @@ path = "src/lib.rs"
 
 [dependencies]
 # APPLICATION.md §2's dependency edge, in the direction that does **not**
-# hold. Two things ride on it, and they are different in kind:
+# hold yet. Exactly one thing rides on it, and it is scheduled scaffolding:
+# `src/route/`, which re-exports the structure crate's route types and
+# keeps the `Route` trait, whose signatures name surface types. WP-4.1
+# moved the *mechanism* into `lorekeeper/driver`; the surface stays until
+# the three games' migrations (P6) rewrite their `impl Route` blocks and
+# their ~90 `use ogham::route::{…}` sites, which is the first moment it can
+# go. The maintainer moved that check to the P6 gate for that reason.
 #
-#   1. `src/route/` — scaffolding. It re-exports the structure crate's route
-#      types and keeps the `Route` trait, whose signatures name surface
-#      types. WP-4.1 moved the *mechanism* into `lorekeeper/driver`; the
-#      surface stays until the three games' migrations (P6) rewrite their
-#      `impl Route` blocks, which is the first moment it can go.
-#   2. `src/contract.rs` — **not** scaffolding, and the real blocker. WP-2.4
-#      put the document-loading half of §4.1's validation here on purpose
-#      (grading has no I/O and lives in the dependency-free crate;
-#      translation and file reading live where the parser is), and it names
-#      `structure::{Store, Kind, Validation, Vocabulary}` to do it. No
-#      deletion in P4 reaches it: by §2's own reading the harness is a
-#      *binding*, and the question of whether it should move into the driver
-#      crate is a maintainer's, recorded in the P4 report.
+# The other thing that used to ride on it — the document contract — no
+# longer does: it is the `contract/` crate, which depends on this one and
+# on `structure` and on nothing else. §2 says "only the binding depends on
+# both", not "there is exactly one binding", and holding a document to its
+# scopes' contract needs the parser and the store, so by §2's own
+# definition it is a binding.
 #
 # The load-bearing half — `cargo tree -p structure` shows no ogham — holds
 # absolutely and is checked at every phase gate.

@@ -33,9 +33,11 @@
 //!   driven with no binding, which is what three games' route tests do.
 //!
 //! `cargo tree -p structure` showing no ogham is the §2 dependency edge
-//! that holds and is checked at every phase gate. The other direction is
-//! held by [`crate::contract`] rather than by this module — see the
-//! dependency's own comment in `Cargo.toml`.
+//! that holds and is checked at every phase gate. The other direction —
+//! `cargo tree -p ogham` showing no structure — is held by **this module
+//! alone** now that the contract has left for a crate of its own, and it
+//! comes true when the three games' `impl Route` blocks are rewritten in
+//! P6. See the dependency's own comment in `Cargo.toml`.
 //!
 //! # Why this is in the language
 //!

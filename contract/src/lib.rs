@@ -1,21 +1,36 @@
-//! The surface side of the contract seam: what a document *declares*, said
-//! in the structure framework's vocabulary, and the harness that holds
-//! every shipped document to it at `cargo test` time.
+//! The document contract: what a document *declares*, said in the
+//! structure framework's vocabulary, and the harness that holds every
+//! shipped document to it at `cargo test` time.
 //!
 //! `APPLICATION.md` §4.1 gives a provider the schema and a consumer a
 //! selection. The provider's half lives in the structure framework — a
 //! scope's [reflection](structure::Kind) and the
 //! [intents](structure::Vocabulary) it accepts — and the grading of the two
 //! against each other lives there too ([`structure::Validation`]). What
-//! lives *here* is the translation, because a document is written in this
-//! crate's language and the structure framework has never heard of it: a
-//! `host_state {}` block becomes a list of [`Field`]s, an `events {}` block
-//! becomes a list of [`Declared`] raises, and a `TypeRef` becomes a
-//! [`Kind`].
+//! lives *here* is the translation, because a document is written in the
+//! surface framework's language and the structure framework has never
+//! heard of it: a `host_state {}` block becomes a list of [`Field`]s, an
+//! `events {}` block becomes a list of [`Declared`] raises, and a
+//! `TypeRef` becomes a [`Kind`].
+//!
+//! # Why this is a crate of its own
+//!
+//! Because §2's sentence is "only the binding depends on both", and this
+//! is a binding by that sentence's own definition: it needs the parser to
+//! read what a document says and the store to read what a provider
+//! publishes, and it needs nothing else in the world. Two dependencies,
+//! `ogham` and `structure`, and there will never be a third.
+//!
+//! It is deliberately **not** part of `lorekeeper/driver`, the other
+//! binding. The whole property this harness was built for is that a
+//! consumer answers "do my shipped documents agree with my schemas?"
+//! under `cargo test` — no path walked, no instance mounted, no frame
+//! taken, no window opened. A consumer that had to link `app`, `winit`
+//! and Skia to ask that question would stop asking it.
 //!
 //! # The CI moment
 //!
-//! [`Documents`] is the reason this module exists rather than a
+//! [`Documents`] is the reason this crate exists rather than a
 //! load-time-only check. Three games guarantee document/host agreement
 //! today with hand-rolled tests that read their own `.ogh` files and parse
 //! the blocks out as strings — untold_lore's
@@ -51,21 +66,23 @@ use std::path::{Path, PathBuf};
 
 use structure::schema::{Field, Lit};
 
-use crate::runtime::imports::ImportSpace;
-use crate::runtime::schema::{
+use ogham::runtime::imports::ImportSpace;
+use ogham::runtime::schema::{
     load_schema_in, EventSig, ModuleSchema, PrimType, RecordSchema, SchemaLoadError, TypeRef,
 };
-use crate::runtime::value::Value;
+use ogham::runtime::value::Value;
 
 /// The structure framework's half of the seam, re-exported so a consumer
-/// naming a scope or reading a finding needs no dependency of its own —
-/// the same service `route` does for the table (`APPLICATION_BUILD.md`
-/// §0.5's declared scaffolding edge, and it dies with it in P4).
+/// naming a scope or reading a finding needs no dependency of its own.
+///
+/// Not scaffolding, unlike `ogham::route`'s re-exports: this crate depends
+/// on `structure` for good, because a contract is exactly the place the
+/// two frameworks are put side by side.
 pub use structure::{Declared, Finding, Findings, Kind, RouteId, Scope, Store, Validation};
 
 /// Where a document's imports resolve from, re-exported so a consumer
 /// declaring a [`Mount`] for a split document needs no second import path.
-pub use crate::runtime::imports::ImportSpace as Imports;
+pub use ogham::runtime::imports::ImportSpace as Imports;
 
 // --- the translation -------------------------------------------------------
 
@@ -231,7 +248,7 @@ impl Mount {
     }
 
     /// What this document's selection holds the moment it mounts, ready
-    /// for [`RuntimeConfig::with_host_state`](crate::runtime::config::RuntimeConfig::with_host_state).
+    /// for [`RuntimeConfig::with_host_state`](ogham::runtime::config::RuntimeConfig::with_host_state).
     ///
     /// A `host_state {}` document seeds itself: it declares its own field
     /// shapes and its own defaults, and the runtime fills them in before
@@ -435,7 +452,7 @@ impl std::error::Error for Unreadable {}
 /// | nothing is provided or accepted that no document uses | the reverse half of each of those, now a report rather than an assertion (§4.1) |
 ///
 /// ```no_run
-/// # use ogham::contract::{Documents, Mount, Scope, Store};
+/// # use contract::{Documents, Mount, Scope, Store};
 /// # fn store() -> Store { Store::new() }
 /// # fn data_dir() -> std::path::PathBuf { ".".into() }
 /// let store = store();
@@ -490,6 +507,57 @@ impl<'a> Documents<'a> {
             mount.check_into(&schema, &mut check);
         }
         Ok(check.finish())
+    }
+}
+
+// --- one mounted instance ---------------------------------------------------
+
+/// The contract, asked of one **mounted** document — the load-time and
+/// hot-reload half of what [`Documents`] asks of a whole repo at
+/// `cargo test` time (§4.1: "validation runs at document load *and at
+/// every hot reload*").
+///
+/// An extension trait rather than inherent methods because
+/// [`Chrome`](ogham::route::Chrome) lives in the surface framework, which
+/// depends on nothing of the structure framework (§2). `Chrome` owns the
+/// machinery — a gate the reload must pass and a refusal held apart from
+/// a compile error — and this is the question that goes into it.
+pub trait Checked {
+    /// Check the mounted document against what the store publishes, in the
+    /// two grades.
+    ///
+    /// Refusals are kept, and [`Chrome::refusal`](ogham::route::Chrome::refusal)
+    /// reports them once rather than per frame; the reports come back in
+    /// the [`Findings`] for a host that wants to print them.
+    fn check(&mut self, store: &Store, mount: &Mount) -> Findings;
+
+    /// [`Chrome::frame`](ogham::route::Chrome::frame) with the hot reload
+    /// held to the contract.
+    ///
+    /// A hot-reload refusal rejects the new document and names the field
+    /// **without tearing down the running instance**: the edit is checked
+    /// before the swap, so a refused one costs the candidate and nothing
+    /// else.
+    fn frame_checked(&mut self, store: &Store, mount: &Mount, width: f32, height: f32, dt: f32);
+}
+
+impl Checked for ogham::route::Chrome {
+    fn check(&mut self, store: &Store, mount: &Mount) -> Findings {
+        let mut check = Validation::new(store);
+        if let Some(schema) = self.ui().module_schema() {
+            mount.check_into(&schema, &mut check);
+        }
+        let found = check.finish();
+        let refused: Vec<String> = found.refusals().map(ToString::to_string).collect();
+        self.refuse(match refused.is_empty() {
+            true => None,
+            false => Some(refused.join("\n")),
+        });
+        found
+    }
+
+    fn frame_checked(&mut self, store: &Store, mount: &Mount, width: f32, height: f32, dt: f32) {
+        self.frame_gated(|schema| refusals(schema, store, mount), width, height, dt);
     }
 }
 

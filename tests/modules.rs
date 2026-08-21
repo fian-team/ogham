@@ -8,16 +8,17 @@
 //! of one file — a palette, a record shape, and a helper that draws with
 //! both — because those are what the split is *for*: a token edited once
 //! has to reach every document that mounts it.
+//!
+//! That the *contract* also sees the whole graph — the harness reads a
+//! split document, and the reload gate refuses an edit to a shared module
+//! two files from the document it breaks — is `contract/tests/modules.rs`,
+//! because asking it needs a store.
 
 use std::path::{Path, PathBuf};
 
-use ogham::contract::{Documents, Mount, Scope, Store};
-use ogham::route::Chrome;
 use ogham::runtime::config::RuntimeConfig;
 use ogham::runtime::value::Value;
 use ogham::Ogham;
-
-use structure::schema::{Field, Kind, Lit, Schema};
 
 // ── the shared module ──────────────────────────────────────────────────
 
@@ -228,122 +229,4 @@ fn a_module_a_hot_edit_adds_is_watched_from_then_on() {
             token(&ui).as_deref() == Some("#2b1d14")
         },
     );
-}
-
-// ── the gate (WP-2.4) sees the whole graph ─────────────────────────────
-
-/// The scope the split documents select against.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Table {
-    card: Card,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Card {
-    title: String,
-    weight: f32,
-}
-
-impl Schema for Card {
-    fn reflect() -> Kind {
-        Kind::Record(vec![
-            Field::new("title", Kind::Str),
-            Field::new("weight", Kind::Float),
-        ])
-    }
-    fn at_mount(_: Option<&Lit>) -> Self {
-        Self::default()
-    }
-    fn type_name() -> Option<&'static str> {
-        Some("Card")
-    }
-}
-
-impl Schema for Table {
-    fn reflect() -> Kind {
-        Kind::Record(vec![Field::new("card", Card::reflect())])
-    }
-    fn at_mount(_: Option<&Lit>) -> Self {
-        Self::default()
-    }
-    fn type_name() -> Option<&'static str> {
-        Some("Table")
-    }
-}
-
-const TABLE: Scope = Scope::Node("table");
-
-fn store() -> Store {
-    let mut store = Store::new();
-    store.provides::<Table>(TABLE).expect("the table's scope");
-    store
-}
-
-/// The `cargo test` harness reads a split document whole.
-///
-/// A `host_state` field declared at a record another file owns used to make
-/// the harness answer [`ogham::contract::Unreadable`] — "unknown record
-/// `Card`" — so a repo that split its documents lost the contract check
-/// that the split was supposed to survive.
-#[test]
-fn the_contract_harness_reads_a_document_split_across_files() {
-    let dir = scratch("harness");
-    write(&dir, "stationery.ogh", STATIONERY);
-    let table = write(&dir, "table.ogh", &document("the table"));
-
-    let found = Documents::new(&store())
-        .mounting(Mount::new(&table).selecting(TABLE))
-        .check()
-        .expect("a split document reads");
-    assert!(!found.refuses(), "{found}");
-}
-
-/// A transitive reload goes through WP-2.4's gate, not around it.
-///
-/// The edit is to the **shared** module, and it breaks the contract of a
-/// document two files away: the record `Card` loses the field the table's
-/// scope provides, so every document declared at that shape now selects a
-/// shape nothing provides. The gate refuses the candidate and names the
-/// path, and the running instance goes on drawing with its live state.
-#[test]
-fn an_edit_to_a_shared_module_is_refused_by_the_gate_that_the_document_would_fail() {
-    let dir = scratch("gate");
-    let shared = write(&dir, "stationery.ogh", STATIONERY);
-    let table = write(&dir, "table.ogh", &document("the table"));
-
-    let store = store();
-    let mount = Mount::new(&table).selecting(TABLE);
-    let mut chrome = Chrome::new(mounted(&table, &dir));
-    assert!(!chrome.check(&store, &mount).refuses(), "the mount holds");
-
-    chrome.project_root("__witness", Value::String("standing".to_string()));
-
-    let drifted = STATIONERY.replace(
-        "record Card { title: string, weight: float };",
-        "record Card { title: string, heft: float };",
-    );
-    saving(&shared, &drifted, "the refused edit", || {
-        chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
-        chrome.refusal().is_some()
-    });
-
-    let why = chrome.refusal().expect("just checked");
-    assert!(
-        why.contains("card.heft") || why.contains("card.weight"),
-        "the refusal names the path down to where the shapes stopped agreeing: {why}"
-    );
-    assert_eq!(chrome.error(), None, "the edit was refused, not the mount");
-    assert_eq!(
-        chrome
-            .ui_mut()
-            .with_runtime_mut(|rt| rt.get_host_state("__witness")),
-        Some(Value::String("standing".to_string())),
-        "the running instance kept its live state, so it was never torn down"
-    );
-
-    // And the same gate opens again when the shared module is put right.
-    saving(&shared, STATIONERY, "the healed edit", || {
-        chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
-        chrome.refusal().is_none()
-    });
 }

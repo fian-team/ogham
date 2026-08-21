@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ogham::contract::{Documents, Finding, Mount, Scope, Store};
+use contract::{Checked, Documents, Finding, Mount, Scope, Store};
 use ogham::route::Chrome;
 use ogham::runtime::config::RuntimeConfig;
 use ogham::Ogham;
