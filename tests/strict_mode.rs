@@ -416,3 +416,37 @@ fn strict_mode_event_call_inside_closure_validated() {
     );
     assert!(err.message.contains("unknown event `clos`"));
 }
+
+// ---------------------------------------------------------------------
+// The viewport is a built-in, and a strict document may say so.
+// ---------------------------------------------------------------------
+
+/// The VM has answered `screen_width` / `screen_height` since the runtime
+/// grew a viewport, and only the strict-mode list decided whether a
+/// document could name them. It could not, so the same read compiled in a
+/// loose document and refused in a strict one — which is not a contract,
+/// it is a gap.
+#[test]
+fn strict_mode_reads_the_viewport_the_vm_already_answers() {
+    compile(
+        r#"
+        host_state { volume: string };
+        let main = fn () { let w = screen_width; let h = screen_height; w };
+        "#,
+    )
+    .unwrap();
+}
+
+/// And a typo of one is still a typo, with the built-in offered back —
+/// the list is what makes the suggestion possible at all.
+#[test]
+fn strict_mode_suggests_the_viewport_builtin_for_a_near_miss() {
+    let err = compile_strict_err(
+        r#"
+        host_state { volume: string };
+        let main = fn () { screen_widt };
+        "#,
+    );
+    assert!(err.message.contains("unknown identifier `screen_widt`"));
+    assert_eq!(err.help.as_deref(), Some("did you mean `screen_width`?"));
+}

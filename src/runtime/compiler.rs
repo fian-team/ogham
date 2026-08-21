@@ -17,7 +17,23 @@ use crate::runtime::value::Value;
 /// without being declared in `host_state`, parameters, or `state`.
 /// Kept as a single source of truth so the LSP's completion (M3)
 /// can read the same list.
-pub(crate) const BUILTINS: &[&str] = &["event", "use_context", "rgb", "rgba", "true", "false"];
+///
+/// `screen_width` and `screen_height` are here because the VM already
+/// answers them ([`OpCode::GetState`]'s third arm) and this list is the
+/// only thing that decided whether a strict document could *say* them.
+/// It could not, so the viewport was reachable from a loose document and
+/// an unknown identifier in a strict one — which is what stopped a game
+/// making the screen an ordinary binding intrinsic.
+pub(crate) const BUILTINS: &[&str] = &[
+    "event",
+    "use_context",
+    "rgb",
+    "rgba",
+    "true",
+    "false",
+    "screen_width",
+    "screen_height",
+];
 
 /// Host-state key carrying the active route path: an array of screen ids,
 /// outermost first. The host owns it; a document reads it only through
