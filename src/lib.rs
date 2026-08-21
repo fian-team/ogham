@@ -65,6 +65,22 @@ pub struct Ogham {
     image_root: Option<PathBuf>,
 }
 
+/// What one [`Ogham::frame`] call did.
+///
+/// `rerendered` is the old bare-bool return. `reloaded` exists because a
+/// hot reload used to happen silently inside `frame`, and the two answers
+/// a wrapping host caches — its projection diff and its document-vs-table
+/// validation ([`route::Chrome`]) — both die with the runtime the reload
+/// replaced. A host that is not told a swap happened cannot re-ask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameReport {
+    /// A watched file changed and the runtime was rebuilt from disk.
+    /// State-preserving: live host state is carried into the new runtime.
+    pub reloaded: bool,
+    /// The module re-executed this frame.
+    pub rerendered: bool,
+}
+
 impl Ogham {
     /// Create an Ogham instance from a file path with file watching enabled.
     /// Watches the main file and every imported file so that changes in any of them trigger a rerender.
@@ -543,21 +559,26 @@ impl Ogham {
     /// carries live host state forward, so injection order is safe across
     /// frames.
     ///
-    /// Returns `true` if the module re-executed this frame.
+    /// Returns a [`FrameReport`]: whether the module re-executed, and
+    /// whether a watched edit was reloaded.
     pub fn frame(
         &mut self,
         width: f32,
         height: f32,
         dt: f32,
-    ) -> Result<bool, runtime::error::RuntimeError> {
-        if self.check_for_changes() {
+    ) -> Result<FrameReport, runtime::error::RuntimeError> {
+        let reloaded = self.check_for_changes();
+        if reloaded {
             self.reload()?;
         }
         self.set_screen_size(width, height);
         let rerendered = self.update()?;
         self.ui.tick_animations(dt);
         self.ui.layout(width, height);
-        Ok(rerendered)
+        Ok(FrameReport {
+            reloaded,
+            rerendered,
+        })
     }
 
     /// Perform a complete frame update: check for file changes, reload if

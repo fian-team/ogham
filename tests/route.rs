@@ -810,3 +810,126 @@ fn a_document_that_agrees_with_its_host_reports_nothing() {
     assert_eq!(c.validate(&["title"]), None);
     assert_eq!(c.validation(), None);
 }
+
+// ── the hot-reload check ───────────────────────────────────────────────
+//
+// WP-0.1: validation used to run once, at mount, and hot reload happened
+// silently inside `Ogham::frame` — a drift introduced by a hot edit was
+// silent until restart, and the projection cache survived the runtime
+// swap. `Chrome` now hears about the reload and re-asks both questions.
+
+use std::collections::HashMap;
+
+use ogham::runtime::config::RuntimeConfig;
+use ogham::runtime::value::Value;
+
+/// A file-backed chrome, because a reload needs a file to reload.
+fn watched_chrome(
+    tag: &str,
+    source: &str,
+    config: RuntimeConfig,
+) -> (ogham::route::Chrome, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("ogham-route-reload-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp dir");
+    let path = dir.join("doc.ogh");
+    std::fs::write(&path, source).expect("write");
+    let ui = ogham::Ogham::watch(path.to_string_lossy().to_string(), config).expect("Ogham::watch");
+    (ogham::route::Chrome::new(ui), path)
+}
+
+/// A document and its host in agreement — the state every reload test
+/// starts from.
+const AGREES: &str = r#"events { back() };
+screen "title" { view Flex { mouse_down: fn () { event("back") } } };
+let main = fn () { outlet() };"#;
+
+/// The same document after a hot edit that drifts both ways at once: the
+/// screen renamed itself out from under the table, and a new raise was
+/// declared that no handler answers.
+const DRIFTED: &str = r#"events { back(), menu(string) };
+screen "credits" { view Flex { mouse_down: fn () { event("back") } } };
+let main = fn () { outlet() };"#;
+
+/// After a reload every key re-projects. The runtime's copy of `label`
+/// is overwritten behind the chrome's back, standing in for any swap
+/// that leaves the runtime holding something the cache does not know it
+/// holds. Before the reload the cache swallows the equal-value push —
+/// that is its job — so the discrepancy is permanent; after the reload
+/// the cache is gone and the push lands.
+#[test]
+fn a_reload_drops_the_projection_cache_so_every_key_reprojects() {
+    let config = RuntimeConfig::new().with_host_state(HashMap::from([(
+        "label".to_string(),
+        Value::String("boot".to_string()),
+    )]));
+    let (mut c, _path) = watched_chrome(
+        "reproject",
+        r#"host_state { label: string };
+let main = fn () { Text { text: label, style: { size: 16 } } };"#,
+        config,
+    );
+    let label =
+        |c: &mut ogham::route::Chrome| c.ui_mut().with_runtime_mut(|rt| rt.get_host_state("label"));
+
+    c.project_root("label", Value::String("live".to_string()));
+    assert_eq!(label(&mut c), Some(Value::String("live".to_string())));
+
+    c.ui_mut().with_runtime_mut(|rt| {
+        rt.inject_host_state("label".to_string(), Value::String("dirty".to_string()))
+    });
+    c.project_root("label", Value::String("live".to_string()));
+    assert_eq!(
+        label(&mut c),
+        Some(Value::String("dirty".to_string())),
+        "before a reload the cache swallows an unchanged key"
+    );
+
+    c.reload();
+    assert_eq!(c.error(), None, "the reload itself succeeded");
+    c.project_root("label", Value::String("live".to_string()));
+    assert_eq!(
+        label(&mut c),
+        Some(Value::String("live".to_string())),
+        "after a reload every key re-projects"
+    );
+}
+
+/// The WP-0.1 acceptance case, end to end through the real watcher: a
+/// hot edit introduces an id drift and a raise drift at once, and the
+/// running chrome names both without a restart — the frame loop polls
+/// with a deadline because watcher delivery is asynchronous.
+#[test]
+fn a_drift_introduced_by_a_hot_edit_is_named_without_a_restart() {
+    let config = RuntimeConfig::new().with_event_handler("back", |_| Ok(Value::Void));
+    let (mut c, path) = watched_chrome("drift", AGREES, config);
+    assert_eq!(c.validate(&["title"]), None);
+
+    std::fs::write(&path, DRIFTED).expect("rewrite");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while c.validation().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the watcher never delivered the edit"
+        );
+        c.frame(640.0, 480.0, 1.0 / 60.0);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let report = c.validation().expect("just checked");
+    assert!(report.contains("credits"), "{report}");
+    assert!(report.contains("title"), "{report}");
+    assert!(report.contains("menu"), "{report}");
+    assert!(report.contains("no handler registered"), "{report}");
+}
+
+/// A chrome nobody validated stays unvalidated across a reload: the
+/// re-check repeats the mount's question, it does not invent one. A host
+/// that skipped the startup check has no table to check against, and an
+/// empty guess would report every screen as unrouted.
+#[test]
+fn a_reload_does_not_invent_a_check_the_mount_never_asked_for() {
+    let (mut c, _path) = watched_chrome("unasked", AGREES, RuntimeConfig::new());
+    c.reload();
+    assert_eq!(c.error(), None);
+    assert_eq!(c.validation(), None);
+}

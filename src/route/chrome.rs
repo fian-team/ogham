@@ -36,6 +36,11 @@ pub struct Chrome {
     /// assert on it — a startup check nothing can fail is a check that
     /// gets ignored.
     validation: Option<String>,
+    /// The ids the mount-time [`validate`](Self::validate) ran against,
+    /// kept so a hot reload can re-run the same check against the same
+    /// table. `None` until a host validates — a reload must not invent a
+    /// check the mount never asked for.
+    expected: Option<Vec<RouteId>>,
 }
 
 impl Chrome {
@@ -45,6 +50,7 @@ impl Chrome {
             last: HashMap::new(),
             error: None,
             validation: None,
+            expected: None,
         }
     }
 
@@ -61,6 +67,7 @@ impl Chrome {
             last: HashMap::new(),
             error: Some(why),
             validation: None,
+            expected: None,
         }
     }
 
@@ -136,6 +143,7 @@ impl Chrome {
     /// will not boot over a screen nobody has routed yet, and that is how
     /// a check gets deleted rather than fixed.
     pub fn validate(&mut self, ids: &[RouteId]) -> Option<&str> {
+        self.expected = Some(ids.to_vec());
         let registered = self.ui.registered_event_names();
         let registered: Vec<&str> = registered.iter().map(|s| s.as_str()).collect();
 
@@ -216,15 +224,57 @@ impl Chrome {
         match self.ui.frame(width, height, dt) {
             // A document that never loaded keeps its error: a blank
             // fallback frames perfectly and would otherwise clear it.
-            Ok(_) => {}
-            Err(e) => {
-                let msg = format!("{e:?}");
-                if self.error.as_deref() != Some(msg.as_str()) {
-                    eprintln!("route: the mounted document failed: {msg}");
+            // (A *reload* clears it inside `reloaded` — the fallback has
+            // no watcher, so it can never take that path.)
+            Ok(report) => {
+                if report.reloaded {
+                    self.reloaded();
                 }
-                self.error = Some(msg);
             }
+            Err(e) => self.record_failure(e),
         }
+    }
+
+    /// Reload the mounted document now, as [`frame`](Self::frame) does
+    /// when a watched file changes — for a host that drives the reload
+    /// itself. Same duties either way: on success the projection cache
+    /// drops and the startup check re-runs; on failure the running
+    /// document stands and [`error`](Self::error) says why.
+    pub fn reload(&mut self) {
+        match self.ui.reload() {
+            Ok(()) => self.reloaded(),
+            Err(e) => self.record_failure(e),
+        }
+    }
+
+    /// A hot reload just replaced the runtime. Two duties.
+    ///
+    /// The projection cache dies with the runtime it described
+    /// ([`forget_projection`](Self::forget_projection)), so the next
+    /// projection pushes every key into the fresh document instead of
+    /// assuming it still holds them. And the startup check re-runs
+    /// against the same ids the mount validated, because a hot edit can
+    /// introduce exactly the drift the check exists to catch — a check
+    /// that runs once per process is a check every hot session escapes,
+    /// and the drift would sit silent until the next restart.
+    fn reloaded(&mut self) {
+        // The document compiled again, which is the reload error's
+        // documented end of life.
+        self.error = None;
+        self.forget_projection();
+        if let Some(ids) = self.expected.clone() {
+            self.validate(&ids);
+        }
+    }
+
+    /// A reload that did not take: the running document stands, the
+    /// error is kept, and it is printed once rather than per frame.
+    fn record_failure(&mut self, e: crate::runtime::error::RuntimeError) {
+        let msg = format!("{e:?}");
+        if self.error.as_deref() != Some(msg.as_str()) {
+            eprintln!("route: the mounted document failed: {msg}");
+        }
+        self.error = Some(msg);
     }
 
     /// Drop the projection cache.

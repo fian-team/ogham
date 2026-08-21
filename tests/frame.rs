@@ -67,15 +67,28 @@ fn frame_reexecutes_only_when_host_state_changed() {
     // Settle whatever construction left pending.
     ogham.frame(800.0, 600.0, 1.0 / 60.0).expect("frame");
 
-    // Idle frame: nothing changed, no re-execute.
-    assert!(!ogham.frame(800.0, 600.0, 1.0 / 60.0).expect("frame"));
+    // Idle frame: nothing changed, no re-execute, and no watched file
+    // means no frame can ever report a reload.
+    let report = ogham.frame(800.0, 600.0, 1.0 / 60.0).expect("frame");
+    assert!(!report.rerendered);
+    assert!(!report.reloaded);
 
     // A changed value re-executes and the tree reflects it...
     ogham.with_runtime_mut(|rt| rt.set_host_state("label", "second"));
-    assert!(ogham.frame(800.0, 600.0, 1.0 / 60.0).expect("frame"));
+    assert!(
+        ogham
+            .frame(800.0, 600.0, 1.0 / 60.0)
+            .expect("frame")
+            .rerendered
+    );
     assert_eq!(root_text(&ogham), "second");
 
     // ...an unchanged re-inject does not.
     ogham.with_runtime_mut(|rt| rt.set_host_state("label", "second"));
-    assert!(!ogham.frame(800.0, 600.0, 1.0 / 60.0).expect("frame"));
+    assert!(
+        !ogham
+            .frame(800.0, 600.0, 1.0 / 60.0)
+            .expect("frame")
+            .rerendered
+    );
 }
