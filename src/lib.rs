@@ -17,6 +17,7 @@
 //! ).expect("parse and execute");
 //! ```
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -234,9 +235,31 @@ impl Ogham {
     /// [`module_schema`](Self::module_schema) returns `None` there: it has
     /// a real error waiting with real diagnostics, and a second complaint
     /// on top would bury it.
+    ///
+    /// # What `accept` hands back
+    ///
+    /// The names the candidate must already hold when its top level runs,
+    /// and what each of them starts at. A hot edit that *adds* a selected
+    /// name has nothing bound for it: the seed rode the config the mount
+    /// was built from, and a selected name is an ordinary host-state key
+    /// whose module top level runs at construction — so without this the
+    /// added name is an undefined identifier and the edit is reported as
+    /// a broken document rather than drawn (`APPLICATION_BUILD.md`, the
+    /// re-seed package). The check is the only party holding the
+    /// candidate's schema at the one moment it can be answered, which is
+    /// why the answer comes back through the same call that grades it.
+    ///
+    /// **Live state wins.** These are at-mount values, so they are laid
+    /// down *under* the running instance's live host state rather than
+    /// over it: a field a producer has already set keeps what the producer
+    /// set, and the seed reaches only names the running document had
+    /// nothing for. The other order would snap every selected field back
+    /// to its declared start on every hot edit.
     pub fn reload_if(
         &mut self,
-        accept: impl FnOnce(&runtime::schema::ModuleSchema) -> Result<(), String>,
+        accept: impl FnOnce(
+            &runtime::schema::ModuleSchema,
+        ) -> Result<HashMap<String, runtime::value::Value>, String>,
     ) -> Result<(), ReloadRefused> {
         match self.path.clone() {
             Some(path) => self.reload_file_if(&path, accept),
@@ -267,7 +290,7 @@ impl Ogham {
 
     /// Reload a specific file (internal helper)
     fn reload_file(&mut self, path: &str) -> Result<(), runtime::error::RuntimeError> {
-        self.reload_file_if(path, |_| Ok(()))
+        self.reload_file_if(path, |_| Ok(HashMap::new()))
             .map_err(|refused| match refused {
                 ReloadRefused::Broken(e) => e,
                 ReloadRefused::Refused(_) => {
@@ -285,7 +308,9 @@ impl Ogham {
     fn reload_file_if(
         &mut self,
         path: &str,
-        accept: impl FnOnce(&runtime::schema::ModuleSchema) -> Result<(), String>,
+        accept: impl FnOnce(
+            &runtime::schema::ModuleSchema,
+        ) -> Result<HashMap<String, runtime::value::Value>, String>,
     ) -> Result<(), ReloadRefused> {
         let new_runtime = Arc::new(Mutex::new(
             runtime::Runtime::from_file(path, Some(self.config.clone()))
@@ -300,9 +325,10 @@ impl Ogham {
             let rt = new_runtime.lock().expect("runtime lock poisoned");
             rt.module_schema()
         };
-        if let Some(schema) = candidate {
-            accept(&schema).map_err(ReloadRefused::Refused)?;
-        }
+        let seed = match candidate {
+            Some(schema) => accept(&schema).map_err(ReloadRefused::Refused)?,
+            None => HashMap::new(),
+        };
 
         // Phase 2.5 M3: clear the OLD UI's lifecycle state
         // (focus stack + portal_layers + focused) before
@@ -311,6 +337,18 @@ impl Ogham {
         // reloaded tree. Below the gate, because a refused
         // candidate must leave the running tree's focus alone.
         self.ui.clear_lifecycle_state();
+        // The seed goes down first and the live map over it, in that
+        // order and not the other one: a seed is what a field holds
+        // *before any producer has run*, so anything the running
+        // instance already holds outranks it. Reversed, every hot edit
+        // would snap every selected field back to its declared start —
+        // a visible regression on a save that changed one colour.
+        if !seed.is_empty() {
+            new_runtime
+                .lock()
+                .expect("runtime lock poisoned")
+                .inject_host_state_batch(seed);
+        }
         self.carry_host_state_into(&new_runtime);
         let mut new_ui =
             Self::create_ui_from_runtime(&new_runtime).map_err(ReloadRefused::Broken)?;

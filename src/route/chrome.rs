@@ -244,12 +244,24 @@ impl Chrome {
     /// stays watched, so the next save that passes heals the session.
     ///
     /// `gate` is handed the candidate's own module schema and answers with
-    /// the sentence that refuses it, or `Ok(())`. It is a closure rather
-    /// than a contract check because the contract lives one crate up; what
-    /// a caller passes is `contract::refusals`.
+    /// the sentence that refuses it, or with the names the candidate must
+    /// hold before its top level runs — the at-mount values for whatever
+    /// this edit newly selected. It is a closure rather than a contract
+    /// check because the contract lives one crate up; what a caller passes
+    /// is `contract::Checked::frame_checked`.
+    ///
+    /// The two answers are one call because they are one moment: the
+    /// candidate's schema exists between the compile and the swap and
+    /// nowhere else, and it is the only thing that knows what the edit
+    /// added. A refusal and a missing seed stay different conditions —
+    /// the first rejects the candidate, the second is what the accepted
+    /// one is handed. See [`Ogham::reload_if`] for why live state still
+    /// wins over a seed.
     pub fn frame_gated(
         &mut self,
-        gate: impl FnOnce(&crate::runtime::schema::ModuleSchema) -> Result<(), String>,
+        gate: impl FnOnce(
+            &crate::runtime::schema::ModuleSchema,
+        ) -> Result<HashMap<String, Value>, String>,
         width: f32,
         height: f32,
         dt: f32,

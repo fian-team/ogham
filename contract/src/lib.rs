@@ -266,10 +266,34 @@ impl Mount {
     /// A document that will not read seeds nothing: it has a real error
     /// waiting with real diagnostics.
     pub fn at_mount(&self, store: &Store) -> std::collections::HashMap<String, Value> {
-        let mut seeded = std::collections::HashMap::new();
         let Ok(schema) = load_schema_in(&self.document, &self.space()) else {
-            return seeded;
+            return std::collections::HashMap::new();
         };
+        self.seeding(&schema, store)
+    }
+
+    /// [`at_mount`](Mount::at_mount) against a schema somebody else is
+    /// already holding — the hot-reload half of the same answer.
+    ///
+    /// A reload has the candidate's schema in hand between the compile and
+    /// the swap, and that schema is the only thing that knows what the
+    /// edit selected; re-reading the file here would answer about whatever
+    /// is on disk *now*, which after a fast second save is a different
+    /// document. So the moment that has the schema passes it in, and the
+    /// mount answers the same question about it.
+    ///
+    /// Note what this is not: it seeds every selected name, not only the
+    /// new ones, because a mount and a reload should not have to differ.
+    /// Which of them actually reach the fresh runtime is the reload's
+    /// ordering decision, and it lays these *under* the live host state
+    /// so a producer's value is never overwritten by a declaration
+    /// ([`Ogham::reload_if`](ogham::Ogham::reload_if)).
+    pub fn seeding(
+        &self,
+        schema: &ModuleSchema,
+        store: &Store,
+    ) -> std::collections::HashMap<String, Value> {
+        let mut seeded = std::collections::HashMap::new();
         for selection in &schema.selections {
             let scopes: Vec<Scope> = match &selection.scope {
                 Some(name) => self
@@ -570,6 +594,16 @@ pub trait Checked {
     /// **without tearing down the running instance**: the edit is checked
     /// before the swap, so a refused one costs the candidate and nothing
     /// else.
+    ///
+    /// An edit the check *accepts* is re-seeded from the same schema
+    /// before it runs, so a save that adds a selected name draws it at the
+    /// providing scope's declared at-mount value — exactly as a fresh
+    /// mount would. Without that the added name is bound to nothing when
+    /// the module's top level runs, and a correct edit comes back as a
+    /// broken document until the process restarts. A refusal and a
+    /// missing seed are different conditions and stay different: the
+    /// check still refuses what it refused before, and the seed is what
+    /// the accepted candidate is handed.
     fn frame_checked(&mut self, store: &Store, mount: &Mount, width: f32, height: f32, dt: f32);
 }
 
@@ -589,7 +623,12 @@ impl Checked for ogham::route::Chrome {
     }
 
     fn frame_checked(&mut self, store: &Store, mount: &Mount, width: f32, height: f32, dt: f32) {
-        self.frame_gated(|schema| refusals(schema, store, mount), width, height, dt);
+        self.frame_gated(
+            |schema| refusals(schema, store, mount).map(|()| mount.seeding(schema, store)),
+            width,
+            height,
+            dt,
+        );
     }
 }
 

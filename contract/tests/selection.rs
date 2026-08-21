@@ -19,8 +19,10 @@
 
 use std::path::{Path, PathBuf};
 
-use contract::{Documents, Finding, Mount, Scope, Store};
+use contract::{Checked, Documents, Finding, Mount, Scope, Store};
+use ogham::route::Chrome;
 use ogham::runtime::config::RuntimeConfig;
+use ogham::runtime::value::Value;
 use ogham::Ogham;
 
 use structure::schema::{Field, Kind, Lit, Schema};
@@ -608,4 +610,263 @@ fn the_load_and_reload_gate_asks_the_same_question_at_leaf_depth() {
     let why = contract::refusals(&schema, &store, &Mount::new(&path).selecting(MANOR))
         .expect_err("the gate refuses the candidate");
     assert!(why.contains("hud.clock"), "{why}");
+}
+
+// ── the re-seed: a hot edit that changes the selection ─────────────────
+//
+// The mount seeds a selection from the providing scope's declared
+// at-mount values, because a selection declares none of its own
+// (`a_document_that_only_selects_renders_before_its_host_has_projected`,
+// above). A **hot edit** that adds a selected name needs the same answer
+// at the same moment, and it used to have nowhere to get one: the seed
+// rode the config the mount was built from, so the added name was bound
+// to nothing when the reloaded module's top level ran, and a perfectly
+// correct edit came back as a broken document until the process
+// restarted. That is the loop a migration lives in — add a `select`,
+// save, look — so it is the loop that has to work.
+
+/// Before the edit: one selected name, read.
+const SELECTS_ONE: &str = r#"
+select world { sea_panel };
+let main = fn () { Text { text: sea_panel } };
+"#;
+
+/// After it: a second name selected off the same scope, and read.
+const SELECTS_TWO: &str = r#"
+select world { sea_panel, sea_duration };
+let main = fn () {
+  Flex {
+    style: {},
+    children: [
+      Text { text: sea_panel },
+      Flex { style: { width: 4 * sea_duration, height: 2 } },
+    ],
+  }
+};
+"#;
+
+/// Mount a document over the sea scope, seeded the way the binding seeds
+/// one — from the reflection, through the config.
+fn watching(dir: &Path, path: &Path, store: &Store, mount: &Mount) -> Chrome {
+    let config = RuntimeConfig::new()
+        .with_project_root(dir.to_path_buf())
+        .with_host_state(mount.at_mount(store));
+    Chrome::new(
+        Ogham::watch(path.to_string_lossy().into_owned(), config).expect("the document mounts"),
+    )
+}
+
+fn sea() -> Store {
+    let mut store = Store::new();
+    store.provides::<Sea>(WORLD).expect("the world's scope");
+    store
+}
+
+/// Save an edit, then drive gated frames until `settled` answers — or
+/// fail naming what never happened.
+///
+/// The save repeats while the wait runs because a watcher registers its
+/// directory *asynchronously*: an edit written in the same instant an
+/// instance was mounted can be missed outright, and the test would then
+/// hang on an event that is never coming.
+fn saving(path: &Path, source: &str, what: &str, mut settled: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut next_save = std::time::Instant::now();
+    while !settled() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the watcher never delivered: {what}"
+        );
+        if std::time::Instant::now() >= next_save {
+            std::fs::write(path, source).expect("rewrite");
+            next_save = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn held(chrome: &mut Chrome, name: &str) -> Option<Value> {
+    chrome
+        .ui_mut()
+        .with_runtime_mut(|rt| rt.get_host_state(name))
+}
+
+fn selects(chrome: &Chrome, name: &str) -> bool {
+    chrome
+        .ui()
+        .module_schema()
+        .map(|s| s.selects(name))
+        .unwrap_or(false)
+}
+
+/// **The acceptance test.** A hot edit that *adds* a selected name is
+/// taken, and the added name is bound at the providing scope's declared
+/// at-mount value — exactly what a fresh mount would have given it.
+#[test]
+fn a_hot_edit_that_adds_a_selected_name_is_taken_and_seeded() {
+    let dir = scratch("reseed-add");
+    let path = write(&dir, "world.ogh", SELECTS_ONE);
+    let store = sea();
+    let mount = Mount::new(&path).selecting(WORLD);
+    let mut chrome = watching(&dir, &path, &store, &mount);
+    assert!(!chrome.check(&store, &mount).refuses(), "the mount holds");
+    assert_eq!(held(&mut chrome, "sea_duration"), None, "nothing yet");
+
+    saving(&path, SELECTS_TWO, "the added selection", || {
+        chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
+        chrome.error().is_some() || selects(&chrome, "sea_duration")
+    });
+
+    assert_eq!(
+        chrome.error(),
+        None,
+        "the edit is correct — a name the scope provides, read — so it must \
+         not come back as a broken document"
+    );
+    assert_eq!(chrome.refusal(), None, "and nothing refused it either");
+    assert_eq!(
+        held(&mut chrome, "sea_duration"),
+        Some(Value::Float(0.0)),
+        "the added name is bound at what the provider declares it starts at, \
+         which is the only place a selection can get a default from (§4.1)"
+    );
+}
+
+/// **The ordering pin.** A re-seed is laid *under* the live host state,
+/// never over it.
+///
+/// Getting this backwards would be invisible in the added name and a
+/// silent visual regression in every other one: every hot edit would snap
+/// every selected field back to its declared start, so a save that
+/// changed a colour would also blank the clock until the next frame the
+/// producer happened to set it.
+#[test]
+fn a_re_seed_leaves_a_producer_set_value_where_the_producer_put_it() {
+    let dir = scratch("reseed-order");
+    let path = write(&dir, "world.ogh", SELECTS_ONE);
+    let store = sea();
+    let mount = Mount::new(&path).selecting(WORLD);
+    let mut chrome = watching(&dir, &path, &store, &mount);
+
+    // What a producer set, differing from the declared at-mount value —
+    // which for a `string` is the empty one.
+    chrome.project_root("sea_panel", Value::String("the strait".to_string()));
+
+    saving(&path, SELECTS_TWO, "the added selection", || {
+        chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
+        chrome.error().is_some() || selects(&chrome, "sea_duration")
+    });
+
+    assert_eq!(chrome.error(), None, "the edit was taken");
+    assert_eq!(
+        held(&mut chrome, "sea_panel"),
+        Some(Value::String("the strait".to_string())),
+        "the live value survived the reload: a seed is what a field holds \
+         before any producer has run, so it never outranks one that has"
+    );
+    assert_eq!(
+        held(&mut chrome, "sea_duration"),
+        Some(Value::Float(0.0)),
+        "and the name the running instance had nothing for is seeded"
+    );
+}
+
+/// A name that *leaves* the selection goes quietly: the edit is taken,
+/// the document draws, and the field the document stopped reading is
+/// ordinary coverage drift — a **report**, not a refusal (§4.1's two
+/// grades).
+#[test]
+fn a_name_that_leaves_the_selection_is_unbound_cleanly() {
+    let dir = scratch("reseed-drop");
+    let path = write(&dir, "world.ogh", SELECTS_TWO);
+    let store = sea();
+    let mount = Mount::new(&path).selecting(WORLD);
+    let mut chrome = watching(&dir, &path, &store, &mount);
+    assert!(selects(&chrome, "sea_duration"), "both names, to start");
+
+    saving(&path, SELECTS_ONE, "the dropped selection", || {
+        chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
+        chrome.error().is_some() || !selects(&chrome, "sea_duration")
+    });
+
+    assert_eq!(chrome.error(), None, "the edit was taken");
+    assert_eq!(chrome.refusal(), None, "dropping a name refuses nothing");
+    let found = chrome.check(&store, &mount);
+    assert!(!found.refuses(), "{found}");
+    assert!(
+        found
+            .reports()
+            .any(|f| matches!(f, Finding::Unread { field, .. } if field == "sea_duration")),
+        "the provider still publishes it and nothing selects it now, which is \
+         the reporting grade exactly: {found}"
+    );
+}
+
+/// The gate is not weakened to let the seeding case through. A hot edit
+/// selecting a name **no scope provides** is still refused, still named,
+/// and the running instance still stands with its live state.
+#[test]
+fn a_hot_edit_selecting_a_name_nothing_provides_is_still_refused() {
+    let dir = scratch("reseed-unprovided");
+    let path = write(&dir, "world.ogh", SELECTS_ONE);
+    let store = sea();
+    let mount = Mount::new(&path).selecting(WORLD);
+    let mut chrome = watching(&dir, &path, &store, &mount);
+    chrome.project_root("sea_panel", Value::String("the strait".to_string()));
+
+    let drifted = SELECTS_TWO.replace("sea_duration", "sea_fathoms");
+    saving(&path, &drifted, "the refused selection", || {
+        chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
+        chrome.refusal().is_some() || selects(&chrome, "sea_fathoms")
+    });
+
+    let why = chrome.refusal().expect("the candidate is refused");
+    assert!(why.contains("sea_fathoms"), "the refusal names it: {why}");
+    assert_eq!(
+        chrome.error(),
+        None,
+        "the edit was refused, not the mount: the running document is fine"
+    );
+    assert!(
+        !selects(&chrome, "sea_fathoms"),
+        "and it never became the running document"
+    );
+    assert_eq!(
+        held(&mut chrome, "sea_panel"),
+        Some(Value::String("the strait".to_string())),
+        "the running instance kept its live state, so it was never torn down"
+    );
+}
+
+/// And the leaf-depth grade survives the same way: an edit whose *read*
+/// does not resolve through the reflection is refused even though the
+/// name it reads through is provided and selected.
+///
+/// The manor again, because leaf depth needs a record to be deep in: the
+/// selection still says `hud` and `hud` is still provided, and the only
+/// thing wrong with the candidate is one letter three levels down.
+#[test]
+fn a_hot_edit_whose_read_does_not_resolve_is_still_refused() {
+    let dir = scratch("reseed-depth");
+    let reads = |field: &str| {
+        format!("select manor {{ hud }};\nlet main = fn () {{ Text {{ text: hud.{field} }} }};\n")
+    };
+    let path = write(&dir, "manor.ogh", &reads("clock"));
+    let mut store = Store::new();
+    store.provides::<Manor>(MANOR).expect("the manor's scope");
+    let mount = Mount::new(&path).selecting(MANOR);
+    let mut chrome = watching(&dir, &path, &store, &mount);
+    assert!(!chrome.check(&store, &mount).refuses(), "the mount holds");
+
+    saving(&path, &reads("clok"), "the refused read", || {
+        chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
+        chrome.refusal().is_some() || chrome.error().is_some()
+    });
+
+    let why = chrome.refusal().expect("the candidate is refused");
+    assert!(
+        why.contains("hud.clok"),
+        "the refusal names the read, not the selection: {why}"
+    );
+    assert_eq!(chrome.error(), None, "the edit was refused, not the mount");
 }
