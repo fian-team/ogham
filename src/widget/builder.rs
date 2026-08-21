@@ -1012,6 +1012,12 @@ fn key_to_string(value: &Value) -> Option<String> {
 ///   is held as pending until exits settle.
 /// - `children`: the content to mount. Accepts a single Widget or an
 ///   Array of Widgets.
+/// - `mode`: `pop` (default) or `wait` — see [`PresenceMode`].
+/// - `stack`: lay the generation's children on top of one another rather
+///   than in a flow. The last child declared paints over the rest and is
+///   offered a press first. What the outlet renders two visible views
+///   with (`lorekeeper/docs/ROUTING.md` §13.5); sizing still measures as
+///   a flow, so a stacking Presence wants the default `grow` box.
 /// - `style`: optional overrides applied to the inner Flex (same shape
 ///   as `Flex { style: ... }`). Defaults are `Grow × Grow` column;
 ///   override `width`/`height` when wrapping shrink-sized content in a
@@ -1046,6 +1052,18 @@ fn create_presence_widget(
                 return Err(BridgeError::InvalidPropertyType(
                     "mode".to_string(),
                     format!("Presence expects 'mode' as a string; got {:?}", other),
+                ));
+            }
+        }
+    }
+
+    if let Some(value) = descriptor.properties.get("stack") {
+        match value {
+            Value::Boolean(stack) => presence.inner.stack = *stack,
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "stack".to_string(),
+                    format!("Presence expects 'stack' as a bool; got {:?}", other),
                 ));
             }
         }

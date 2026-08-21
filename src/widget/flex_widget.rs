@@ -37,6 +37,26 @@ pub struct FlexWidget {
     pub exit_style: Option<FlexStyle>,
     pub hovered: bool,
     pub block_interactions: bool,
+    /// Lay the children out **on top of one another** rather than in a
+    /// flow: every child takes the whole content box, and the last one
+    /// declared paints over the others and is offered a press first.
+    ///
+    /// Set only by [`PresenceWidget`](super::presence_widget::PresenceWidget)
+    /// from its `stack` property, which is how the outlet renders more than
+    /// one visible view (`lorekeeper/docs/ROUTING.md` §13.5: an
+    /// `Occlusion::None` prompt over the workspace it is leaving). It is
+    /// *not* a `Flex` style key: sizing still measures as a flow, so a
+    /// stacking container has to be `grow` or fixed, which the outlet's
+    /// Presence is by default.
+    ///
+    /// Nothing wraps the children, and that is the whole design. The
+    /// obvious fix for §13.5 — an absolutely-positioned layer per view —
+    /// was tried and reverted, because a wrapper sets its child's paint
+    /// transform and a widget whose `initial` also sets one snapped to its
+    /// final place while its ghost faded out. Stacking in the *parent's*
+    /// layout composes with a child's own transform because it never
+    /// touches one.
+    pub stack: bool,
     pub layout: Option<Rect>,
     /// Optional stable identity used to carry persistent state (hover,
     /// scroll, animations) across reconciliation when the widget moves
@@ -119,6 +139,7 @@ impl FlexWidget {
             exit_style: None,
             hovered: false,
             block_interactions: true,
+            stack: false,
             layout: None,
             key: None,
             scroll_y: 0.0,
@@ -149,6 +170,7 @@ impl FlexWidget {
             exit_style: None,
             hovered: false,
             block_interactions: true,
+            stack: false,
             layout: None,
             key: None,
             scroll_y: 0.0,
@@ -1154,7 +1176,19 @@ impl Widget for FlexWidget {
                 // whether a real listener actually ran in the subtree as
                 // opposed to a layout-only Flex returning `true` purely
                 // because `block_interactions` is set.
-                for child_ref in self.children.iter() {
+                // Stacked children overlap, so declaration order is *paint*
+                // order and the press belongs to whatever is on top. A flow
+                // never has to decide this — its children do not overlap, so
+                // `contains_point` settles it — which is why the walk is
+                // front-to-back everywhere else and back-to-front here. An
+                // exit prompt over the workspace it is leaving would
+                // otherwise draw on top and let the workspace take the
+                // click.
+                let order: Vec<&WidgetRef> = match self.stack {
+                    true => self.children.iter().rev().collect(),
+                    false => self.children.iter().collect(),
+                };
+                for child_ref in order {
                     let mut child = child_ref.lock().expect("widget lock poisoned");
                     if child.handle_event(&local_event, ctx, child_ref) {
                         child_consumed = true;
@@ -1273,6 +1307,36 @@ impl Widget for FlexWidget {
             };
 
         self.layout = Some(Rect::new(cursor_x, cursor_y, width, height));
+
+        // Stacking: every child takes the whole content box, at the
+        // content origin, in declaration order — so the last one declared
+        // paints over the rest. No flow, no gap, no alignment, and no
+        // wrapper: the children's own transforms are untouched, which is
+        // the property the reverted absolute-layer fix could not keep
+        // (`ROUTING.md` §13.5).
+        if self.stack {
+            let inset_left = self.style.inset_left();
+            let inset_top = self.style.inset_top();
+            for child_ref in self.children.iter_mut() {
+                let mut child = child_ref.lock().expect("widget lock poisoned");
+                let (x, y) = match child.get_absolute_offset() {
+                    Some((dx, dy)) => (inset_left + dx, inset_top + dy),
+                    None => (inset_left, inset_top),
+                };
+                child.layout(
+                    ctx,
+                    x,
+                    y,
+                    &self.style.direction,
+                    content_width,
+                    content_width,
+                    content_height,
+                    content_height,
+                    0.0,
+                );
+            }
+            return;
+        }
 
         // Per-child grow basis along the parent's main axis. Zero for any
         // child whose main-axis size is not Grow (Fixed, Shrink, Percent,

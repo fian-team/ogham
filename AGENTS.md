@@ -80,7 +80,7 @@ Source (.ogh)
 | `src/widget/grid_widget.rs` | Grid container widget |
 | `src/widget/image_widget.rs` | Image widget |
 | `src/widget/canvas_widget.rs` | Host-painted `Canvas` leaf — `Painter`, `CanvasPainter`, the widget |
-| `src/widget/presence_widget.rs` | Lifecycle-sequencing container (waits for exits before mounting next generation) |
+| `src/widget/presence_widget.rs` | Lifecycle-sequencing container (waits for exits before mounting next generation); `stack: true` layers a generation's children instead of flowing them, which is how the outlet draws two visible views |
 | `src/widget/portal_widget.rs` | Portal — paints children into a per-frame layer with hit-test priority |
 | `src/widget/portal_layer.rs` | Named portal layers + per-layer backdrop / cursor policies |
 | `src/widget/animation.rs` | Spring math + per-property animation state used by transitions |

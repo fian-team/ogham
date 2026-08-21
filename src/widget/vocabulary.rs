@@ -103,7 +103,7 @@ pub const GRID_PROPERTIES: &[&str] = &[
 ];
 
 /// `Presence`.
-pub const PRESENCE_PROPERTIES: &[&str] = &["children", "key", "mode", "style"];
+pub const PRESENCE_PROPERTIES: &[&str] = &["children", "key", "mode", "stack", "style"];
 
 /// `Portal`. No `style` — the portal seats its subtree, it does not paint.
 pub const PORTAL_PROPERTIES: &[&str] = &[

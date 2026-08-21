@@ -205,6 +205,17 @@ half of `lorekeeper/docs/ROUTING.md`; the rules that matter here:
   can only be built once every screen's closure exists — a module-level
   slot stays an open upvalue for the whole module frame, so `main` reads
   the real dispatcher when it finally runs.
+- **The path's screens stack.** A path whose deeper node does not
+  occlude resolves to more than one id — an exit prompt over the
+  workspace it is leaving — so the outlet's `Presence` carries
+  `stack: true`: every screen takes the whole content box, the deeper
+  one paints over the shallower and is offered a press first. Nothing
+  wraps a screen, which is the constraint `lorekeeper/docs/ROUTING.md`
+  §13.5 left behind: the absolutely-positioned layer that was tried and
+  reverted set its child's paint transform, and a screen whose `initial`
+  also set one snapped to its final place while its ghost faded out.
+  A single-view path is unaffected — one child on the whole content box
+  is where a flow's first child already was.
 - **A document never navigates.** There is no way to *set* the path from
   inside ogham, and that is `INTENT §10` holding rather than an
   omission.

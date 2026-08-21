@@ -84,12 +84,20 @@ let outlet_wait = fn () { Flex { style: {} } };";
 /// the incoming one mounts, which is what a game whose every screen is the
 /// whole window wants — two of them overlapped is two rooms at once.
 ///
-/// So the shape here is exactly the shape every consumer already had, and
-/// **rendering more than one visible view at once is not yet supported**.
-/// No migrated consumer has two — occlusion collapses the path to one in
-/// all of them — and the first that does (untold_lore's exit prompts,
-/// which sit *over* the workspace they are leaving) is what should drive
-/// the design. `ROUTING.md` §13.5 is the record.
+/// **And they stack** (`stack: true`), which is what makes more than one
+/// visible view work at all: a path whose deeper node does not occlude
+/// resolves to two ids, `__ogh_dispatch` renders both, and consecutive
+/// children of a flow would sit side by side rather than one over the
+/// other. Stacking is done by the Presence's own layout — every child on
+/// the whole content box, the deeper one last and therefore on top and
+/// first to be offered a press. Nothing wraps a screen, which is the
+/// constraint `ROUTING.md` §13.5 left behind: the absolutely-positioned
+/// layer that was tried and reverted set its child's paint transform, and
+/// a screen whose `initial` also set one snapped to its final place while
+/// its ghost faded out.
+///
+/// A single-view path is unaffected: one child on the whole content box is
+/// where a flow's first child already was.
 fn outlet_source(screen_ids: &[String]) -> String {
     let arms: String = screen_ids
         .iter()
@@ -106,6 +114,7 @@ let __ogh_outlet = fn (__ogh_mode: string) {{
   Presence {{
     key: {route_key},
     mode: __ogh_mode,
+    stack: true,
     children: for (__ogh_i in 0..{path}.length()) {{
       __ogh_dispatch({path}[__ogh_i])
     }},

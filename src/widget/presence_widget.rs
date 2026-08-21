@@ -25,6 +25,13 @@
 //!   only mounted once no ghosts remain. For deliberately sequenced
 //!   choreography.
 //!
+//! A generation's children ordinarily **flow**, like any Flex's.
+//! `stack: true` layers them instead — every child on the whole content
+//! box, the last one declared on top and first to be offered a press.
+//! That is what the outlet renders more than one visible view with
+//! (`lorekeeper/docs/ROUTING.md` §13.5), and it is opt-in because two
+//! things in one generation are usually two things side by side.
+//!
 //! Design doc: `docs/internal/PRESENCE_POP.md`.
 
 use super::flex_widget::FlexWidget;
@@ -254,6 +261,10 @@ impl Widget for PresenceWidget {
         // completes under wait rules, and existing pop ghosts drain
         // regardless of mode.
         self.mode = new_presence.mode;
+        // And the incoming stacking, for the same reason the style above
+        // is adopted: it is a declaration on the widget, and a rerender is
+        // where a changed declaration arrives.
+        self.inner.stack = new_presence.inner.stack;
 
         if new_key == self.generation_key {
             // Same generation — just reconcile children normally. If a
