@@ -1041,6 +1041,8 @@ impl Compiler {
                 let func = Function {
                     arguments: Vec::new(),
                     return_type: crate::parser::Identifier::synthetic("infer"),
+                    // Synthesised, so it annotates nothing.
+                    annotations: Vec::new(),
                     body: Block {
                         // A `Return`, not an expression statement: a
                         // function body's trailing value reaches its caller

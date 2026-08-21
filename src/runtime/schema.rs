@@ -45,7 +45,7 @@ use crate::runtime::value::Value;
 
 use crate::parser::span::Span;
 use crate::parser::typed_bindings::{EventsDecl, FieldDecl, HostStateDecl, RecordDecl};
-use crate::parser::{Parser, SyntaxError};
+use crate::parser::{Identifier, Parser, SyntaxError};
 use crate::scanner::Scanner;
 
 // Re-export the type-universe items so callers (and the
@@ -458,6 +458,9 @@ impl ModuleSchema {
                 resolve_type_ref(&field.ty, None, &schema, field.decl_span)?;
             }
         }
+        for annotation in &module.annotations {
+            resolve_annotation(annotation, &schema)?;
+        }
         check_one_binding_per_name(&schema)?;
 
         Ok(schema)
@@ -662,6 +665,61 @@ fn resolve_type_ref(
             }
         }
     }
+}
+
+/// The words a type annotation may say that are not a record name.
+///
+/// A `fn` parameter's annotation is written in **its own** vocabulary, not
+/// in the one `record`, `host_state {}` and `events {}` share: its grammar
+/// is a bare identifier and any number of `[]`, so it can say neither `T?`
+/// nor `map<K, V>`, and the corpus that has grown up in it says `any`,
+/// `function`, `array` and `map` — words the schema's type language does
+/// not have. `String`, `boolean` and `integer` are spellings of the three
+/// primitives beside them; they are accepted rather than corrected because
+/// six repositories are written in them and a load-time refusal is not the
+/// place to hold a spelling opinion.
+///
+/// Anything **else** is read as a record name and must resolve, which is
+/// the whole of what this list exists to make sayable. Writing the list
+/// down is the point: an annotation used to be parsed and discarded, so
+/// `rows: MenuRow[]` named a record nothing declared anywhere and nothing
+/// caught it — a false expectation, which `APPLICATION.md` §4.1 says never
+/// to produce.
+const ANNOTATION_WORDS: &[&str] = &[
+    "any", "array", "bool", "boolean", "closure", "float", "function", "int", "integer", "map",
+    "string", "String", "void", "widget",
+];
+
+/// Resolve one type annotation: a word from [`ANNOTATION_WORDS`], or a
+/// record this module declares or imports.
+fn resolve_annotation(annotation: &Identifier, schema: &ModuleSchema) -> Result<(), SyntaxError> {
+    // The array suffix is depth, not shape: `MenuRow[][]` names `MenuRow`.
+    let name = annotation.as_str().trim_end_matches("[]");
+    if ANNOTATION_WORDS.contains(&name) || schema.lookup_record(name).is_some() {
+        return Ok(());
+    }
+    let candidates: Vec<&str> = ANNOTATION_WORDS
+        .iter()
+        .copied()
+        .chain(schema.records.keys().map(|s| s.as_str()))
+        .chain(schema.imports.keys().map(|s| s.as_str()))
+        .collect();
+    let span = annotation.span;
+    let mut err = SyntaxError::new(
+        span.start_line,
+        span.start_column,
+        format!("unknown type `{}`", name),
+    )
+    .with_length(name.len())
+    .with_note(
+        "a type annotation names either a built-in type or a record \
+         declared in this module via `record Foo { ... };` or imported \
+         from another module",
+    );
+    if let Some(suggestion) = levenshtein_1(name, &candidates) {
+        err = err.with_help(format!("did you mean `{}`?", suggestion));
+    }
+    Err(err)
 }
 
 /// Reject `record Foo { f: Foo }` — direct self-reference makes
@@ -1226,6 +1284,72 @@ mod tests {
         .unwrap_err();
         assert!(err.message.contains("unknown record `Plyer`"));
         assert_eq!(err.help.as_deref(), Some("did you mean `Player`?"));
+    }
+
+    // -- type annotations (`APPLICATION.md` §4.1) ----------------------
+
+    /// **A parameter's annotation is checked.** It used to be parsed and
+    /// discarded, so a name that looked like a contract was not one —
+    /// regency's `rows: MenuRow[]` named a record nothing declared
+    /// anywhere and nothing caught it.
+    #[test]
+    fn an_annotation_naming_no_record_refuses_and_says_which() {
+        let err = schema_of(
+            r#"
+            host_state { volume: string };
+            let pause_screen = fn (rows: MenuRow[]) { rows };
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("unknown type `MenuRow`"));
+    }
+
+    /// A declared record is a type, whichever order it is written in —
+    /// the same forward reference `host_state` already resolves.
+    #[test]
+    fn an_annotation_naming_a_declared_record_resolves_in_either_order() {
+        schema_of(
+            r#"
+            let tile = fn (row: Row) { row };
+            record Row { label: string };
+            host_state { volume: string };
+            "#,
+        )
+        .expect("a declared record is a type");
+    }
+
+    /// And the array suffix is depth, not shape: the name under it is
+    /// what has to resolve, once, however many brackets follow it.
+    #[test]
+    fn an_annotation_resolves_the_name_under_its_brackets() {
+        schema_of(
+            r#"
+            record Row { label: string };
+            let rows = fn (all: Row[][]) { all };
+            "#,
+        )
+        .expect("`Row[][]` names `Row`");
+        let err = schema_of("let rows = fn (all: Rows[]) { all };").unwrap_err();
+        assert!(err.message.contains("unknown type `Rows`"));
+    }
+
+    /// The annotation's own vocabulary is not the schema's, and this is
+    /// where that is written down: `any`, `function`, `array` and `map`
+    /// are words a `record` field could not say, and six repositories are
+    /// written in them.
+    #[test]
+    fn the_annotation_vocabulary_is_its_own_and_every_word_of_it_resolves() {
+        for word in ANNOTATION_WORDS {
+            schema_of(&format!("let f = fn (x: {word}) {{ x }};"))
+                .unwrap_or_else(|e| panic!("`{word}` is an annotation word: {e:?}"));
+        }
+    }
+
+    /// A near miss is offered the word it nearly was, from the same list.
+    #[test]
+    fn a_misspelt_annotation_word_is_offered_the_one_it_meant() {
+        let err = schema_of("let f = fn (x: strng) { x };").unwrap_err();
+        assert_eq!(err.help.as_deref(), Some("did you mean `string`?"));
     }
 
     #[test]

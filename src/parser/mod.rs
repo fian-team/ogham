@@ -37,6 +37,9 @@ pub struct Parser {
     /// can be parsed as either part of a match expression or a widget expression.
     /// When parsing a match expression, we do not want to accidentally parse the scrutinee as a widget.
     parsing_match_scrutinee: bool,
+    /// Every type annotation seen so far, gathered as the parse goes and
+    /// handed to the module at the end. See [`Function::annotations`].
+    annotations: Vec<Identifier>,
 }
 
 impl Parser {
@@ -46,6 +49,7 @@ impl Parser {
             current: 0,
             module: Function::new(),
             parsing_match_scrutinee: false,
+            annotations: Vec::new(),
         }
     }
 
@@ -138,6 +142,7 @@ impl Parser {
         Self::check_unique_top_level_decls(&block)?;
         self.module.body = block;
         self.module.span = self.span_from(start);
+        self.module.annotations = std::mem::take(&mut self.annotations);
         Ok(self.module.clone())
     }
 
@@ -442,6 +447,14 @@ impl Parser {
     }
 
     /// Parses a type identifier, including postfix array syntax like `int[]` or `widget[][]`.
+    ///
+    /// Every one of them is kept, on the module
+    /// ([`Function::annotations`]), because the schema's resolver is the
+    /// only reader that can say whether the name means anything — a
+    /// record is declared later in the file or imported from another one,
+    /// and the parser knows neither. Annotations used to be parsed and
+    /// dropped on the floor, which made `rows: MenuRow[]` name a record
+    /// nothing declared anywhere and nothing said so.
     fn parse_type_identifier(&mut self) -> Result<Identifier, SyntaxError> {
         let start = self.span_start();
         let base = self.consume_if_identifier()?;
@@ -454,7 +467,9 @@ impl Parser {
         }
 
         let span = self.span_from(start);
-        Ok(Identifier::new(&type_str, span))
+        let annotation = Identifier::new(&type_str, span);
+        self.annotations.push(annotation.clone());
+        Ok(annotation)
     }
 
     fn parse_identifier_statement(&mut self) -> Result<Statement, SyntaxError> {
@@ -1516,7 +1531,9 @@ impl Parser {
         while !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
             let identifier = self.consume_if_identifier()?;
             self.consume_if(scanner::TokenType::Colon)?;
-            let _arg_type = self.parse_type_identifier()?;
+            // The annotation itself rides out on the module's list; the
+            // walk that resolves it needs the whole file's declarations.
+            self.parse_type_identifier()?;
             function.arguments.push(identifier);
             if !self.next_is(vec![scanner::TokenType::RightParenthesis]) {
                 self.consume_if(scanner::TokenType::Comma)?;
