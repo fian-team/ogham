@@ -1023,6 +1023,30 @@ pub fn load_schema_in(path: &Path, space: &ImportSpace) -> Result<ModuleSchema, 
     Ok(schema)
 }
 
+/// What the document named `document` declares, read through the same
+/// import space the host will mount it under — including an **embedded**
+/// source, which has no file behind it.
+///
+/// [`load_schema_in`] reads from disk; this resolves the name first, so a
+/// host whose documents are strings in memory (a previewer, a test, a
+/// binding standing a landing page up) can still ask what one declares
+/// without executing it. Which matters because a `select` block has to be
+/// read *before* the document runs: a selected name is an ordinary
+/// host-state key, so whatever seeds it has to be in the config the
+/// runtime is built from (`APPLICATION.md` §4.1).
+pub fn load_schema_at(
+    document: &str,
+    space: &ImportSpace,
+) -> Result<ModuleSchema, SchemaLoadError> {
+    let Some(resolved) = space.resolve(document) else {
+        return load_schema_in(Path::new(document), space);
+    };
+    let tokens = scan(&resolved.source)?;
+    let module = Parser::new(tokens).parse()?;
+    let crossing = crate::runtime::imports::walk(&module, space);
+    Ok(ModuleSchema::from_module_within(&module, &crossing)?)
+}
+
 /// Like [`load_schema`] but with a pre-supplied import map. The
 /// LSP uses this to inject already-loaded imported records when
 /// resolving a module that imports them.
