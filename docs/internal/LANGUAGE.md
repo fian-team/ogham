@@ -320,6 +320,61 @@ intended.
   - Compiler code that handles imports nested inside functions
     (today's `compile_import_stmt` always runs at module scope).
 
+### What crosses an import
+
+```
+import "./stationery.ogh";                  // everything it declares
+import { plate, rule } from "./stationery.ogh";   // only these
+```
+
+Two things cross, and they arrive by two different routes:
+
+| declaration | how it arrives | who reads it |
+|---|---|---|
+| `let name = …` | copied into the module environment at execution, and injected as host state so `GetState` finds it | the VM, and strict-mode identifier resolution |
+| `record Foo { … }` | merged into the importing module's `ModuleSchema::imports` | the schema resolver, and every `Foo` a field is declared at |
+
+`host_state {}` does **not** cross. It is a whole-document
+declaration bound to one mount, and a module that carries one is
+still strict on its own terms.
+
+**The graph is walked transitively, and the walk mirrors
+execution.** `runtime::imports::walk` is the one answer, read by
+the compiler (which resolves identifiers), by the schema loader
+(which resolves records), and by the watcher (which watches every
+file the graph reached). Transitive because *execution* is: an
+imported module runs inside the importing runtime, so a module two
+hops away has already copied its names into the shared environment
+by the time the document's own body runs. A compiler that only
+pre-scanned direct imports would reject a helper that then ran
+perfectly.
+
+The one asymmetry is narrowing, and it is execution's too:
+`import { a } from "x.ogh"` narrows *x's own* declarations to `a`,
+and whatever `x` imported arrives beside it unnarrowed. The walk
+reproduces that rather than the tidier rule, because two answers
+is the bug.
+
+**Resolution order** is embedded source (keyed by the import string
+exactly as written) → prefix mapping → project root, with a missing
+`.ogh` extension supplied. `ImportSpace` is that policy written
+down once; a standalone schema load with no host configuration
+roots it at the document's own directory.
+
+**A hot edit re-derives the watch set.** The files a document is
+made of are a *reading* of its import graph, not a fact about the
+mount, so `Ogham::reload` rebuilds the watcher from the runtime
+that just took over. An edit that adds an import starts watching
+the module it added; an edit to any module reloads every document
+that mounts it.
+
+  *Drift indicators:*
+  - A second import-resolution path that does not go through
+    `ImportSpace::resolve`.
+  - A reader of a mounted document's schema calling
+    `ModuleSchema::from_module` (which knows nothing of imports)
+    rather than `Runtime::module_schema`.
+
 - **Type annotations are recorded but unenforced.** Function
   parameters require a type identifier (`fn (x: int)`); `let`
   and `state` declarations may optionally have one (`let x: int

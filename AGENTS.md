@@ -90,6 +90,7 @@ Source (.ogh)
 | `src/diagnostics/` | Schema-diagnostic engine used by `ogham check` and the LSP |
 | `src/cli/` | `ogham` CLI binary (currently `check`; `render.rs` is the diagnostic-formatting helper, not a subcommand) |
 | `src/lsp/` | `ogham-lsp` language server binary |
+| `src/runtime/imports.rs` | The import graph: where a path resolves from (`ImportSpace`), what crosses an import (`Crossing`), and the one transitive walk the compiler, the schema and the watcher all read |
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
 | `src/contract.rs` | The surface side of the contract seam: a document's declarations in the structure framework's vocabulary, the `Documents` load-validation harness, and the hot-reload gate's check |
@@ -734,7 +735,7 @@ exception this carves out of "`Surface` is the only rendering seam".
 
 ```ogh
 import "./button.ogh";
-import [ComponentName] from "./components.ogh";
+import { ComponentName } from "./components.ogh";
 ```
 
 ### Control flow

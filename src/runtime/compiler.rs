@@ -8,6 +8,7 @@ use crate::parser::{
     Statement, SyntaxError,
 };
 use crate::runtime::error::VMError;
+use crate::runtime::imports::Crossing;
 use crate::runtime::opcode::{Chunk, FunctionProto, ImportMeta, OpCode, UpvalueDescriptor};
 use crate::runtime::schema::ModuleSchema;
 use crate::runtime::value::Value;
@@ -184,7 +185,7 @@ pub struct Compiler {
     schema: Option<Arc<ModuleSchema>>,
     /// Top-level names this module's imports provide, pre-scanned by
     /// the runtime (which alone can resolve import sources) and passed
-    /// into [`Self::compile_module_with_imports`]. Strict-mode
+    /// into [`Self::compile_module_within`]. Strict-mode
     /// identifier resolution accepts these — the runtime import copies
     /// them into the environment, so a strict module referencing an
     /// imported helper is exactly the promise the strict-mode
@@ -757,27 +758,29 @@ impl Compiler {
     /// declared schema. Strict-mode violations surface as
     /// `VMError::StrictMode(SyntaxError)` carrying rich diagnostics.
     pub fn compile_module(module: &Function) -> Result<FunctionProto, VMError> {
-        Self::compile_module_with_imports(module, std::collections::BTreeSet::new())
+        Self::compile_module_within(module, &Crossing::default())
     }
 
-    /// [`Self::compile_module`], with the top-level names this module's
-    /// imports provide (pre-scanned by the runtime, which alone can
-    /// resolve import sources). Strict-mode identifier resolution
-    /// accepts them, keeping `host_state {}` modules able to compose
-    /// shared `.ogh` fragments.
-    pub fn compile_module_with_imports(
+    /// [`Self::compile_module`], with what this module's imports bring in
+    /// (pre-scanned by the runtime, which alone can resolve import
+    /// sources). Strict-mode identifier resolution accepts the names, and
+    /// the schema resolves record references against the shapes — which is
+    /// what lets a document be split across files at all
+    /// (`APPLICATION_BUILD.md` WP-3.1).
+    pub fn compile_module_within(
         module: &Function,
-        import_values: std::collections::BTreeSet<String>,
+        crossing: &Crossing,
     ) -> Result<FunctionProto, VMError> {
         // Build the module schema first. Loose-mode modules return
         // a schema with `host_state == None`; strict-mode modules
         // return a fully-resolved schema. Either way, the compiler
         // attaches it so identifier resolution can consult it.
-        let schema = ModuleSchema::from_module(module).map_err(VMError::StrictMode)?;
+        let schema = ModuleSchema::from_module_with_imports(module, &crossing.records)
+            .map_err(VMError::StrictMode)?;
         let screen_ids: Vec<String> = schema.screens.keys().cloned().collect();
         let mut compiler = Compiler::new("<module>".to_string(), 0);
         compiler.schema = Some(Arc::new(schema));
-        compiler.import_values = Arc::new(import_values);
+        compiler.import_values = Arc::new(crossing.values.clone());
 
         // `outlet` is forward-declared, because `main` is written last and
         // the dispatcher it calls can only be built once every screen's
@@ -824,10 +827,13 @@ impl Compiler {
     /// schema resolution (so an imported file's strict-mode errors surface).
     pub fn compile_import(
         module: &Function,
+        crossing: &Crossing,
     ) -> Result<(FunctionProto, Vec<(String, u8)>), VMError> {
-        let schema = ModuleSchema::from_module(module).map_err(VMError::StrictMode)?;
+        let schema = ModuleSchema::from_module_with_imports(module, &crossing.records)
+            .map_err(VMError::StrictMode)?;
         let mut compiler = Compiler::new("<import>".to_string(), 0);
         compiler.schema = Some(Arc::new(schema));
+        compiler.import_values = Arc::new(crossing.values.clone());
         compiler.compile_block(&module.body)?;
 
         let local_names: Vec<(String, u8)> = compiler
@@ -1006,7 +1012,7 @@ impl Compiler {
             // A `screen` is not pure metadata: its `view` is code. It
             // compiles to an ordinary zero-arg module-level closure
             // named `__screen__<id>`, which the synthesized dispatcher
-            // (see `compile_module_with_imports`) calls by id. The only
+            // (see `compile_module_within`) calls by id. The only
             // thing that makes it different from a hand-written `let`
             // is `current_screen`, which is what puts the screen's own
             // `state` fields in scope for the body and nothing else.

@@ -292,10 +292,14 @@ impl Ogham {
             runtime::Runtime::from_file(path, Some(self.config.clone()))
                 .map_err(ReloadRefused::Broken)?,
         ));
+        // Resolved against the candidate's *own* import graph: a hot edit
+        // may add, drop or redirect an import, and a gate that read the
+        // running document's imports would check the wrong document. A
+        // candidate that imports a record and does not resolve without it
+        // would otherwise skip the gate entirely (WP-3.1).
         let candidate = {
             let rt = new_runtime.lock().expect("runtime lock poisoned");
-            rt.get_module()
-                .and_then(|module| runtime::schema::ModuleSchema::from_module(module).ok())
+            rt.module_schema()
         };
         if let Some(schema) = candidate {
             accept(&schema).map_err(ReloadRefused::Refused)?;
@@ -322,7 +326,33 @@ impl Ogham {
         }
         self.runtime = new_runtime;
         self.ui = new_ui;
+        self.rewatch(path);
         Ok(())
+    }
+
+    /// Re-derive the watch set from the runtime that just took over.
+    ///
+    /// A hot edit can add an import, drop one, or point one somewhere
+    /// else, and the watch set is a *reading* of the import graph rather
+    /// than a fact about the mount. Without this, a shared module added to
+    /// a document by an edit is invisible until the process restarts —
+    /// which is the whole of WP-3.1's promise ("an edit to a shared module
+    /// reloads every mounting document") failing on the second save.
+    ///
+    /// Only when this instance was already watching: an unwatched
+    /// instance whose host drives its own reloads must not silently
+    /// acquire a watcher. A watcher that cannot be built (a file removed
+    /// underneath us) leaves the old one in place rather than leaving the
+    /// instance unwatched.
+    fn rewatch(&mut self, path: &str) {
+        if self.watcher.is_none() {
+            return;
+        }
+        let paths = Self::paths_to_watch(path, &self.runtime);
+        match file_watcher::FileWatcher::new(paths) {
+            Ok(watcher) => self.watcher = Some(watcher),
+            Err(e) => eprintln!("ogham: the watch set could not be rebuilt: {e:?}"),
+        }
     }
 
     /// Carry the live host-state map from the current runtime into a
@@ -549,11 +579,11 @@ impl Ogham {
     /// resolve; a document that will not compile has a real error waiting
     /// with real diagnostics, and a host checking its screen ids against a
     /// route table should not bury that under a second complaint.
+    /// Resolved against the whole import graph, so a document split across
+    /// files answers the same as one written in a single file
+    /// (`APPLICATION_BUILD.md` WP-3.1).
     pub fn module_schema(&self) -> Option<runtime::schema::ModuleSchema> {
-        self.with_runtime_mut(|rt| {
-            let module = rt.get_module()?;
-            runtime::schema::ModuleSchema::from_module(module).ok()
-        })
+        self.with_runtime_mut(|rt| rt.module_schema())
     }
 
     /// Every unrecognised key and value the builder has met, when the

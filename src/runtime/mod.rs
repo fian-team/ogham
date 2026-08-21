@@ -28,6 +28,7 @@ pub mod descriptor;
 pub mod environment;
 pub mod error;
 pub mod host_state;
+pub mod imports;
 pub mod opcode;
 pub mod ops;
 pub mod schema;
@@ -180,6 +181,16 @@ impl ImportResolver {
             loading_stack: Vec::new(),
             loaded: HashSet::new(),
             cache: HashMap::new(),
+        }
+    }
+
+    /// Where an import path resolves from, for the readers that walk the
+    /// graph without executing it (the compiler's pre-scan, the schema).
+    pub(crate) fn space(&self) -> crate::runtime::imports::ImportSpace {
+        crate::runtime::imports::ImportSpace {
+            project_root: self.project_root.clone(),
+            import_paths: self.import_paths.clone(),
+            embedded: self.embedded.clone(),
         }
     }
 
@@ -536,7 +547,9 @@ impl Runtime {
     /// carries live state across (`Ogham::reload` restores the snapshot
     /// before the new module is executed).
     fn seed_screen_defaults(&mut self, module: &Function) {
-        let Ok(schema) = schema::ModuleSchema::from_module(module) else {
+        let crossing = self.crossing(module);
+        let Ok(schema) = schema::ModuleSchema::from_module_with_imports(module, &crossing.records)
+        else {
             // A module that does not resolve has a real error waiting at
             // compile time, with real diagnostics. Nothing useful to seed.
             return;
@@ -589,6 +602,22 @@ impl Runtime {
         self.module.as_ref()
     }
 
+    /// The mounted module's schema, resolved against everything its
+    /// imports bring in.
+    ///
+    /// The distinction matters (`APPLICATION_BUILD.md` WP-3.1): a document
+    /// split across files declares fields at record shapes another file
+    /// owns, and a schema built without the import graph does not resolve
+    /// at all. Every reader of a *mounted* document's schema — the reload
+    /// gate, the startup check, the contract — goes through here rather
+    /// than through [`ModuleSchema::from_module`](schema::ModuleSchema::from_module),
+    /// which knows nothing of imports and is for a module standing alone.
+    pub fn module_schema(&self) -> Option<schema::ModuleSchema> {
+        let module = self.module.as_ref()?;
+        let crossing = self.crossing(module);
+        schema::ModuleSchema::from_module_with_imports(module, &crossing.records).ok()
+    }
+
     /// Returns the canonical paths of all modules that were imported during the last
     /// execute_module/rerender. Used by the file watcher to watch every file that
     /// affects the current UI.
@@ -612,71 +641,16 @@ impl Runtime {
         result
     }
 
-    /// Collect the top-level `let` names each of `module`'s imports
-    /// provides, resolving sources the same way [`Self::execute_import`]
-    /// will (embedded first, then prefix-mapped paths, then the project
-    /// root). Best-effort by design: an import that cannot be resolved or
-    /// parsed here contributes nothing, and the real import reports the
-    /// real error at execution time with its own diagnostics. Direct
-    /// imports only — a fragment's *internal* helpers resolve through the
-    /// environment at call time, not through the importer's compile.
-    fn peek_import_names(&self, module: &Function) -> std::collections::BTreeSet<String> {
-        let mut names = std::collections::BTreeSet::new();
-        for statement in &module.body.statement_list {
-            let crate::parser::Statement::Import(import_stmt) = statement else {
-                continue;
-            };
-            let path_str = import_stmt.get_path();
-            let source = match self.imports.embedded.get(std::path::Path::new(path_str)) {
-                Some(src) => src.clone(),
-                None => {
-                    let Some(project_root) = self.imports.project_root.as_ref() else {
-                        continue;
-                    };
-                    let mut resolved = None;
-                    for (prefix, base) in &self.imports.import_paths {
-                        if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
-                            let rest = rest.strip_prefix('/').unwrap_or(rest);
-                            resolved = Some(base.join(rest));
-                            break;
-                        }
-                    }
-                    let mut resolved = resolved.unwrap_or_else(|| project_root.join(path_str));
-                    if resolved.extension().is_none() {
-                        resolved.set_extension("ogh");
-                    }
-                    match fs::read_to_string(&resolved) {
-                        Ok(src) => src,
-                        Err(_) => continue,
-                    }
-                }
-            };
-            let mut scanner = Scanner::new(source);
-            let tokens = scanner.scan();
-            let mut parser = Parser::new(tokens);
-            let Ok(imported) = parser.parse() else {
-                continue;
-            };
-            let provided: Vec<String> = imported
-                .body
-                .statement_list
-                .iter()
-                .filter_map(|s| match s {
-                    crate::parser::Statement::Declare(d) => Some(d.get_identifier().get()),
-                    _ => None,
-                })
-                .collect();
-            // A named import narrows what arrives in the environment; the
-            // pre-scan narrows with it so the compiler and the runtime
-            // agree on what is in scope.
-            match import_stmt.get_names() {
-                Some(wanted) => {
-                    names.extend(provided.into_iter().filter(|n| wanted.contains(n)))
-                }
-                None => names.extend(provided),
-            }
-        }
-        names
+    /// What `module`'s imports bring in: the names strict-mode resolution
+    /// must accept, and the record shapes a declaration may be written at.
+    ///
+    /// Best-effort by design — an import that cannot be resolved or parsed
+    /// here contributes nothing, and the real import reports the real error
+    /// at execution time with its own diagnostics. Transitive, because
+    /// execution is: [`imports::walk`](crate::runtime::imports::walk) says
+    /// why the two have to agree.
+    pub(crate) fn crossing(&self, module: &Function) -> crate::runtime::imports::Crossing {
+        crate::runtime::imports::walk(module, &self.imports.space())
     }
 
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
@@ -691,11 +665,13 @@ impl Runtime {
         let proto = if let Some(ref cached) = self.compiled_module {
             cached.clone()
         } else {
-            // Pre-scan the module's imports for the names they provide, so
-            // a strict (`host_state {}`) module can reference imported
-            // helpers — the promise the strict-mode diagnostic makes.
-            let import_names = self.peek_import_names(module);
-            let proto = Compiler::compile_module_with_imports(module, import_names)?;
+            // Pre-scan the module's imports for the names and the record
+            // shapes they provide, so a strict module can reference a
+            // helper — or declare a field at a shape — that lives in
+            // another file. That is the promise the strict-mode diagnostic
+            // makes, and WP-3.1's whole subject.
+            let crossing = self.crossing(module);
+            let proto = Compiler::compile_module_within(module, &crossing)?;
             self.set_compiled_module(proto.clone());
             proto
         };
@@ -822,10 +798,14 @@ impl Runtime {
             ))
         })?;
 
-        let (proto, local_names) = Compiler::compile_import(&imported_module).map_err(|e| {
-            self.imports.loading_stack.pop();
-            e
-        })?;
+        // The imported module's own imports, so a fragment two files deep
+        // compiles against the same names it will run against.
+        let crossing = self.crossing(&imported_module);
+        let (proto, local_names) =
+            Compiler::compile_import(&imported_module, &crossing).map_err(|e| {
+                self.imports.loading_stack.pop();
+                e
+            })?;
         let mut vm = VM::new();
         let _result = vm.run(&proto, self).map_err(|e| {
             self.imports.loading_stack.pop();

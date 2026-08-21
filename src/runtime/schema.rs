@@ -20,10 +20,13 @@
 //! `Record(name)` reference resolves to a declared (or imported)
 //! record name. Pass 2 also detects direct self-references.
 //!
-//! Cross-module record imports (`import [Item] from
-//! "./inv.ogh"`) are wired in by the parser-level import path; the
-//! resolver here just trusts that imported records are present in
-//! the supplied `imports` map.
+//! Cross-module record imports (`import { Item } from
+//! "./inv.ogh"`) arrive in the supplied `imports` map, which the
+//! resolver trusts. Who fills it is
+//! [`crate::runtime::imports`], the one walk of the graph; every
+//! entry point here that reads a *file* (rather than a string)
+//! goes through it, so a document split across files resolves the
+//! same way it will at run time.
 //!
 //! ## Strict mode is detected by presence
 //!
@@ -37,6 +40,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use crate::runtime::imports::ImportSpace;
 use crate::runtime::value::Value;
 
 use crate::parser::span::Span;
@@ -353,6 +357,16 @@ fn build_record_schema(decl: &RecordDecl) -> Result<RecordSchema, SyntaxError> {
         fields,
         decl_span: Some(decl.span),
     })
+}
+
+/// One `record` declaration, resolved on its own.
+///
+/// The import walk ([`crate::runtime::imports`]) needs a record's shape
+/// without building the whole module it was declared in — the module it was
+/// declared in may not even resolve, and an unresolvable neighbour must not
+/// take the record with it.
+pub(crate) fn record_schema_of(decl: &RecordDecl) -> Result<RecordSchema, SyntaxError> {
+    build_record_schema(decl)
 }
 
 fn build_host_state_schema(decl: &HostStateDecl) -> Result<RecordSchema, SyntaxError> {
@@ -823,7 +837,25 @@ impl From<SyntaxError> for SchemaLoadError {
 /// instance required. Callers that want caching layer it on top
 /// (the LSP keys by path + mtime).
 pub fn load_schema(path: &Path) -> Result<ModuleSchema, SchemaLoadError> {
-    load_schema_with_imports(path, &BTreeMap::new())
+    let root = path.parent().unwrap_or(Path::new("."));
+    load_schema_in(path, &ImportSpace::rooted_at(root))
+}
+
+/// [`load_schema`] with the import space a host has configured, so a
+/// document split across files resolves the same way it will at run time
+/// (`APPLICATION_BUILD.md` WP-3.1).
+///
+/// The bare [`load_schema`] roots the space at the document's own
+/// directory, which is where a `./sibling.ogh` lives in every shipped
+/// document today. A host that maps prefixes or embeds its sources passes
+/// its own space and gets its own answers.
+pub fn load_schema_in(path: &Path, space: &ImportSpace) -> Result<ModuleSchema, SchemaLoadError> {
+    let source = fs::read_to_string(path)?;
+    let tokens = scan(&source)?;
+    let module = Parser::new(tokens).parse()?;
+    let crossing = crate::runtime::imports::walk(&module, space);
+    let schema = ModuleSchema::from_module_with_imports(&module, &crossing.records)?;
+    Ok(schema)
 }
 
 /// Like [`load_schema`] but with a pre-supplied import map. The
@@ -851,9 +883,16 @@ pub fn load_schema_from_source_with_imports(
     source: &str,
     imports: &BTreeMap<String, RecordSchema>,
 ) -> Result<ModuleSchema, SchemaLoadError> {
+    let tokens = scan(source)?;
+    let module = Parser::new(tokens).parse()?;
+    let schema = ModuleSchema::from_module_with_imports(&module, imports)?;
+    Ok(schema)
+}
+
+/// Scan, surfacing the first scanner `Error` token as a load failure so a
+/// caller sees it rather than a parse error further downstream.
+fn scan(source: &str) -> Result<Vec<crate::scanner::Token>, SchemaLoadError> {
     let tokens = Scanner::new(source.to_string()).scan();
-    // Surface scanner errors as a SchemaLoadError so callers see
-    // them. The first scanner Error token wins.
     for token in &tokens {
         if let crate::scanner::TokenType::Error(msg) = &token.token_type {
             return Err(SchemaLoadError::Scanner(format!(
@@ -862,9 +901,7 @@ pub fn load_schema_from_source_with_imports(
             )));
         }
     }
-    let module = Parser::new(tokens).parse()?;
-    let schema = ModuleSchema::from_module_with_imports(&module, imports)?;
-    Ok(schema)
+    Ok(tokens)
 }
 
 // ---------------------------------------------------------------------

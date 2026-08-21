@@ -51,8 +51,9 @@ use std::path::{Path, PathBuf};
 
 use structure::schema::Field;
 
+use crate::runtime::imports::ImportSpace;
 use crate::runtime::schema::{
-    load_schema, EventSig, ModuleSchema, PrimType, RecordSchema, SchemaLoadError, TypeRef,
+    load_schema_in, EventSig, ModuleSchema, PrimType, RecordSchema, SchemaLoadError, TypeRef,
 };
 
 /// The structure framework's half of the seam, re-exported so a consumer
@@ -60,6 +61,10 @@ use crate::runtime::schema::{
 /// the same service `route` does for the table (`APPLICATION_BUILD.md`
 /// §0.5's declared scaffolding edge, and it dies with it in P4).
 pub use structure::{Declared, Finding, Findings, Kind, RouteId, Scope, Store, Validation};
+
+/// Where a document's imports resolve from, re-exported so a consumer
+/// declaring a [`Mount`] for a split document needs no second import path.
+pub use crate::runtime::imports::ImportSpace as Imports;
 
 // --- the translation -------------------------------------------------------
 
@@ -164,6 +169,12 @@ pub struct Mount {
     document: PathBuf,
     scopes: Vec<Scope>,
     screens: Vec<RouteId>,
+    /// Where this document's imports resolve from. `None` roots the walk
+    /// at the document's own directory, which is where a `./sibling.ogh`
+    /// lives in every shipped document; a host that maps prefixes or
+    /// embeds its sources says so with
+    /// [`importing_from`](Mount::importing_from).
+    space: Option<ImportSpace>,
 }
 
 impl Mount {
@@ -173,6 +184,29 @@ impl Mount {
             document: document.into(),
             scopes: Vec::new(),
             screens: Vec::new(),
+            space: None,
+        }
+    }
+
+    /// Resolve this document's imports the way the host that mounts it
+    /// will (`APPLICATION_BUILD.md` WP-3.1).
+    ///
+    /// A document split across files is only readable if the reader knows
+    /// where the other files are, and one consumer already answers that
+    /// with a prefix map rather than with a directory (untold_lore's
+    /// editor mounts the game's UI under a `UI_PREFIX`). Without this the
+    /// harness would read those documents as unreadable and the repo would
+    /// have to drop the check that WP-2.4 exists to keep.
+    pub fn importing_from(mut self, space: ImportSpace) -> Self {
+        self.space = Some(space);
+        self
+    }
+
+    /// The import space this mount reads under.
+    fn space(&self) -> ImportSpace {
+        match &self.space {
+            Some(space) => space.clone(),
+            None => ImportSpace::rooted_at(self.document.parent().unwrap_or(Path::new("."))),
         }
     }
 
@@ -329,10 +363,11 @@ impl<'a> Documents<'a> {
     pub fn check(&self) -> Result<Findings, Unreadable> {
         let mut check = Validation::new(self.store);
         for mount in &self.mounts {
-            let schema = load_schema(&mount.document).map_err(|why| Unreadable {
-                document: mount.document.clone(),
-                why: Box::new(why),
-            })?;
+            let schema =
+                load_schema_in(&mount.document, &mount.space()).map_err(|why| Unreadable {
+                    document: mount.document.clone(),
+                    why: Box::new(why),
+                })?;
             mount.check_into(&schema, &mut check);
         }
         Ok(check.finish())
