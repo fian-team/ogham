@@ -252,6 +252,24 @@ pub trait Route<Cx, A> {
         None
     }
 
+    /// The same question, asked over the **facts** the store holds
+    /// (`APPLICATION.md` §5).
+    ///
+    /// A claim that is somebody else's to make is a field of this node's
+    /// scope, not a getter on the host's context: a game whose own pane
+    /// hangs under the engine's title writes the claim into the title's
+    /// scope, and the title reads it here. Defaulted to
+    /// [`resolve_child`](Route::resolve_child), so a route that reads no
+    /// facts writes nothing and four repositories' `impl Route` blocks are
+    /// untouched.
+    ///
+    /// What arrives is **committed** state: the walk runs outside the
+    /// frame barrier (§5.4), so a node reads last tick's commit whole and
+    /// never a mixture.
+    fn resolve_child_in(&self, cx: &Cx, _store: &structure::Store) -> Option<RouteId> {
+        self.resolve_child(cx)
+    }
+
     /// What this route hides beneath it. See [`Occlusion`].
     ///
     /// **Superseded** by `RouteTable::occludes(id, …)`: occlusion is node

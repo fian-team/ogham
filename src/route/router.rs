@@ -33,6 +33,10 @@ impl<Cx, A> structure::Node<Cx, A> for dyn Route<Cx, A> + 'static {
         Route::resolve_child(self, cx)
     }
 
+    fn resolve_child_in(&self, cx: &Cx, store: &structure::Store) -> Option<RouteId> {
+        Route::resolve_child_in(self, cx, store)
+    }
+
     fn occludes(&self) -> Occlusion {
         Route::occludes(self)
     }

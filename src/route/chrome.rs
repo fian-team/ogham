@@ -41,6 +41,11 @@ pub struct Chrome {
     /// table. `None` until a host validates — a reload must not invent a
     /// check the mount never asked for.
     expected: Option<Vec<RouteId>>,
+    /// How many times the mounted document has been replaced by a hot
+    /// reload. A host that caches anything read *out* of the document —
+    /// the names its selection binds, say — compares this to know its
+    /// cache died with the runtime it described.
+    reloads: u64,
     /// What the contract check refused, if it has refused something
     /// (`APPLICATION.md` §4.1). Distinct from [`error`](Self::error) on
     /// purpose: a refused *edit* leaves the running document perfectly
@@ -57,6 +62,7 @@ impl Chrome {
             error: None,
             validation: None,
             expected: None,
+            reloads: 0,
             refusal: None,
         }
     }
@@ -75,6 +81,7 @@ impl Chrome {
             error: Some(why),
             validation: None,
             expected: None,
+            reloads: 0,
             refusal: None,
         }
     }
@@ -85,6 +92,17 @@ impl Chrome {
 
     pub fn ui_mut(&mut self) -> &mut Ogham {
         &mut self.ui
+    }
+
+    /// How many hot reloads this document has taken.
+    ///
+    /// A reload replaces the runtime, so anything a host read *out* of the
+    /// document — the names its selection binds, the screens it declares —
+    /// died with it. Comparing this is how the host knows to read again;
+    /// the alternative is re-reading the module schema every frame, which
+    /// clones it.
+    pub fn reloads(&self) -> u64 {
+        self.reloads
     }
 
     /// The reload error, if the document is currently broken.
@@ -337,6 +355,7 @@ impl Chrome {
     /// that runs once per process is a check every hot session escapes,
     /// and the drift would sit silent until the next restart.
     fn reloaded(&mut self) {
+        self.reloads += 1;
         // The document compiled again, which is the reload error's
         // documented end of life.
         self.error = None;
