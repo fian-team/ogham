@@ -25,9 +25,11 @@ will live in lorekeeper. The design record is
 `docs/internal/APPLICATION.md`; the phased plan and its live status
 are `docs/internal/APPLICATION_BUILD.md` (§0.5). Phases 0 and 1 have
 landed, and Phase 2 is under way: `structure/src/schema.rs` holds the
-derived reflection and `structure/src/store.rs` holds the store core —
-scoped facts, the frame barrier, the two consumption verbs. The
-selection contract and the binding have not landed.
+derived reflection, `structure/src/store.rs` holds the store core —
+scoped facts, the frame barrier, the two consumption verbs — and
+`structure/src/intent.rs` holds the write side: the intents a scope
+publishes, and the typed raise that lands on the outbox. The selection
+contract and the binding have not landed.
 
 The rule that outranks convenience: **`structure` depends on nothing
 of the surface framework, and vice versa.** `structure/`'s empty
@@ -86,7 +88,7 @@ Source (.ogh)
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
 | `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver in `docs/internal/APPLICATION_BUILD.md` Phase 4 |
-| `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, `schema` — §4.3's derived reflection, the thing a document's selection validates against — and `store` — §5's scoped facts, their frame-transactional commit, and the subscribe/read verbs. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
+| `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, `schema` — §4.3's derived reflection, the thing a document's selection validates against — `store` — §5's scoped facts, their frame-transactional commit, and the subscribe/read verbs — and `intent` — §4.4's write side, the vocabulary a scope publishes and the typed raise that lands on the outbox. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
 
 ## LSP Server
 
