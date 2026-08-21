@@ -32,7 +32,12 @@ Last updated 2026-08-20, end of the first build session.
 | the contract crate | **landed** (maintainer-ruled, below) | ogham `e4397cc`, `a65b886`; lorekeeper `8a0bc4c` |
 | WP-5.1 / 5.2 / 5.3 | **landed** (three amendments, below) | lorekeeper `94ae5a3`, `d073feb`, `d7e61be`, `5bb8fa6`; ogham `80f0ae3`, `5279a1f`; lockfiles regency `90191b1`, celia `aee27b4` |
 | re-seed on reload | not started | — |
-| P6 onward | not started | — |
+| re-seed on reload | **landed** | ogham `be0779c`; lorekeeper `338d2ca` |
+| **P6C celia** | **landed, complete** | celia `7b93b5e`, `85bc49f`, `fa4abdc`, `41cd2f9` |
+| **P6U untold_lore** | **partial — blocked twice, both reported** | ul `1393641`, `985e51e`, `7b43731`, `6527df1`, `c029e9b` |
+| P6R regency | in flight | — |
+| driver gaps package | **ruled in, not started** | — |
+| P6S, P7 | not started | — |
 
 **Phase 1 gate, as run:** ogham, untold_lore, regency and
 stargazer-celia-game all green; lorekeeper green except the baseline
@@ -382,10 +387,125 @@ three migrations are about to live in. Closing it needs the binding
 to re-seed on reload, which needs the reload gate to hand back the
 candidate schema.
 
-**Resume at:** the re-seed fix, then P6C ∥ P6R. **P6U is blocked** —
-untold_lore is mid-surgery in the maintainer's tree and does not
-compile; it is not this build's red and no agent has written a byte
-in that repo.
+### Phase 6 — what the migrations proved, and what they found
+
+**P6C (celia) is complete and green**: four documents, 50 unit
+tests (was 43), `celia-core` byte-identical. Two design promises
+held under a real migration. The **zero-lag pick** —
+`a_pick_moves_the_pane_in_the_tick_that_raised_it` raises with no
+`tick` between and the committed pane has already moved; `confirm`
+resolves *inside* the barrier after the focus is set, so
+pick-then-confirm in one tick signs for the tile actually clicked.
+And **scope death replaces reset** — the focused file survives the
+trip to the arena and back, then the next session starts at the
+declared at-mount value because the node left the path.
+`LobbyUi::reset()` is deleted.
+
+**§0.5 amendment 2 is confirmed in practice.** The engine claims
+pause's `rows` and leaves `over`; celia claims `over` and writes
+its own heading there. No wrapper schema anywhere.
+
+**The harness earns its keep during a split**: celia's caught three
+truncated function bodies — a missing `};` in each of three
+screens — as named errors rather than blank screens at runtime.
+
+**P6U found a live bug of the exact class this build exists to
+prevent.** `world.ogh` declares `map_sea_color(string, int,
+string)` — the third argument is the *text* a colour input
+committed — and `intent_from_raise` read it with `num(2)?`, which
+returns `None` for a `Str`. **Every RGB edit made from the
+in-world sea stance was silently dropped**, for as long as the
+panel has existed. The editor's own handler parses the string, so
+only one of two surfaces was broken and neither said so. A typed
+vocabulary surfaced it within the first hour.
+
+**WP-P6U-ED's premise was wrong.** The plan scheduled a two-step
+editor migration because `ul-editor` depended on lorekeeper's
+`shell` — but every `shell::` in that crate is `crate::shell`, its
+own module. The plan read a module path as a crate path. The real
+last consumer was `ul-client`, and all five uses were re-exports
+repointed at `shell_core` and `front::boot`. **No shim, zero new
+code. P6S is unblocked.**
+
+### Five framework gaps the migrations found
+
+Four from celia, one from untold_lore. All real; collected into a
+driver package rather than patched mid-migration, because two
+agents were live in those crates.
+
+1. **`driver::Runner` never calls `tick_store`.** A game with
+   producers of its own cannot use `Runner` at all. Celia
+   re-implemented the frame (~70 lines) to put the barrier between
+   `deliver` and the second resolve. Every migrating game will.
+2. **`Binding::supply_at(root, chrome, slot)` does not exist** —
+   **the most consequential of the five.** `Binding::supply` hands
+   the binding a pre-built instance, but only for the *unnamed*
+   one, and `Instance::new` is not `pub`. So the instance tier is
+   all-or-nothing per root: a host either declares a document name
+   and gives up ownership, or keeps ownership and gets no instance
+   at all. Every game with a host-owned workspace is stuck there —
+   untold_lore has three. This one method is the whole gap between
+   the `mounted_ui` shim and `mounts(id, "…")`, and it also makes
+   `in_area` reachable, since `in_area` refuses on a
+   non-instance-root.
+3. **`Binding::mount_for` refuses on unpublished structural
+   ancestors** — it names every ancestor unconditionally, so a
+   structural node publishing no scope returns an `Unpublished`
+   *refusal* about a node doing exactly what a structural node is
+   for. Needs a `reflection()`-or-`intents()` filter, which needs
+   a `&Store`.
+4. **No typed route access out of the walk.** `Router::get` hands
+   back `&dyn Route` with no downcast, so a producer needing a
+   route's own state (celia's case: the half-typed address, which
+   is the connect route's own per ROUTING.md §7.1) reads it back
+   through the `read_state` shim.
+5. **`Route::child_popped` carries neither store nor outbox**, so a
+   claim the *router* releases has no zero-lag path into a scope.
+   Both games' `paused` claims therefore stay route state, and
+   that Appendix C item does not land whole in either.
+
+Minor: `Assets::space()` reads `config.project_root`, `None` unless
+the host sets it, so a split document's mount seed silently sees
+nothing. Both games set it explicitly.
+
+### P6U's second stop: the passage rule
+
+`driver::crossing::is_passage()` is `from.is_some() &&
+to.is_some()`, so a boundary where either side is not an instance
+root is not a passage — no ghost, no sweep, and `restand` drops the
+departing instance. Consequently **every partial jump regresses one
+of untold_lore's two crossings**: name the front of house and
+`session` as instance roots and `menu ↔ library` becomes a cut
+(the library is not one); leave the front of house unnamed and
+`session → menu` becomes a cut instead. The menu↔library sweep is
+this month's deliberate work (`6215880`), so neither is acceptable,
+and both alternatives — regressing it, or demoting the library to a
+view, which contradicts CROSSING.md axiom 1 — were correctly
+declined. **Gap 2 is what unblocks it.**
+
+The library cannot be an instance root today because `mounts()`
+makes the binding build the `Chrome` from `Assets`, while the
+library's tree is `ul_editor::EditorClient`'s own `Ogham` — it owns
+its runtime, registers ~40 handlers at construction, and
+hot-reloads itself. Handing that over *is* the editor contract
+migration, which WP-P6U-ED explicitly excludes.
+
+The `area` attribute is blocked by the same rule (`in_area` refuses
+on a non-instance-root), so `crossing::side_of` survives this pass,
+reduced from three roots to two. Appendix A.3 anticipated this — it
+conditions the library area on WP-P6U-ED proceeding.
+
+**P6U's table redesign did land** (`c029e9b`): `session` is a node
+at root with `roster` and `world` as views, so **the seated
+hand-off is no longer a root change** — it is a walk within one
+instance, which is CROSSING.md axiom 2 held by the table instead of
+by every reader naming both roots (amended in place, dated). It
+also resolved B.1's second deviation: `Hud` split onto
+`Scope::Node(WORLD)`, which only became sayable once a node existed
+whose lifetime is the session.
+
+**Resume at:** P6R, then the driver gaps package, then P6U's
+remainder, then P6S, then P7.
 
 ## 0. How to use this document
 
