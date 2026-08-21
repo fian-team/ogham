@@ -5,25 +5,37 @@
 //! `APPLICATION_BUILD.md` WP-1.1 the table, the walk, the outbox and the
 //! route vocabulary live in the `structure` crate (the structure
 //! framework, `APPLICATION.md` §2), and this module re-exports them at
-//! their old paths so no consumer changes until the driver lands.
+//! their old paths so no consumer changes until the migrations do.
 //!
 //! # What is still here, and why
 //!
-//! Everything whose signature names a surface type, kept behind as
-//! scaffolding with a scheduled death:
+//! Everything whose signature names a surface type. WP-4.1 built the
+//! driver (`lorekeeper/driver`) and moved every *mechanism* out of this
+//! module into it: the binding owns the store, mounts one instance per
+//! instance root from the table's document names, dispatches events and
+//! draws, and runs the crossing. What is left here is the **surface**
+//! three games are written against, and it stays until their migrations
+//! (P6) rewrite their `impl Route` blocks — which is the first moment it
+//! can go, because there is no way to re-export a driver type from the
+//! crate the driver depends on.
 //!
-//! - the [`Route`] trait — `read_state` returns runtime [`Value`]s (dies
-//!   into the store, P2), `own_ui` returns an [`Ogham`](crate::Ogham)
-//!   (moves into the driver, P4), `draw` takes a skia surface (P4);
-//! - [`RouteEvent`] — its `Input` half carries a widget event (P4);
-//! - [`Chrome`] — its per-key diff core is the seed of the store (P2)
-//!   and its `Ogham`-touching remainder is the driver's (P4);
-//! - the [`Router`] wrapper in [`router`] — the `event`/`draw`
-//!   dispatches (P4).
+//! - the [`Route`] trait — `read_state` is superseded by a document's
+//!   selection against the store (§4.1); `draw` and `occludes` by the
+//!   binding's draw slot and the table's declared occlusion (§6.2);
+//!   `own_ui` and `brings_own_document` by the table's
+//!   `mounts(id, document)` (§6.1);
+//! - [`RouteEvent`] — its `Input` half carries a widget event, and the
+//!   dispatch that consumes it is the driver's now;
+//! - [`Chrome`] — one mounted document, which the binding creates and
+//!   owns; a consumer stops constructing one when the table names its
+//!   documents;
+//! - the [`Router`] wrapper in [`router`] — a store of its own for a walk
+//!   driven with no binding, which is what three games' route tests do.
 //!
-//! The `structure` dependency this re-export rides on is scaffolding
-//! with the same P4 death; `cargo tree -p structure` showing no ogham is
-//! the §2 dependency edge, checkable today.
+//! `cargo tree -p structure` showing no ogham is the §2 dependency edge
+//! that holds and is checked at every phase gate. The other direction is
+//! held by [`crate::contract`] rather than by this module — see the
+//! dependency's own comment in `Cargo.toml`.
 //!
 //! # Why this is in the language
 //!
@@ -77,7 +89,8 @@
 pub mod chrome;
 pub mod router;
 
-// The moved halves, at their old paths. Scaffolding: deletes in P4.
+// The moved halves, at their old paths. Scaffolding: deletes in P6, with
+// the consumers' `impl Route` blocks.
 pub use structure::{guard, outbox, table};
 
 use std::collections::HashMap;
@@ -185,6 +198,10 @@ impl<'a> RouteEvent<'a> {
 pub trait Route<Cx, A> {
     /// Emit this route's own state slice through `editable`'s read walk.
     ///
+    /// **Superseded** by the store (§4.1): a scope's provider owns the
+    /// schema and a document's `screen` block selects from it, so nothing
+    /// transcribes a struct into a map of names any more.
+    ///
     /// The [`Chrome`] turns it into the scoped host state the route's
     /// `screen` block reads. A route with no UI of its own leaves this a
     /// no-op — which is the honest thing for `/table/seating`, a route
@@ -234,6 +251,11 @@ pub trait Route<Cx, A> {
     }
 
     /// What this route hides beneath it. See [`Occlusion`].
+    ///
+    /// **Superseded** by `RouteTable::occludes(id, …)`: occlusion is node
+    /// data (§6.2), the walk reads the table first, and a table that
+    /// declares it never calls this. The method survives for a consumer
+    /// whose table does not declare yet.
     fn occludes(&self) -> Occlusion {
         Occlusion::View
     }
@@ -289,13 +311,14 @@ pub trait Route<Cx, A> {
     ///
     /// Exclusive and sequential (one route draws at a time, shallowest
     /// first), so this is the one method that takes the services mutably.
-    fn draw(
-        &mut self,
-        _cx: &mut Cx,
-        _surface: &mut skia_safe::Surface,
-        _width: f32,
-        _height: f32,
-    ) {
+    ///
+    /// **Superseded** by the binding's draw slot (§6.2): what paints under
+    /// an instance's document is declared once, at the mount, and is
+    /// handed the store's *read* verb rather than whatever the route could
+    /// reach. This method has no damage flag, which is why a consumer that
+    /// used it painted only because the old render pass called
+    /// unconditionally.
+    fn draw(&mut self, _cx: &mut Cx, _surface: &mut skia_safe::Surface, _width: f32, _height: f32) {
     }
 
     /// The id entered the path. Not "became deepest" — a prompt pushed
@@ -316,6 +339,11 @@ pub trait Route<Cx, A> {
     /// A route that brings its own ogham instance — an editor from
     /// another crate. `None` means it projects into the shared chrome.
     ///
+    /// **Superseded** by `RouteTable::mounts(id, document)` (§6.1): the
+    /// binding mounts what the table names, so a route holding an
+    /// instance — and a host holding one beside it — is the drift the
+    /// declaration replaces.
+    ///
     /// Several instances may be mounted at once; depth decides draw order
     /// and input (axiom 8). *Which* instance is mounted is never a
     /// question a game answers, which is what `window_surface` was.
@@ -325,6 +353,10 @@ pub trait Route<Cx, A> {
 
     /// This route's screen lives in a document of its own, so the shared
     /// chrome declares no `screen` block for its id.
+    ///
+    /// **Superseded** by the same declaration: an instance root's document
+    /// is table data, so which ids a given document must declare is
+    /// derived rather than answered.
     ///
     /// Read only by the startup check ([`Chrome::validate`]), which would
     /// otherwise name every editor a game mounts from another crate as

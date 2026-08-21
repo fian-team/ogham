@@ -26,12 +26,25 @@ name = "ogham"
 path = "src/lib.rs"
 
 [dependencies]
-# Scaffolding (APPLICATION_BUILD.md WP-1.1): `ogham::route` re-exports the
-# structure crate's route types so consumers change nothing until the driver
-# lands. This edge and the re-export delete in P4, which is when the
-# "`cargo tree -p ogham` shows no structure" half of APPLICATION.md §2's
-# dependency-edge check becomes real; the other half — `cargo tree -p
-# structure` shows no ogham — holds today and is the one that is load-bearing.
+# APPLICATION.md §2's dependency edge, in the direction that does **not**
+# hold. Two things ride on it, and they are different in kind:
+#
+#   1. `src/route/` — scaffolding. It re-exports the structure crate's route
+#      types and keeps the `Route` trait, whose signatures name surface
+#      types. WP-4.1 moved the *mechanism* into `lorekeeper/driver`; the
+#      surface stays until the three games' migrations (P6) rewrite their
+#      `impl Route` blocks, which is the first moment it can go.
+#   2. `src/contract.rs` — **not** scaffolding, and the real blocker. WP-2.4
+#      put the document-loading half of §4.1's validation here on purpose
+#      (grading has no I/O and lives in the dependency-free crate;
+#      translation and file reading live where the parser is), and it names
+#      `structure::{Store, Kind, Validation, Vocabulary}` to do it. No
+#      deletion in P4 reaches it: by §2's own reading the harness is a
+#      *binding*, and the question of whether it should move into the driver
+#      crate is a maintainer's, recorded in the P4 report.
+#
+# The load-bearing half — `cargo tree -p structure` shows no ogham — holds
+# absolutely and is checked at every phase gate.
 structure = { path = "structure" }
 downcast-rs = "2.0.1"
 skia-safe = { version = "0.91.0", features = ["vulkan", "textlayout"] }
