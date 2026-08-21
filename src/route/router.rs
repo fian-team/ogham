@@ -98,6 +98,30 @@ impl<Cx, A> Router<Cx, A> {
         self.core.table()
     }
 
+    /// The application's facts (`docs/internal/APPLICATION.md` §5). What a
+    /// consumer reads and subscribes through.
+    pub fn store(&self) -> &structure::Store {
+        self.core.store()
+    }
+
+    /// The store, to provide scopes and claim producer fields at startup,
+    /// and to tick it — which is the frame barrier.
+    pub fn store_mut(&mut self) -> &mut structure::Store {
+        self.core.store_mut()
+    }
+
+    /// Ask whether a node's door would open, without going there
+    /// (`APPLICATION.md` §3.4). The same evaluation the walk runs, offered
+    /// to the panel row that grays itself.
+    pub fn ask(&self, id: RouteId) -> Result<(), structure::Refusal> {
+        self.core.ask(id)
+    }
+
+    /// The door the last walk was refused at, if it was refused at one.
+    pub fn refused(&self) -> Option<(RouteId, &structure::Refusal)> {
+        self.core.refused()
+    }
+
     /// The active path, outermost first.
     pub fn path(&self) -> &[RouteId] {
         self.core.path()
