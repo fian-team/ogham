@@ -118,8 +118,8 @@ fn the_manor_screen_family_compiles_against_a_selection_unedited() {
     // The bodies really are the same bytes: everything after the
     // declaration is identical, character for character.
     assert_eq!(
-        declared.split_once(&format!("{HUD}")).map(|(_, rest)| rest),
-        selected.split_once(&format!("{HUD}")).map(|(_, rest)| rest),
+        declared.split_once(HUD).map(|(_, rest)| rest),
+        selected.split_once(HUD).map(|(_, rest)| rest),
     );
 }
 
