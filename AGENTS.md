@@ -83,7 +83,7 @@ Source (.ogh)
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
 | `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver in `docs/internal/APPLICATION_BUILD.md` Phase 4 |
-| `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
+| `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, and `schema` — §4.3's derived reflection, the vocabulary a scope schema describes itself in and the thing a document's selection validates against. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
 
 ## LSP Server
 
@@ -1187,7 +1187,8 @@ ogham/
     route/                  -- surface-typed route remainder (Route trait, RouteEvent,
                             --   Chrome, Router newtype); moves to the driver in Phase 4
   structure/                 -- THE STRUCTURE FRAMEWORK (workspace member): route table,
-                            --   walk, outbox, guards. Zero dependencies, by design
+                            --   walk, outbox, guards, schema reflection.
+                            --   Zero dependencies, by design
   crates/
     ogham-derive/           -- #[derive(OghamState)] / #[derive(OghamMsg)] proc macros
   examples/                  -- .ogh example files (incl. portals/components.ogh)
