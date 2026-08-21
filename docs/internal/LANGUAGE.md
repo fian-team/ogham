@@ -277,13 +277,30 @@ drift from the first.
   paste it in and change the keyword, so `select manor { hud: Hud }`
   says "`hud` is selected, not declared" rather than "expected `,`".
 
+- **A read through a selected name is checked to its leaf.** A
+  selection says `hud` and stops, but the helpers say `hud.clock`,
+  and it is `clock` that a provider renames. So the contract collects
+  every member-access path a document makes off a name it selected —
+  its own file's and its imports' — and resolves each through the
+  providing scope's reflection at load and at every hot reload. A
+  path that names a field the shape does not have is a refusal that
+  says the path (`Finding::Unreached`).
+  It is syntax, not inference, and it is deliberately silent where it
+  cannot see. `hud.threat[i].filled` is collected as `hud.threat` and
+  no further — §4.2 makes a collection one field in v1 — and a read
+  off a `fn` parameter, a `let`, a `state` or a `for` variable is not
+  collected at all, because a name a document bound itself is its
+  own. Nothing unresolvable is reported; a refusal a correct document
+  cannot avoid would be worse than the gap it closes.
+
 **`host_state {}` still works and still means what it meant.** The
 two forms coexist by design: three games and an engine ship
 documents written against the declared form, and their migration is
-`APPLICATION_BUILD.md` Phase 6. Where they differ is what the
-framework can check — a declared field's shape is compared against
-the provider's and can refuse for disagreeing (`Finding::Shape`); a
-selected field has no restated shape to disagree.
+`APPLICATION_BUILD.md` Phase 6. Where they differ is *how* the
+framework checks them, not how much — a declared field restates the
+provider's shape, so the two copies are compared and a disagreement
+refuses (`Finding::Shape`); a selected field restates nothing, so
+what is checked instead is how far into it the document reads.
 
 `parse_identifier_statement` peeks one token to decide:
 - `Identifier (` → call → expression statement

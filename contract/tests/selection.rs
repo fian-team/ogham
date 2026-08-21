@@ -44,16 +44,17 @@ let main = fn () {
 
 // ── the contract, in §4.1's two grades ─────────────────────────────────
 
-/// The manor view's scope, as P5/P6 will publish it: the records that were
+/// The manor's HUD shape, as P5/P6 will publish it: the records that were
 /// the document's `record` block, now the provider's Rust types.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Manor;
-
-impl Schema for Manor {
-    fn reflect() -> Kind {
-        let pip = Kind::Record(vec![Field::new("filled", Kind::Bool)]);
-        let hud = Kind::Record(vec![
-            Field::new("clock", Kind::Str),
+///
+/// Parameterised by two things, because the leaf-depth tests below are
+/// exactly about a provider that changed one of them: what `clock` is
+/// called, and what a pip is made of.
+fn hud_kind(clock: &str, pip: Kind) -> Kind {
+    Kind::Record(vec![Field::new(
+        "hud",
+        Kind::Record(vec![
+            Field::new(clock, Kind::Str),
             Field::new("act", Kind::Str),
             Field::new("mode_hint", Kind::Str),
             Field::new("threat_caption", Kind::Str),
@@ -74,8 +75,22 @@ impl Schema for Manor {
             Field::new("composure", Kind::List(Box::new(pip))),
             Field::new("condition_shown", Kind::Bool),
             Field::new("prompt", Kind::Str),
-        ]);
-        Kind::Record(vec![Field::new("hud", hud)])
+        ]),
+    )])
+}
+
+/// A pip as regency's document reads it.
+fn pip_kind() -> Kind {
+    Kind::Record(vec![Field::new("filled", Kind::Bool)])
+}
+
+/// The manor view's scope, whole and agreeing.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Manor;
+
+impl Schema for Manor {
+    fn reflect() -> Kind {
+        hud_kind("clock", pip_kind())
     }
     fn at_mount(_: Option<&Lit>) -> Self {
         Self
@@ -356,4 +371,241 @@ fn a_document_that_only_selects_renders_before_its_host_has_projected() {
         .module_schema()
         .expect("the schema resolves")
         .selects("hud"));
+}
+
+// ── leaf depth: how far into a selected name a document may read ───────
+
+/// The manor's scope after a provider-side rename: `Hud::clock` is
+/// `Hud::time_of_day` now, and nobody touched the document.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct RenamedManor;
+
+impl Schema for RenamedManor {
+    fn reflect() -> Kind {
+        hud_kind("time_of_day", pip_kind())
+    }
+    fn at_mount(_: Option<&Lit>) -> Self {
+        Self
+    }
+    fn type_name() -> Option<&'static str> {
+        Some("RenamedManor")
+    }
+}
+
+/// The manor's scope after a rename the harness **cannot** see: a pip has
+/// no `filled` any more.
+///
+/// Every read of it in the document goes through something the walk
+/// cannot resolve — `hud.vitality[i].filled` indexes a list, and
+/// `hud_pip`'s body reads `p.filled` off its own parameter — so the
+/// honest answer is silence.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PiplessManor;
+
+impl Schema for PiplessManor {
+    fn reflect() -> Kind {
+        hud_kind("clock", Kind::Record(vec![Field::new("lit", Kind::Bool)]))
+    }
+    fn at_mount(_: Option<&Lit>) -> Self {
+        Self
+    }
+    fn type_name() -> Option<&'static str> {
+        Some("PiplessManor")
+    }
+}
+
+fn manor_document(dir: &Path) -> PathBuf {
+    write(
+        dir,
+        "table.ogh",
+        &format!("{STATIONERY}{SELECTED}{HUD}{MAIN}"),
+    )
+}
+
+/// **The acceptance test.** A provider renames a field a shipped document
+/// reads through a bound name, and the harness refuses, naming it.
+///
+/// This is the guarantee the inversion cost and this package puts back.
+/// Under `host_state { hud: Hud }` the document restated twenty-four field
+/// shapes, so a renamed `clock` stopped two copies of the shape agreeing
+/// and refused. `select manor { hud }` restates nothing — which is right,
+/// shapes are the provider's — and so the selection alone still holds:
+/// `hud` is provided. Only the *reads* say `clock`, and only the harness
+/// has both the reads and the reflection.
+///
+/// The document is regency's real HUD family, unedited.
+#[test]
+fn a_field_the_provider_renamed_refuses_where_the_document_reads_it() {
+    let dir = scratch("renamed");
+    let path = manor_document(&dir);
+
+    let mut store = Store::new();
+    store
+        .provides::<RenamedManor>(MANOR)
+        .expect("the manor's scope");
+
+    let found = Documents::new(&store)
+        .mounting(Mount::new(&path).selecting(MANOR))
+        .check()
+        .expect("the document reads");
+
+    assert!(
+        found.refuses(),
+        "`hud.clock` reads nothing now, and reading nothing quietly is the \
+         one thing §4.1 promises never to happen: {found}"
+    );
+    let refusal = found
+        .refusals()
+        .find(|f| matches!(f, Finding::Unreached { field, .. } if field == "hud.clock"))
+        .expect("the refusal names the field the provider renamed");
+    assert!(refusal.to_string().contains("hud.clock"), "{refusal}");
+
+    // And the selection itself is not what refused: `hud` is provided.
+    assert!(
+        !found
+            .refusals()
+            .any(|f| matches!(f, Finding::Unprovided { .. })),
+        "the name is fine; it is the depth that is not: {found}"
+    );
+}
+
+/// **The other acceptance test.** A read the harness cannot resolve
+/// statically produces no refusal at all — not a report either.
+///
+/// A false refusal is worse than the gap being closed: it would refuse a
+/// document that is perfectly correct, and the check would be turned off
+/// within a week. So the walk stops where it stops and says nothing about
+/// what is past it.
+///
+/// Both unresolvable shapes are in regency's real file, which is why it is
+/// the fixture: `hud.vitality[i].filled` steps into a list (§4.2 — a
+/// collection is one field in v1), and `hud_pip` reads `p.filled` off a
+/// parameter, which has no declared shape to resolve against. The pip's
+/// `filled` is renamed out from under both here, and the harness is
+/// silent about both.
+#[test]
+fn a_read_the_harness_cannot_resolve_is_silent_rather_than_refused() {
+    let dir = scratch("unresolvable");
+    let path = manor_document(&dir);
+
+    let mut store = Store::new();
+    store
+        .provides::<PiplessManor>(MANOR)
+        .expect("the manor's scope");
+
+    let found = Documents::new(&store)
+        .mounting(Mount::new(&path).selecting(MANOR))
+        .check()
+        .expect("the document reads");
+
+    assert!(
+        !found.refuses(),
+        "nothing here is resolvable to a leaf, so nothing here is refusable: {found}"
+    );
+    assert!(
+        !found
+            .all()
+            .iter()
+            .any(|f| matches!(f, Finding::Unreached { .. })),
+        "and it is not downgraded to a report either — an unseeable read is \
+         not a finding: {found}"
+    );
+}
+
+/// A read that stops *at* a collection is a read like any other, and it
+/// still refuses when the collection is not there.
+///
+/// The line §4.2 draws is "a collection is one field", not "anything near
+/// a collection is unknowable": `hud.threat` resolves to a list and is
+/// checked; `hud.threat[i].filled` is not.
+#[test]
+fn a_read_that_stops_at_a_collection_is_still_checked() {
+    let dir = scratch("collection");
+    let path = write(
+        &dir,
+        "table.ogh",
+        "select manor { hud };\n\
+         let main = fn () { Flex { style: {}, children: for (i in 0..hud.thret.length()) { i } } };",
+    );
+
+    let mut store = Store::new();
+    store.provides::<Manor>(MANOR).expect("the manor's scope");
+
+    let found = Documents::new(&store)
+        .mounting(Mount::new(&path).selecting(MANOR))
+        .check()
+        .expect("the document reads");
+
+    assert!(
+        found
+            .refusals()
+            .any(|f| matches!(f, Finding::Unreached { field, .. } if field == "hud.thret")),
+        "{found}"
+    );
+}
+
+/// A fragment's reads cross the import with it.
+///
+/// §4.7's shared module states its selection once and its helpers live in
+/// its own file, so a check that read only the mounting document would
+/// hold this guarantee exactly nowhere useful — a helper family lifted out
+/// of a document is where a modder edits, and it is the file the
+/// selection is *not* in.
+#[test]
+fn a_fragments_reads_are_checked_at_the_mount_like_its_selection() {
+    let dir = scratch("fragment-reads");
+    write(
+        &dir,
+        "panel.ogh",
+        "select { hud };\nlet body = fn () { Text { text: hud.clock } };\n",
+    );
+    let path = write(
+        &dir,
+        "world.ogh",
+        "import \"./panel.ogh\";\nlet main = fn () { body() };\n",
+    );
+
+    let mut store = Store::new();
+    store.provides::<Manor>(MANOR).expect("a whole manor");
+    store
+        .provides::<RenamedManor>(WORLD)
+        .expect("and one that renamed the field");
+
+    let found = Documents::new(&store)
+        .mounting(Mount::new(&path).selecting(MANOR))
+        .check()
+        .expect("the document reads");
+    assert!(!found.refuses(), "the manor still has a `clock`: {found}");
+
+    let found = Documents::new(&store)
+        .mounting(Mount::new(&path).selecting(WORLD))
+        .check()
+        .expect("the document reads");
+    assert!(
+        found
+            .refusals()
+            .any(|f| matches!(f, Finding::Unreached { field, .. } if field == "hud.clock")),
+        "the same read, refused at the mount that lost the field: {found}"
+    );
+}
+
+/// The same question, at the other moment. [`Documents`] is `cargo test`
+/// time; `contract::refusals` is what a mount's load and every hot reload
+/// ask (§4.1: "validation runs at document load **and at every hot
+/// reload**"). A grade only one of them held would be a grade every hot
+/// session escapes until the next restart.
+#[test]
+fn the_load_and_reload_gate_asks_the_same_question_at_leaf_depth() {
+    let dir = scratch("gate-depth");
+    let path = manor_document(&dir);
+    let schema = ogham::runtime::schema::load_schema(&path).expect("the document reads");
+
+    let mut store = Store::new();
+    store
+        .provides::<RenamedManor>(MANOR)
+        .expect("the manor's scope");
+
+    let why = contract::refusals(&schema, &store, &Mount::new(&path).selecting(MANOR))
+        .expect_err("the gate refuses the candidate");
+    assert!(why.contains("hud.clock"), "{why}");
 }

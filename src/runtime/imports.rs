@@ -146,6 +146,16 @@ pub struct Crossing {
     /// watches. Embedded sources are absent: they have no file behind
     /// them, and a watcher handed one would refuse to start.
     pub files: Vec<PathBuf>,
+    /// The dotted reads every imported file makes off a top-level name
+    /// ([`crate::runtime::reads`]).
+    ///
+    /// Here for the same reason `selections` is: a fragment binds its
+    /// names in its own file *and* in the mounting document, so the
+    /// helper family that actually reads `hud.clock` is often two files
+    /// away from the `select` that named `hud`. A check that saw only the
+    /// mounting document would hold the guarantee exactly where nobody
+    /// keeps their helpers.
+    pub reads: Vec<String>,
 }
 
 /// Walk `module`'s imports, transitively, and collect what crosses.
@@ -183,6 +193,10 @@ fn walk_into(
         // importing it is already in `found` when the narrowing below
         // runs — and unnarrowed, which is what execution does.
         walk_into(&imported, space, seen, found);
+        // Unnarrowed, like the selections: a narrowed import still
+        // *executes* the whole file, so every read in it is a read the
+        // mounted document makes.
+        found.reads.extend(crate::runtime::reads::of(&imported));
         let wanted = import.get_names().clone();
         let takes = |name: &str| match &wanted {
             Some(names) => names.iter().any(|n| n == name),

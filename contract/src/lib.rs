@@ -313,22 +313,37 @@ impl Mount {
             into.selects(&document, &self.scopes, &selection_of(host_state, schema));
         }
         for selection in &schema.selections {
-            match &selection.scope {
+            let scopes = match &selection.scope {
                 // A fragment (§4.7): stated once, checked against the
                 // scopes of *this* mount. Mount it somewhere else and the
                 // same three names are checked against those scopes
                 // instead, which is the whole of the property — one
                 // selection, one statement, validated at each mount.
-                None => into.selects_named(&document, &self.scopes, &selection.fields),
+                None => self.scopes.clone(),
                 // A selection that names its scope (§4.6) is checked
                 // against that scope alone, which is what makes its
                 // refusal say which provider was meant and its agreement
                 // report no shadowing.
                 Some(name) => match self.scopes.iter().find(|scope| named(scope, name)) {
-                    Some(scope) => into.selects_named(&document, &[*scope], &selection.fields),
-                    None => into.unmounted(&document, name, &self.scopes),
+                    Some(scope) => vec![*scope],
+                    None => {
+                        into.unmounted(&document, name, &self.scopes);
+                        continue;
+                    }
                 },
-            }
+            };
+            into.selects_named(&document, &scopes, &selection.fields);
+            // And how far into those names the document actually reads.
+            // A selection says `hud` and stops; the helpers say
+            // `hud.clock`, and the shape that has to have a `clock` on it
+            // is the provider's. Checked against *this* selection's
+            // scopes, because §4.6 binds a name exactly once, so the
+            // selection that bound the root is the one that resolves it.
+            into.reads(
+                &document,
+                &scopes,
+                &through(&schema.reads, &selection.fields),
+            );
         }
         into.raises(&document, &self.scopes, &raises_of(schema));
         into.draws(&document, &schema.screen_ids(), &self.screens);
@@ -396,6 +411,23 @@ pub fn at_mount(field: &Field) -> Value {
             _ => Value::Void,
         },
     }
+}
+
+/// The document's reads that go *through* one selection's names.
+///
+/// A document may hold several selections against several scopes, and its
+/// reads arrive as one list — the file does not say which `select` bound
+/// which name. The root does: §4.6 binds a name exactly once across a
+/// document, so a path's first segment names its selection unambiguously.
+fn through(reads: &[String], selected: &[String]) -> Vec<String> {
+    reads
+        .iter()
+        .filter(|path| {
+            path.split_once('.')
+                .is_some_and(|(root, _)| selected.iter().any(|name| name == root))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Whether `scope` is the one a document's `select <name>` means.

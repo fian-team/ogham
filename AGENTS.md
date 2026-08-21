@@ -97,9 +97,10 @@ Source (.ogh)
 | `src/cli/` | `ogham` CLI binary (currently `check`; `render.rs` is the diagnostic-formatting helper, not a subcommand) |
 | `src/lsp/` | `ogham-lsp` language server binary |
 | `src/runtime/imports.rs` | The import graph: where a path resolves from (`ImportSpace`), what crosses an import (`Crossing`), and the one transitive walk the compiler, the schema and the watcher all read |
+| `src/runtime/reads.rs` | Which dotted paths a document reads off the names it binds — syntax only, shadow-aware, stopping wherever a chain stops being literal. It grades nothing; the contract crate resolves the paths against the provider's reflection |
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
-| `contract/` | **The document contract** (workspace member, working name): a document's declarations in the structure framework's vocabulary, the `Documents` load-validation harness, and the `Checked` hot-reload gate. Depends on `ogham` and `structure` and *nothing else* — it is a binding by §2's own definition, and it stays out of `lorekeeper/driver` so a consumer can ask its question with no window |
+| `contract/` | **The document contract** (workspace member, working name): a document's declarations in the structure framework's vocabulary, the `Documents` load-validation harness, the `Checked` hot-reload gate, and the leaf-depth read check that a selection's names-only form would otherwise cost. Depends on `ogham` and `structure` and *nothing else* — it is a binding by §2's own definition, and it stays out of `lorekeeper/driver` so a consumer can ask its question with no window |
 | `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver when the games' `impl Route` blocks are rewritten (`docs/internal/APPLICATION_BUILD.md` Phase 6) |
 | `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, `schema` — §4.3's derived reflection, the thing a document's selection validates against — `store` — §5's scoped facts, their frame-transactional commit, and the subscribe/read verbs — `intent` — §4.4's write side, the vocabulary a scope publishes and the typed raise that lands on the outbox — and `validate` — §4.1's two grades, where a selection that names a missing field refuses and coverage drift reports. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
 
@@ -519,6 +520,12 @@ select { sea_panel, sea_duration };          // a fragment: from wherever this m
   selection holds at mount, for
   `RuntimeConfig::with_host_state` — a selection declares no defaults,
   so its seed comes from the provider.
+- A **read** through a selected name is checked to its leaf:
+  `hud.clock` against a `Hud` with no `clock` refuses, naming the
+  path. The walk is `src/runtime/reads.rs` and is syntax only — it
+  stops at a collection, and it never looks at a name a `let`, a
+  parameter or a `for` bound, because a false refusal is worse than
+  the gap.
 
 Full grammar and rationale: `docs/internal/LANGUAGE.md`.
 

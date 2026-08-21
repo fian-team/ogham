@@ -82,6 +82,23 @@ pub struct ModuleSchema {
     /// of them — which is checked once, here, so the binding a helper
     /// body reads is never ambiguous.
     pub selections: Vec<SelectionSchema>,
+    /// Every dotted path this document reads off a top-level name, sorted
+    /// and deduplicated — its own and its imports'
+    /// ([`crate::runtime::reads`]).
+    ///
+    /// A `host_state {}` block restates the provider's shapes, so a
+    /// provider's rename is caught by comparing the two copies. A
+    /// `select` restates nothing (§4.1, §4.6), and this is what stands in
+    /// its place: the contract resolves each of these paths through the
+    /// providing scope's reflection, so `hud.clock` against a `Hud` that
+    /// has no `clock` is a refusal naming the field instead of a silent
+    /// `Void`.
+    ///
+    /// Nothing here is checked by this crate. It is a fact about the
+    /// document, in the document's own language, exactly like
+    /// [`selections`](Self::selections) — what it is checked *against*
+    /// lives on the other side of the seam.
+    pub reads: Vec<String>,
 }
 
 /// One resolved `select` block.
@@ -326,6 +343,9 @@ impl ModuleSchema {
             }
             schema.selections.push(selection.clone());
         }
+        schema.reads.extend(crossing.reads.iter().cloned());
+        schema.reads.sort();
+        schema.reads.dedup();
         check_one_binding_per_name(&schema)?;
         Ok(schema)
     }
@@ -406,6 +426,7 @@ impl ModuleSchema {
             imports: imports.clone(),
             screens,
             selections,
+            reads: crate::runtime::reads::of(module),
         };
 
         // -----------------------------------------------------------------

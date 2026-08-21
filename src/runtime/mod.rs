@@ -31,6 +31,7 @@ pub mod host_state;
 pub mod imports;
 pub mod opcode;
 pub mod ops;
+pub mod reads;
 pub mod schema;
 pub mod value;
 pub mod vm;
