@@ -678,7 +678,7 @@ impl Route<Cx, Act> for Claimer {
         Escape::Ignore
     }
 
-    fn child_popped(&mut self, _child: RouteId) {
+    fn child_popped(&mut self, _out: &mut Outbox<Act>, _child: RouteId) {
         self.claim = None;
     }
 

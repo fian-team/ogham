@@ -53,8 +53,8 @@ impl<Cx, A> structure::Node<Cx, A> for dyn Route<Cx, A> + 'static {
         Route::take_leave_request(self)
     }
 
-    fn child_popped(&mut self, child: RouteId) {
-        Route::child_popped(self, child)
+    fn child_popped(&mut self, out: &mut Outbox<A>, child: RouteId) {
+        Route::child_popped(self, out, child)
     }
 
     fn enter(&mut self, cx: &mut Cx) {
@@ -235,7 +235,7 @@ impl<Cx, A> Router<Cx, A> {
             // Asked *after* every dispatch, handled or not: a route may
             // decide to leave on an event it also lets fall through.
             if Route::take_leave_request(route) {
-                self.core.pop_at(depth);
+                self.core.pop_at(out, depth);
             }
             if handled {
                 return Handled::Yes;

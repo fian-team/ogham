@@ -364,7 +364,17 @@ pub trait Route<Cx, A>: AsAny {
     ///
     /// A route with a single `Option<RouteId>` claim ignores the argument
     /// and clears it; one that can claim several children distinguishes.
-    fn child_popped(&mut self, _child: RouteId) {}
+    ///
+    /// **The outbox is the other half.** A claim is not always a field of
+    /// the route that holds it: since the store, a claim may be a fact of
+    /// a *scope*, whose lifetime is the node's presence on the path
+    /// (`APPLICATION.md` §5) — and this callback could not reach one,
+    /// because it was the only route method handed nothing to ask with. A
+    /// route pushes an action here exactly as it does from
+    /// [`escape`](Route::escape); the producer that owns the fact clears
+    /// it inside the same frame's barrier, and the next walk is a segment
+    /// shorter.
+    fn child_popped(&mut self, _out: &mut Outbox<A>, _child: RouteId) {}
 
     /// 3D, Skia, anything. Runs every frame that occlusion allows, with
     /// no injection — the principled home for a per-frame canvas paint.
