@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = [".", "structure"]
 resolver = "2"
 
 [package]
@@ -26,6 +26,13 @@ name = "ogham"
 path = "src/lib.rs"
 
 [dependencies]
+# Scaffolding (APPLICATION_BUILD.md WP-1.1): `ogham::route` re-exports the
+# structure crate's route types so consumers change nothing until the driver
+# lands. This edge and the re-export delete in P4, which is when the
+# "`cargo tree -p ogham` shows no structure" half of APPLICATION.md §2's
+# dependency-edge check becomes real; the other half — `cargo tree -p
+# structure` shows no ogham — holds today and is the one that is load-bearing.
+structure = { path = "structure" }
 downcast-rs = "2.0.1"
 skia-safe = { version = "0.91.0", features = ["vulkan", "textlayout"] }
 lodepng = "3.12.1"

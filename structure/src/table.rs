@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::route::RouteId;
+use crate::RouteId;
 
 /// What is wrong with a table, found at startup rather than at the frame
 /// that would have tripped over it.
@@ -144,10 +144,7 @@ impl RouteTable {
         for (child, parents) in &self.parents {
             for parent in parents {
                 if !self.ids.contains(parent) {
-                    return Err(TableError::UnknownParent {
-                        child,
-                        parent,
-                    });
+                    return Err(TableError::UnknownParent { child, parent });
                 }
             }
         }
@@ -220,7 +217,9 @@ mod tests {
 
     #[test]
     fn a_valid_table_validates() {
-        settings_table().validate().expect("this table is well formed");
+        settings_table()
+            .validate()
+            .expect("this table is well formed");
     }
 
     #[test]

@@ -1,9 +1,29 @@
 //! One router, one path, one arbitration rule.
 //!
 //! `lorekeeper/docs/ROUTING.md` is the record and its axioms are locked.
-//! This module is the route tier: the table, the walk, depth arbitration,
-//! occlusion, escape, departure, and the one generic [`Chrome`] that
-//! projects a route's state into its `screen` block.
+//! This module is the route tier's *surface-side face*: since
+//! `APPLICATION_BUILD.md` WP-1.1 the table, the walk, the outbox and the
+//! route vocabulary live in the `structure` crate (the structure
+//! framework, `APPLICATION.md` §2), and this module re-exports them at
+//! their old paths so no consumer changes until the driver lands.
+//!
+//! # What is still here, and why
+//!
+//! Everything whose signature names a surface type, kept behind as
+//! scaffolding with a scheduled death:
+//!
+//! - the [`Route`] trait — `read_state` returns runtime [`Value`]s (dies
+//!   into the store, P2), `own_ui` returns an [`Ogham`](crate::Ogham)
+//!   (moves into the driver, P4), `draw` takes a skia surface (P4);
+//! - [`RouteEvent`] — its `Input` half carries a widget event (P4);
+//! - [`Chrome`] — its per-key diff core is the seed of the store (P2)
+//!   and its `Ogham`-touching remainder is the driver's (P4);
+//! - the [`Router`] wrapper in [`router`] — the `event`/`draw`
+//!   dispatches (P4).
+//!
+//! The `structure` dependency this re-export rides on is scaffolding
+//! with the same P4 death; `cargo tree -p structure` showing no ogham is
+//! the §2 dependency edge, checkable today.
 //!
 //! # Why this is in the language
 //!
@@ -55,9 +75,10 @@
 //! ```
 
 pub mod chrome;
-pub mod outbox;
 pub mod router;
-pub mod table;
+
+// The moved halves, at their old paths. Scaffolding: deletes in P4.
+pub use structure::{outbox, table};
 
 use std::collections::HashMap;
 
@@ -66,15 +87,8 @@ use crate::runtime::value::Value;
 pub use chrome::Chrome;
 pub use outbox::Outbox;
 pub use router::Router;
+pub use structure::{Departure, Escape, Handled, Occlusion, RaiseArg, RouteId};
 pub use table::{RouteTable, TableError};
-
-/// A route's id: the name a table registers and a `screen` block declares.
-///
-/// A `&'static str` rather than a `String` because the table is static and
-/// built once at startup (axiom 10) — and because comparing ids is on the
-/// per-frame path, where the walk asks every node on the path for its
-/// child.
-pub type RouteId = &'static str;
 
 /// What a route is offered.
 ///
@@ -98,23 +112,6 @@ pub enum RouteEvent<'a> {
     Ui { name: &'a str, args: &'a [RaiseArg] },
 }
 
-/// One argument of a named raise.
-///
-/// Not `crate::Value`, and the reason is a real constraint rather than
-/// taste: an event handler must be `Send + Sync`, and a `Value` may hold
-/// an `Rc<VMClosure>`, so it cannot cross the handler boundary at all.
-/// What can cross is data — which is also the only thing a host has any
-/// business acting on.
-#[derive(Clone, Debug, PartialEq)]
-pub enum RaiseArg {
-    Str(String),
-    Int(i32),
-    Float(f64),
-    Bool(bool),
-    /// A closure, a widget, or void — nothing a host can act on.
-    Opaque,
-}
-
 impl From<&crate::runtime::value::Value> for RaiseArg {
     fn from(v: &crate::runtime::value::Value) -> Self {
         use crate::runtime::value::Value;
@@ -124,23 +121,6 @@ impl From<&crate::runtime::value::Value> for RaiseArg {
             Value::Float(f) => RaiseArg::Float(*f),
             Value::Boolean(b) => RaiseArg::Bool(*b),
             _ => RaiseArg::Opaque,
-        }
-    }
-}
-
-impl RaiseArg {
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            RaiseArg::Str(s) => Some(s.as_str()),
-            _ => None,
-        }
-    }
-
-    pub fn as_f32(&self) -> Option<f32> {
-        match self {
-            RaiseArg::Float(f) => Some(*f as f32),
-            RaiseArg::Int(i) => Some(*i as f32),
-            _ => None,
         }
     }
 }
@@ -185,102 +165,6 @@ impl<'a> RouteEvent<'a> {
     }
 }
 
-/// Whether a route consumed an event.
-///
-/// Depth arbitration offers an event to the deepest active route first and
-/// stops at the first `Handled::Yes` (axiom 6). One rule, replacing five
-/// hand-ordered callbacks in one game and a two-layer special case in
-/// `app`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Handled {
-    Yes,
-    No,
-}
-
-impl Handled {
-    pub fn is_handled(self) -> bool {
-        matches!(self, Handled::Yes)
-    }
-
-    /// `true` → `Yes`. For routes whose inner call already returns a bool.
-    pub fn from_bool(consumed: bool) -> Self {
-        match consumed {
-            true => Handled::Yes,
-            false => Handled::No,
-        }
-    }
-}
-
-/// What a route hides beneath it.
-///
-/// Ordered, and `Surface` implies `View`. That it is one ladder rather than
-/// two independent bits is an *empirical* claim about the three consumers,
-/// not a simplification: nothing in any of them wants an ancestor's 3D
-/// hidden while its HUD still draws. `ROUTING.md` §7.2 is the record, and
-/// this is the line to attack first if that turns out wrong.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Occlusion {
-    /// Ancestors draw and their screens render behind this one. What the
-    /// exit prompts want and cannot express today: a scrim and a card
-    /// authored to sit *over* the workspace it is leaving.
-    None,
-    /// Ancestors' `draw` runs; their screens do not. Every ordinary child
-    /// — the journal, the wardrobe, the sea and sky stances, pause — and
-    /// the default, because it is what a `mode` swap does today.
-    View,
-    /// Neither. A route that brings its own world: the map editor, the
-    /// backstory workspace, the library.
-    Surface,
-}
-
-impl Default for Occlusion {
-    fn default() -> Self {
-        Occlusion::View
-    }
-}
-
-/// What Escape means here (axiom 9).
-///
-/// The deepest active route decides, and no layer above it intercepts.
-/// Today the shell claims Escape unconditionally while `InGame`, which is
-/// why two games' Escape handlers are dead code that reads as correct.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Escape {
-    /// Leave this route; the path shortens by one. The ordinary case.
-    Pop,
-    /// This route has unsaved work and raises its own prompt instead. The
-    /// prompt is a child route; the router does not pop.
-    Prompt,
-    /// Escape means nothing here and must not reach anyone else — a text
-    /// field clearing itself, a stance that owns the key.
-    Ignore,
-    /// Not this route's key. Offer it to the parent.
-    Fall,
-}
-
-/// How the outgoing route leaves the frame.
-///
-/// Two of the three consumers already implement cross-screen transitions
-/// by re-rendering the *outgoing* surface offscreen and bleeding it over
-/// the incoming one. A router that swaps the top of the stack and drops
-/// the old route breaks both, so departure is part of the contract rather
-/// than something a game bolts on beside it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Departure {
-    /// Gone this frame. The default, and it costs nothing.
-    Cut,
-    /// Hold the outgoing route's last frame for `seconds`, composited
-    /// under the incoming one. The router keeps the frame; what is done
-    /// with it is the host's (a page turn, a cross-fade, a bloom).
-    Bleed { seconds: f32 },
-}
-
-impl Default for Departure {
-    fn default() -> Self {
-        Departure::Cut
-    }
-}
-
 /// One routable surface.
 ///
 /// Implemented once per surface by a game (or by the services tier, for
@@ -292,6 +176,10 @@ impl Default for Departure {
 /// Every method has a default except [`event`](Route::event) and
 /// [`escape`](Route::escape), because a surface that answers neither is
 /// decoration rather than a route (axiom 4).
+///
+/// The walk never sees this trait: `structure`'s router drives it through
+/// the [`structure::Node`] bridge in [`router`], which carries exactly
+/// the methods below whose signatures name no surface type.
 pub trait Route<Cx, A> {
     /// Emit this route's own state slice through `editable`'s read walk.
     ///
