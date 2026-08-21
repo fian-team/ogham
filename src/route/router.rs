@@ -76,6 +76,14 @@ impl<Cx, A> structure::Node<Cx, A> for dyn Route<Cx, A> + 'static {
 /// [`event`](Self::event) and [`draw`](Self::draw) delegates.
 pub struct Router<Cx, A> {
     core: structure::Router<Cx, A, dyn Route<Cx, A>>,
+    /// §5's facts. The **binding** owns the one store
+    /// (`APPLICATION_BUILD.md` WP-4.1, §6.1) and hands it to the walk each
+    /// frame; this one belongs to the router only while the router is
+    /// standing on its own — a test driving the walk with no window, which
+    /// is what three games' route tests do. Handing the router to a driver
+    /// hands the store over with it ([`into_parts`](Self::into_parts)), so
+    /// there is never a second one.
+    store: structure::Store,
 }
 
 impl<Cx, A> Router<Cx, A> {
@@ -89,9 +97,20 @@ impl<Cx, A> Router<Cx, A> {
         routes: Vec<(RouteId, Box<dyn Route<Cx, A>>)>,
         root: impl Fn(&Cx) -> RouteId + 'static,
     ) -> Result<Self, TableError> {
+        let store = structure::Store::over(&table);
         Ok(Self {
             core: structure::Router::new(table, routes, root)?,
+            store,
         })
+    }
+
+    /// Hand the walk and the facts to a binding, together.
+    ///
+    /// The one door out of this wrapper, and the reason there is never a
+    /// second store: a driver takes both halves or neither. Scaffolding
+    /// with the same death date as the [`Route`] trait itself.
+    pub fn into_parts(self) -> (structure::Router<Cx, A, dyn Route<Cx, A>>, structure::Store) {
+        (self.core, self.store)
     }
 
     pub fn table(&self) -> &RouteTable {
@@ -101,20 +120,20 @@ impl<Cx, A> Router<Cx, A> {
     /// The application's facts (`docs/internal/APPLICATION.md` §5). What a
     /// consumer reads and subscribes through.
     pub fn store(&self) -> &structure::Store {
-        self.core.store()
+        &self.store
     }
 
     /// The store, to provide scopes and claim producer fields at startup,
     /// and to tick it — which is the frame barrier.
     pub fn store_mut(&mut self) -> &mut structure::Store {
-        self.core.store_mut()
+        &mut self.store
     }
 
     /// Ask whether a node's door would open, without going there
     /// (`APPLICATION.md` §3.4). The same evaluation the walk runs, offered
     /// to the panel row that grays itself.
     pub fn ask(&self, id: RouteId) -> Result<(), structure::Refusal> {
-        self.core.ask(id)
+        self.core.ask(id, &self.store)
     }
 
     /// The door the last walk was refused at, if it was refused at one.
@@ -150,7 +169,7 @@ impl<Cx, A> Router<Cx, A> {
     /// Call once per frame, before `update`. Returns `true` if the path
     /// changed.
     pub fn resolve(&mut self, cx: &mut Cx) -> bool {
-        self.core.resolve(cx)
+        self.core.resolve(cx, &mut self.store)
     }
 
     /// The departure the last path change asked for, if it asked for one.
