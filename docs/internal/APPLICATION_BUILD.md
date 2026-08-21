@@ -30,7 +30,9 @@ Last updated 2026-08-20, end of the first build session.
 | WP-4.1 – 4.5 | **landed** | ogham `03d895f`, `ac04252`; lorekeeper `34b13d5`, `027a320`, `5d8ee11`, `2489d8f`, `953adaa`; lockfiles regency `19cfb4b`, celia `dedec38` |
 | **P3+P4 gate** | **passed** 2026-08-21 | — |
 | the contract crate | **landed** (maintainer-ruled, below) | ogham `e4397cc`, `a65b886`; lorekeeper `8a0bc4c` |
-| P5 onward | not started | — |
+| WP-5.1 / 5.2 / 5.3 | **landed** (three amendments, below) | lorekeeper `94ae5a3`, `d073feb`, `d7e61be`, `5bb8fa6`; ogham `80f0ae3`, `5279a1f`; lockfiles regency `90191b1`, celia `aee27b4` |
+| re-seed on reload | not started | — |
+| P6 onward | not started | — |
 
 **Phase 1 gate, as run:** ogham, untold_lore, regency and
 stargazer-celia-game all green; lorekeeper green except the baseline
@@ -298,7 +300,92 @@ within a week; a read off a `fn` parameter, `let`, `state` or `for`
 variable is never collected at all, because a name the document
 bound is its own. A false refusal would be worse than the gap.
 
-**Resume at:** Phase 5.
+### Phase 5, as it landed — and three amendments to this document
+
+Green: lorekeeper (only the baseline red), ogham 853, regency and
+celia **with no source edits at all**, lockfiles only. `front`
+went 17 → 24 tests.
+
+**Amendment 1 — `loading` is a view, not "a small second root."**
+WP-5.2's prose says a second root; Appendices A.1 and A.2 both draw
+it as a sibling view of `title` under `menu`/`foyer`. **The
+appendices win** — they are the target tables three migrations are
+written against, and a sibling view keeps loading out from under
+wherever you came from while letting it share the front-of-house
+document. WP-5.2's sentence is wrong; read it as the appendices
+draw it.
+
+**Amendment 2 — §4.5's "extension is a game-side wrapper schema
+embedding the engine's" is wrong for this design.** Checked against
+untold_lore's live case, which turns out **not** to write into the
+engine's pause scope at all: it projects its own heading and builds
+its own row list, including an Exit-to-World row the engine's list
+has no place for. Two findings:
+
+- A wrapper schema embedding the engine's is *a different type*,
+  and `Store::producer::<T>` is typed — the engine's producer could
+  not write into it. One scope, one schema.
+- What extension actually is: **the game claims the fields the
+  engine's producer leaves alone, and declines the producers whose
+  facts it owns.** Field-level claims (WP-2.2) make this free —
+  two disjoint claims on one scope, checked at startup. The engine
+  uses it internally: `Producers::title` claims `heading` and
+  `menu` and deliberately leaves `sub_screen` unclaimed, because
+  that claim is the game's.
+
+A game adding a genuinely *new* field to an engine scope is the one
+case neither mechanism covers; that field goes on a scope of its
+own on an adjacent rung, which nearest-first fragment resolution
+already makes readable from the same document.
+
+**Amendment 3 — `menu_music_playing` stays; strike it from
+Appendix C.** It is not a value-diff idiom. It is the audio bus's
+read-back stand-in, which §5.3 explicitly preserves, and the bus
+genuinely cannot answer — a track whose file is missing never
+starts, so a real read-back would retry and log every frame. The
+*fact* moved to `House::menu_music`; the flag is what §5.3's
+exception is for.
+
+**Ruled, not an amendment:** the stock pause *surface* was cut from
+`front.ogh`. Pause is a view under the game's roots, so its screen
+resolves against the game's document, and selecting `pause` from
+the front-of-house mount is a hard `Unmounted` refusal. Schema,
+vocabulary and producer stay — which is exactly what §8.2 says
+survives wholesale replacement: *the schemas, the intent
+vocabularies and the producers, never the surfaces*. All three
+games write their own pause view today.
+
+**Forced by §4.6, and worth knowing before the migrations:** a
+selected field binds a *top-level* name, and ogham refuses two
+bindings of one name in one document — so three `rows` fields in
+one front-of-house document is a parse error. Hence
+`TitleState.menu`, `SettingsState.options`, `SaveLoadState.slots`.
+Pause keeps `rows`/`over`, because pause is drawn by the game's
+in-session document.
+
+**What Phase 4 did not reach, and Phase 5 had to add.** There was
+**no store→document path at all**: the binding projected
+`Route::read_state` and nothing else, and nothing in `structure`
+can hand a dynamic consumer a value (turning a scope struct into
+an `ogham::Value` names both frameworks). `Binding::projecting`
+and `driver::facts` are that path. Seeding also turned out to be
+**mandatory, not optional** — a selected name is an ordinary
+host-state key and a module's top level runs at *construction*, so
+an unseeded selection is `UndefinedVariable` at mount: the document
+does not draw blank, it fails to load.
+
+**Open wart, scheduled before P6:** the seed rides `RuntimeConfig`,
+so a hot edit that *adds* a selected name has nothing bound for it
+and the reload is refused as broken until restart (existing names
+survive via `carry_host_state_into`). That is precisely the loop
+three migrations are about to live in. Closing it needs the binding
+to re-seed on reload, which needs the reload gate to hand back the
+candidate schema.
+
+**Resume at:** the re-seed fix, then P6C ∥ P6R. **P6U is blocked** —
+untold_lore is mid-surgery in the maintainer's tree and does not
+compile; it is not this build's red and no agent has written a byte
+in that repo.
 
 ## 0. How to use this document
 
