@@ -85,16 +85,26 @@ fn mounted(path: &Path, dir: &Path) -> Ogham {
     Ogham::watch(path.to_string_lossy().into_owned(), rooted(dir)).expect("the document mounts")
 }
 
-/// Drive frames until `settled` answers, or fail naming what never
-/// happened. A watcher delivers on its own schedule, so every hot-edit
-/// assertion in this file is a wait rather than a sleep.
-fn until(what: &str, mut settled: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+/// Save an edit, then drive frames until `settled` answers — or fail
+/// naming what never happened.
+///
+/// The save repeats while the wait runs, and that is not belt-and-braces:
+/// a watcher registers its directory *asynchronously*, so an edit written
+/// in the same instant an instance was mounted can be missed outright, and
+/// the test would then hang on an event that is never coming. Re-saving
+/// turns that into a slower pass rather than a flake nobody can reproduce.
+fn saving(path: &Path, source: &str, what: &str, mut settled: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut next_save = std::time::Instant::now();
     while !settled() {
         assert!(
             std::time::Instant::now() < deadline,
             "the watcher never delivered: {what}"
         );
+        if std::time::Instant::now() >= next_save {
+            std::fs::write(path, source).expect("rewrite");
+            next_save = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -169,9 +179,8 @@ fn a_palette_token_edited_in_the_shared_module_reaches_every_mounting_document()
         assert_eq!(token(ui).as_deref(), Some("#101010"));
     }
 
-    std::fs::write(&shared, STATIONERY.replace("#101010", "#2b1d14")).expect("rewrite");
-
-    until("the edited palette token", || {
+    let edited = STATIONERY.replace("#101010", "#2b1d14");
+    saving(&shared, &edited, "the edited palette token", || {
         for ui in &mut instances {
             ui.frame(640.0, 480.0, 1.0 / 60.0).expect("frame");
         }
@@ -201,23 +210,24 @@ fn a_module_a_hot_edit_adds_is_watched_from_then_on() {
     assert_eq!(token(&ui), None, "the document imports nothing yet");
 
     // The edit that acquires the module.
-    std::fs::write(
-        &path,
-        "import \"./stationery.ogh\";\nlet main = fn () { Text { text: ink } };\n",
-    )
-    .expect("rewrite");
-    until("the import that was added", || {
+    let acquires = "import \"./stationery.ogh\";\nlet main = fn () { Text { text: ink } };\n";
+    saving(&path, acquires, "the import that was added", || {
         ui.frame(640.0, 480.0, 1.0 / 60.0).expect("frame");
         token(&ui).as_deref() == Some("#101010")
     });
 
     // And now an edit to the newly-acquired module, which the watch set
     // did not know about when this instance was mounted.
-    std::fs::write(&shared, STATIONERY.replace("#101010", "#2b1d14")).expect("rewrite");
-    until("the edit to the module the document acquired", || {
-        ui.frame(640.0, 480.0, 1.0 / 60.0).expect("frame");
-        token(&ui).as_deref() == Some("#2b1d14")
-    });
+    let edited = STATIONERY.replace("#101010", "#2b1d14");
+    saving(
+        &shared,
+        &edited,
+        "the edit to the module the document acquired",
+        || {
+            ui.frame(640.0, 480.0, 1.0 / 60.0).expect("frame");
+            token(&ui).as_deref() == Some("#2b1d14")
+        },
+    );
 }
 
 // ── the gate (WP-2.4) sees the whole graph ─────────────────────────────
@@ -308,16 +318,11 @@ fn an_edit_to_a_shared_module_is_refused_by_the_gate_that_the_document_would_fai
 
     chrome.project_root("__witness", Value::String("standing".to_string()));
 
-    std::fs::write(
-        &shared,
-        STATIONERY.replace(
-            "record Card { title: string, weight: float };",
-            "record Card { title: string, heft: float };",
-        ),
-    )
-    .expect("rewrite");
-
-    until("the refused edit", || {
+    let drifted = STATIONERY.replace(
+        "record Card { title: string, weight: float };",
+        "record Card { title: string, heft: float };",
+    );
+    saving(&shared, &drifted, "the refused edit", || {
         chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
         chrome.refusal().is_some()
     });
@@ -337,8 +342,7 @@ fn an_edit_to_a_shared_module_is_refused_by_the_gate_that_the_document_would_fai
     );
 
     // And the same gate opens again when the shared module is put right.
-    std::fs::write(&shared, STATIONERY).expect("rewrite");
-    until("the healed edit", || {
+    saving(&shared, STATIONERY, "the healed edit", || {
         chrome.frame_checked(&store, &mount, 640.0, 480.0, 1.0 / 60.0);
         chrome.refusal().is_none()
     });

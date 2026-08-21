@@ -49,12 +49,13 @@
 
 use std::path::{Path, PathBuf};
 
-use structure::schema::Field;
+use structure::schema::{Field, Lit};
 
 use crate::runtime::imports::ImportSpace;
 use crate::runtime::schema::{
     load_schema_in, EventSig, ModuleSchema, PrimType, RecordSchema, SchemaLoadError, TypeRef,
 };
+use crate::runtime::value::Value;
 
 /// The structure framework's half of the seam, re-exported so a consumer
 /// naming a scope or reading a finding needs no dependency of its own —
@@ -229,6 +230,53 @@ impl Mount {
         &self.document
     }
 
+    /// What this document's selection holds the moment it mounts, ready
+    /// for [`RuntimeConfig::with_host_state`](crate::runtime::config::RuntimeConfig::with_host_state).
+    ///
+    /// A `host_state {}` document seeds itself: it declares its own field
+    /// shapes and its own defaults, and the runtime fills them in before
+    /// the first execution. A selection declares neither — that is the
+    /// inversion — so the seed comes from the providing scope's
+    /// reflection instead, which is where §4.1 says an at-mount value
+    /// lives. Without it a document that mounts and immediately draws
+    /// fails on whichever field its host had not pushed yet, and every
+    /// game would grow a hand-written pre-projection to work around it.
+    ///
+    /// This is the binding's job from P4 (§6.1: the binding mounts,
+    /// projects, and tears down); it lives here until then, for the same
+    /// reason [`Mount`] itself does.
+    ///
+    /// A document that will not read seeds nothing: it has a real error
+    /// waiting with real diagnostics.
+    pub fn at_mount(&self, store: &Store) -> std::collections::HashMap<String, Value> {
+        let mut seeded = std::collections::HashMap::new();
+        let Ok(schema) = load_schema_in(&self.document, &self.space()) else {
+            return seeded;
+        };
+        for selection in &schema.selections {
+            let scopes: Vec<Scope> = match &selection.scope {
+                Some(name) => self
+                    .scopes
+                    .iter()
+                    .filter(|scope| named(scope, name))
+                    .copied()
+                    .collect(),
+                None => self.scopes.clone(),
+            };
+            for field in &selection.fields {
+                let found = scopes.iter().find_map(|scope| {
+                    store
+                        .reflection(*scope)
+                        .and_then(|kind| kind.field_at(field).ok())
+                });
+                if let Some(provided) = found {
+                    seeded.insert(field.clone(), at_mount(provided));
+                }
+            }
+        }
+        seeded
+    }
+
     /// Offer one already-parsed document to a running check.
     ///
     /// Four questions, in §4.1's two grades: what the document's
@@ -246,6 +294,24 @@ impl Mount {
         let document = self.document.display().to_string();
         if let Some(host_state) = &schema.host_state {
             into.selects(&document, &self.scopes, &selection_of(host_state, schema));
+        }
+        for selection in &schema.selections {
+            match &selection.scope {
+                // A fragment (§4.7): stated once, checked against the
+                // scopes of *this* mount. Mount it somewhere else and the
+                // same three names are checked against those scopes
+                // instead, which is the whole of the property — one
+                // selection, one statement, validated at each mount.
+                None => into.selects_named(&document, &self.scopes, &selection.fields),
+                // A selection that names its scope (§4.6) is checked
+                // against that scope alone, which is what makes its
+                // refusal say which provider was meant and its agreement
+                // report no shadowing.
+                Some(name) => match self.scopes.iter().find(|scope| named(scope, name)) {
+                    Some(scope) => into.selects_named(&document, &[*scope], &selection.fields),
+                    None => into.unmounted(&document, name, &self.scopes),
+                },
+            }
         }
         into.raises(&document, &self.scopes, &raises_of(schema));
         into.draws(&document, &schema.screen_ids(), &self.screens);
@@ -271,6 +337,59 @@ impl Mount {
             );
         }
     }
+}
+
+/// The value a field holds at mount, as the runtime's own [`Value`]
+/// (§4.1: "a field's at-mount value is declared").
+///
+/// The provider declares it and the reflection carries it, so this is a
+/// translation and not a decision — which is the point. Under
+/// `host_state {}` the *document* declared its defaults and the runtime
+/// seeded from them; a selection declares none, so the seed has to come
+/// from the same place the shape does, or a document that mounts and
+/// immediately draws fails on whichever field the host had not got to yet
+/// (untold_lore's `launch_fade` lesson, one level up).
+///
+/// A union and a back-edge have no document-side encoding yet — how a
+/// tagged union reaches a document is P5's to settle — so they seed as
+/// absent rather than as a guess.
+pub fn at_mount(field: &Field) -> Value {
+    match field.initial.value() {
+        Lit::Str(s) => Value::String(s.clone()),
+        Lit::Int(n) => Value::Integer(*n as i32),
+        Lit::Float(f) => Value::Float(*f),
+        Lit::Bool(b) => Value::Boolean(*b),
+        Lit::Absent => Value::Void,
+        Lit::Composed => match &field.kind {
+            Kind::Record(fields) => Value::Map(
+                fields
+                    .iter()
+                    .map(|f| (f.name.clone(), at_mount(f)))
+                    .collect(),
+            ),
+            Kind::List(_) => Value::Array(Vec::new()),
+            Kind::Map(_) => Value::Map(std::collections::HashMap::new()),
+            Kind::Tuple(kinds) => Value::Array(
+                kinds
+                    .iter()
+                    .map(|kind| at_mount(&Field::new("", kind.clone())))
+                    .collect(),
+            ),
+            Kind::Union(_) | Kind::Cycle => Value::Void,
+            _ => Value::Void,
+        },
+    }
+}
+
+/// Whether `scope` is the one a document's `select <name>` means.
+///
+/// A route node's scope is named by its id, which is the name the route
+/// table already gave it and the only name that crosses the seam. The
+/// process rung has no id — it is not a node — so a document reaches it
+/// through a fragment, which resolves nearest-first over the whole mount
+/// and finds it there.
+fn named(scope: &Scope, name: &str) -> bool {
+    matches!(scope, Scope::Node(id) if *id == name)
 }
 
 /// A shipped document that would not read.

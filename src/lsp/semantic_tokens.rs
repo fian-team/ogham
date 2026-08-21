@@ -198,7 +198,8 @@ fn collect_from_statement(stmt: &Statement, out: &mut Vec<RawToken>, ctx: &mut A
         // tokens (they'll appear unhighlighted).
         Statement::RecordDeclaration(_)
         | Statement::HostStateDeclaration(_)
-        | Statement::EventsDeclaration(_) => {}
+        | Statement::EventsDeclaration(_)
+        | Statement::SelectDeclaration(_) => {}
         // A screen's `view` is code, not metadata, so unlike the three
         // declarations above it is walked and its identifiers highlight
         // like any others.

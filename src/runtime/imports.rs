@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::parser::{Function, Parser, Statement};
-use crate::runtime::schema::RecordSchema;
+use crate::runtime::schema::{RecordSchema, SelectionSchema};
 use crate::scanner::Scanner;
 
 /// Where an import path resolves from.
@@ -132,6 +132,16 @@ pub struct Crossing {
     /// Records, keyed by the name they are known by, so a `host_state` or
     /// a `record` field may be declared at a shape another file owns.
     pub records: BTreeMap<String, RecordSchema>,
+    /// `select` blocks, in the order the walk met them — §4.7's
+    /// fragments. A shared module states its selection once and it
+    /// travels with every document that mounts it, to be validated
+    /// against that mount's scopes.
+    ///
+    /// Unnarrowed by a named import, unlike the two above: a `select`
+    /// block has no name to import, and the helper that *was* imported
+    /// reads the fields it names. Narrowing here would compile a
+    /// fragment whose fields nothing had checked.
+    pub selections: Vec<SelectionSchema>,
     /// Every file the graph reached, in discovery order — what a watcher
     /// watches. Embedded sources are absent: they have no file behind
     /// them, and a watcher handed one would refuse to start.
@@ -193,6 +203,13 @@ fn walk_into(
                     if let Ok(schema) = crate::runtime::schema::record_schema_of(record) {
                         found.records.insert(record.name.clone(), schema);
                     }
+                }
+                Statement::SelectDeclaration(select) => {
+                    found.selections.push(SelectionSchema {
+                        scope: select.scope.clone(),
+                        fields: select.fields.iter().map(|f| f.name.clone()).collect(),
+                        decl_span: Some(select.span),
+                    });
                 }
                 _ => {}
             }

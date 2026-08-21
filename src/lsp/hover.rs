@@ -351,7 +351,8 @@ fn hover_in_statement(
         // hover inside these blocks returns nothing.
         Statement::RecordDeclaration(_)
         | Statement::HostStateDeclaration(_)
-        | Statement::EventsDeclaration(_) => None,
+        | Statement::EventsDeclaration(_)
+        | Statement::SelectDeclaration(_) => None,
         // A screen's `view` is code, not metadata, so unlike the three
         // declarations above it is walked.
         Statement::ScreenDeclaration(decl) => hover_in_expression(&decl.view, line, col, decls),

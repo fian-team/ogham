@@ -281,6 +281,19 @@ impl Parser {
             {
                 self.parse_screen_decl()
             }
+            // `select <scope>? { … }` — contextual for the same measured
+            // reason `screen` is (see `parse_screen_decl`): a new keyword
+            // costs every document in every repo that already used the
+            // word, and the error never says so. A `select` is only a
+            // declaration at module top level with a `{` after it, or a
+            // scope name and then a `{` — neither of which any other use
+            // of the name can look like, because `select(…)` is a call and
+            // a bare `select` cannot be followed by a block.
+            scanner::TokenType::Identifier(ref name)
+                if name == "select" && allow_import && self.looks_like_a_selection() =>
+            {
+                self.parse_select_decl()
+            }
             scanner::TokenType::Identifier(_) => self.parse_identifier_statement(),
             scanner::TokenType::Log => self.parse_log(),
             scanner::TokenType::For => self.parse_for_loop_statement(),
@@ -644,6 +657,87 @@ impl Parser {
         self.consume_if(scanner::TokenType::Semicolon)?;
         let span = self.span_from(start);
         Ok(Statement::EventsDeclaration(EventsDecl { events, span }))
+    }
+
+    /// Whether the `select` at the cursor opens a selection block.
+    ///
+    /// Two shapes: `select {` (a fragment) and `select scope {` (a
+    /// selection against a named scope). One token of lookahead answers
+    /// the first, two the second.
+    fn looks_like_a_selection(&self) -> bool {
+        match self.peek() {
+            scanner::TokenType::LeftBracket => true,
+            scanner::TokenType::Identifier(_) => {
+                self.current + 2 < self.input.len()
+                    && self.input[self.current + 2].token_type == scanner::TokenType::LeftBracket
+            }
+            _ => false,
+        }
+    }
+
+    /// Parse `select <scope>? { name, name };`.
+    ///
+    /// Names, and nothing else. A shape, an optionality marker or a
+    /// default here would be the consumer restating the provider's
+    /// declaration, which is the inversion `APPLICATION.md` §4.1 exists to
+    /// undo — so `select { hud: Hud }` is refused *naming what to do
+    /// instead*, because a `host_state` block rewritten by hand is exactly
+    /// how an author will first write one of these.
+    fn parse_select_decl(&mut self) -> Result<Statement, SyntaxError> {
+        use typed_bindings::{SelectDecl, SelectedField};
+        let start = self.span_start();
+        self.consume();
+
+        let (scope, scope_span) = match self.next_is(vec![scanner::TokenType::LeftBracket]) {
+            true => (None, None),
+            false => {
+                let at = self.current_token_span();
+                let name = self.consume_if_identifier()?.get();
+                (Some(name), Some(at))
+            }
+        };
+
+        self.consume_if(scanner::TokenType::LeftBracket)?;
+        let mut fields: Vec<SelectedField> = Vec::new();
+        while !self.next_is(vec![scanner::TokenType::RightBracket]) {
+            let at = self.current_token_span();
+            let name = self.consume_if_identifier()?.get();
+            if self.next_is(vec![scanner::TokenType::Colon]) {
+                return Err(SyntaxError::new(
+                    at.start_line,
+                    at.start_column,
+                    format!("`{name}` is selected, not declared"),
+                )
+                .with_length(name.len())
+                .with_note(
+                    "a selection names fields; their shapes, their optionality and                      their at-mount values are the providing scope's declarations",
+                )
+                .with_help(format!("write `{name}` on its own")));
+            }
+            if let Some(twice) = fields.iter().find(|f| f.name == name) {
+                let _ = twice;
+                return Err(SyntaxError::new(
+                    at.start_line,
+                    at.start_column,
+                    format!("`{name}` is selected twice"),
+                )
+                .with_length(name.len()));
+            }
+            fields.push(SelectedField { name, span: at });
+            if !self.next_is(vec![scanner::TokenType::Comma]) {
+                break;
+            }
+            self.consume();
+        }
+        self.consume_if(scanner::TokenType::RightBracket)?;
+        self.consume_if(scanner::TokenType::Semicolon)?;
+
+        Ok(Statement::SelectDeclaration(SelectDecl {
+            scope,
+            scope_span,
+            fields,
+            span: self.span_from(start),
+        }))
     }
 
     /// Parse `screen "<id>" { state { FieldList } view <expr> };`.

@@ -548,8 +548,7 @@ impl Runtime {
     /// before the new module is executed).
     fn seed_screen_defaults(&mut self, module: &Function) {
         let crossing = self.crossing(module);
-        let Ok(schema) = schema::ModuleSchema::from_module_with_imports(module, &crossing.records)
-        else {
+        let Ok(schema) = schema::ModuleSchema::from_module_within(module, &crossing) else {
             // A module that does not resolve has a real error waiting at
             // compile time, with real diagnostics. Nothing useful to seed.
             return;
@@ -615,7 +614,7 @@ impl Runtime {
     pub fn module_schema(&self) -> Option<schema::ModuleSchema> {
         let module = self.module.as_ref()?;
         let crossing = self.crossing(module);
-        schema::ModuleSchema::from_module_with_imports(module, &crossing.records).ok()
+        schema::ModuleSchema::from_module_within(module, &crossing).ok()
     }
 
     /// Returns the canonical paths of all modules that were imported during the last

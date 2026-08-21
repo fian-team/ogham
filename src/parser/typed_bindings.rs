@@ -131,6 +131,40 @@ pub struct EventsDecl {
     pub span: Span,
 }
 
+/// One name a [`SelectDecl`] binds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedField {
+    pub name: String,
+    pub span: Span,
+}
+
+/// A `select <scope>? { name, name };` declaration — the consumer's
+/// half of the contract (`APPLICATION.md` §4.1, §4.6, §4.7).
+///
+/// It names fields and nothing else. The shape each one is at, whether
+/// it may be absent, and what it holds at mount are the **provider's**
+/// declarations, read off the scope's reflection; a consumer restating
+/// them is the inverted contract `host_state {}` was, where the
+/// document's word for a shape and the provider's could drift apart in
+/// silence.
+///
+/// `scope` is `Some` when the document names the scope it selects from,
+/// and `None` for a **fragment** (§4.7): a module mounted under more
+/// than one provider states its selection once and it is validated
+/// against whichever scopes it mounts under, each time. A fragment
+/// cannot name its scope because the scopes differ between its mounts —
+/// untold_lore's sea panel lives under the world root and under the
+/// editor — which is exactly why the name is optional rather than
+/// required.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectDecl {
+    pub scope: Option<String>,
+    /// Span of the scope name alone, for a diagnostic that underlines it.
+    pub scope_span: Option<Span>,
+    pub fields: Vec<SelectedField>,
+    pub span: Span,
+}
+
 /// A `screen "<id>" { state { ... } view <expr> };` declaration.
 ///
 /// One routable surface. The `id` is what a host's route table names —

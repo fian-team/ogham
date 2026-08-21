@@ -150,8 +150,10 @@ fn strict_mode_unknown_identifier_errors_with_note() {
         "#,
     );
     assert!(err.message.contains("unknown identifier `master_voloume`"));
-    assert!(err.note.is_some());
-    assert!(err.note.as_deref().unwrap().contains("host_state {}"));
+    // The note names both ways a module can bind a top-level identifier,
+    // because both are strict: `host_state {}` declares, `select` selects.
+    let note = err.note.as_deref().expect("the note explains the rule");
+    assert!(note.contains("declared or selected fields"), "{note}");
 }
 
 #[test]

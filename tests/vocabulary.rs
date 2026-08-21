@@ -277,12 +277,21 @@ fn one_mistake_is_reported_once() {
 
 /// Every `.ogh` this crate ships. A language whose own examples miss its
 /// own vocabulary has no standing to ask a game to fix its UI.
+///
+/// `tests/documents/` is exempt and is the exception that proves the rule:
+/// those files are another repo's shipped document, checked in **verbatim**
+/// as the fixture for `APPLICATION.md` §4.6, and editing them would delete
+/// the property the test that reads them exists to hold. They are held to
+/// the vocabulary where they live, which is regency — where this scan found
+/// two live `cross_alignment: "baseline"`, a value the builder has never
+/// had and silently reads as `start`.
 #[test]
 fn the_shipped_ogh_files_use_the_language_they_document() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect_ogh(&root.join("examples"), &mut files);
     collect_ogh(&root.join("tests"), &mut files);
+    files.retain(|path| !path.starts_with(root.join("tests").join("documents")));
     assert!(!files.is_empty(), "no .ogh fixtures found");
 
     let mut report = String::new();

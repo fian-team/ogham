@@ -1,0 +1,209 @@
+// regency's in-manor HUD family, verbatim from `data/ui/client.ogh`
+// (lines 1661-1857 at 2026-08-21) — five helpers and twenty unqualified
+// reads of `hud`.
+//
+// This file is the acceptance test for `APPLICATION.md` §4.6, and it is
+// checked in unedited on purpose: the property being tested is that these
+// bodies compile against a `select` exactly as they compile against the
+// `host_state {}` block they were written for. Any edit here — even a
+// whitespace one — would be the three-thousand-line touch §4.6 exists to
+// avoid, so the test that reads this file reads it twice and changes
+// nothing but what is written above it.
+
+let hud_pip = fn (p: map, alarm: bool, round: bool) {
+  Flex {
+    style: {
+      width: 11,
+      height: 11,
+      corner_radius: match round { true => 6, false => 0 },
+      transform: { rotate: match round { true => 0, false => 45 } },
+      background_color: match p.filled {
+        true => match alarm { true => col_wax, false => col_gold },
+        false => col_clear,
+      },
+      border: { width: 1, color: col_gold_faint, style: "solid" },
+    },
+  }
+};
+
+// One labelled stat: a small-caps tag beside its value in the given ink.
+let hud_stat = fn (label: string, value: string, color: map) {
+  Flex {
+    style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "baseline", gap: 5 },
+    children: [
+      Text {
+        text: label,
+        style: { width: "shrink", size: 12, color: col_muted, font: "regency-small-caps", letter_spacing: 1.4 },
+      },
+      Text {
+        text: value,
+        style: { width: "shrink", size: 20, color: color, font: "regency-annotation" },
+      },
+    ],
+  }
+};
+
+// One condition pip: a small round mark, filled in its track's ink for a
+// point still held, hollow for one spent.
+let hud_cond_pip = fn (filled: bool, color: map) {
+  Flex {
+    style: {
+      width: 9,
+      height: 9,
+      corner_radius: 5,
+      background_color: match filled { true => color, false => col_clear },
+      border: { width: 1, color: col_gold_faint, style: "solid" },
+    },
+  }
+};
+
+// Top-left: the evening — the clock and the threat gauge (the act label
+// and the "suspicion" caption retired 2026-07-20; the marks speak alone).
+let hud_evening = fn () {
+  Flex {
+    key: "hud-evening",
+    block_interactions: false,
+    initial: { opacity: 0, transform: { translate_y: 0 - 12 } },
+    exit: { opacity: 0, transform: { translate_y: 0 - 12 } },
+    style: {
+      width: "shrink",
+      height: "shrink",
+      direction: "column",
+      cross_alignment: "center",
+      gap: 5,
+      background_color: col_card,
+      corner_radius: 3,
+      border: { width: 1, color: col_gold, style: "solid" },
+      padding: { top: 9, right: 22, bottom: 8, left: 22 },
+      shadow: { color: col_shadow, blur: 10, offset_y: 3 },
+      transition: { opacity: "spring", transform: "spring" },
+    },
+    children: [
+      Text {
+        text: hud.clock,
+        style: { width: "shrink", size: 30, color: col_ink, font: "regency-display" },
+      },
+      Flex {
+        style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "center", gap: 6 },
+        children: for (i in 0..hud.threat.length()) {
+          hud_pip(hud.threat[i], hud.threat_alarm, hud.threat_round)
+        },
+      },
+      // The caption only when the clock has words for it (the pressure
+      // clock's marks-remain line); plain suspicion shows marks alone.
+      match hud.threat_caption {
+        "" => Flex { style: { width: 0, height: 0 } },
+        _ => Text {
+          text: hud.threat_caption,
+          style: { width: "shrink", align: "center", size: 12, color: col_muted, font: "regency-small-caps", letter_spacing: 1.6 },
+        },
+      },
+      Text {
+        text: hud.mode_hint,
+        style: { width: "shrink", align: "center", size: 11, color: col_muted_faint, font: "regency-small-caps", letter_spacing: 1.0 },
+      },
+    ],
+  }
+};
+
+// Bottom-left: you — name, status, regard, impropriety, the candle wick.
+let hud_you = fn () {
+  Flex {
+    key: "hud-you",
+    block_interactions: false,
+    initial: { opacity: 0, transform: { translate_x: 0 - 16 } },
+    exit: { opacity: 0, transform: { translate_x: 0 - 16 } },
+    style: {
+      width: "shrink",
+      height: "shrink",
+      direction: "column",
+      gap: 6,
+      background_color: col_card,
+      corner_radius: 3,
+      border: { width: 1, color: col_gold, style: "solid" },
+      padding: { top: 10, right: 18, bottom: 11, left: 16 },
+      shadow: { color: col_shadow, blur: 10, offset_y: 3 },
+      transition: { opacity: "spring", transform: "spring" },
+    },
+    children: [
+      Text {
+        text: hud.name,
+        style: { width: "shrink", size: 21, color: col_ink, font: "regency-small-caps", letter_spacing: 0.6 },
+      },
+      match hud.status {
+        "" => Flex { style: { width: 0, height: 0 } },
+        _ => Text {
+          text: hud.status,
+          style: { width: "shrink", size: 15, color: match hud.status_alarm { true => col_wax, false => col_muted }, font: "regency-annotation" },
+        },
+      },
+      Flex {
+        style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "baseline", gap: 18 },
+        children: [
+          hud_stat(hud.purse_label, hud.purse, match hud.purse_lit { true => col_gold, false => col_muted }),
+          hud_stat("impropriety", hud.impropriety, match hud.impropriety_alarm { true => col_wax, false => col_muted }),
+        ],
+      },
+      // Your condition — flesh (body) and nerve, a pip per point held. The
+      // wound flashes the screen's edges (Skia); these are the standing
+      // count. Only once you hold a sheet with tracks.
+      match hud.condition_shown {
+        false => Flex { style: { width: 0, height: 0 } },
+        _ => Flex {
+          style: { width: "shrink", height: "shrink", direction: "column", gap: 4 },
+          children: [
+            Flex {
+              style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "center", gap: 7 },
+              children: [
+                Text {
+                  text: "body",
+                  style: { width: 42, size: 12, color: col_muted, font: "regency-small-caps", letter_spacing: 1.4 },
+                },
+                Flex {
+                  style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "center", gap: 4 },
+                  children: for (i in 0..hud.vitality.length()) { hud_cond_pip(hud.vitality[i].filled, col_wax) },
+                },
+              ],
+            },
+            Flex {
+              style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "center", gap: 7 },
+              children: [
+                Text {
+                  text: "nerve",
+                  style: { width: 42, size: 12, color: col_muted, font: "regency-small-caps", letter_spacing: 1.4 },
+                },
+                Flex {
+                  style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "center", gap: 4 },
+                  children: for (i in 0..hud.composure.length()) { hud_cond_pip(hud.composure[i].filled, col_gold) },
+                },
+              ],
+            },
+          ],
+        },
+      },
+      // The candle wick — only while you carry a burning light.
+      match hud.light_text {
+        "" => Flex { style: { width: 0, height: 0 } },
+        _ => Flex {
+          style: { width: "shrink", height: "shrink", direction: "row", cross_alignment: "center", gap: 8 },
+          children: [
+            Text {
+              text: "LIGHT",
+              style: { width: "shrink", size: 12, color: col_muted, font: "regency-small-caps", letter_spacing: 1.4 },
+            },
+            Flex {
+              style: { width: 78, height: 5, background_color: col_rule_faint, corner_radius: 2 },
+              children: [
+                Flex { style: { width: 78 * hud.light_frac, height: 5, background_color: col_gold, corner_radius: 2 } },
+              ],
+            },
+            Text {
+              text: hud.light_text,
+              style: { width: "shrink", size: 16, color: col_muted, font: "regency-annotation" },
+            },
+          ],
+        },
+      },
+    ],
+  }
+};

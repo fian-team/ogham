@@ -150,6 +150,7 @@ Statements are dispatched by the leading token in
 | `host_state`  | `HostStateDeclaration` (top-level only, ≤1 per module) |
 | `events`      | `EventsDeclaration` (top-level only, ≤1 per module) |
 | `screen`      | `ScreenDeclaration` (top-level only, ids unique) — see below |
+| `select`      | `SelectDeclaration` (top-level only, any number, no name bound twice) — see below |
 | `on_mount`    | `OnMount` lifecycle hook (fn-body only, Phase 2)   |
 | `on_unmount`  | `OnUnmount` lifecycle hook (fn-body only, Phase 2) |
 | `effect`      | `Effect` lifecycle hook (fn-body only, Phase 2)    |
@@ -211,6 +212,67 @@ half of `lorekeeper/docs/ROUTING.md`; the rules that matter here:
 Screen fields are seeded with their declared default (or an empty value
 of the declared type) when the module is set, so a route that mounts and
 immediately draws cannot fail on a field the host has not pushed yet.
+
+### `select` — the state a document reads
+
+```
+select manor { hud, hotbar, toast, search, tip };   // from the manor node's scope
+select { sea_panel, sea_duration, sea_dirty };      // from wherever this mounts
+```
+
+The consumer's half of the contract in `APPLICATION.md` §4 — the
+inversion of `host_state {}`, which declared what the *host*
+supplies. A selection names the fields this document reads and
+nothing else: their shapes, their optionality and their at-mount
+values are the providing scope's declarations, read off its
+reflection, so there is no second copy of them in the document to
+drift from the first.
+
+- **It binds top-level names** (§4.6). `select manor { hud }` makes
+  `hud` an ordinary top-level identifier reading the host-state key
+  `hud` — the same `GetState` a `host_state {}` field compiles to,
+  so a selection emits no bytecode of its own. This is a *migration*
+  property, deliberately: regency's thirty-two helpers read
+  `hud.clock` unqualified, and swapping the declaration for a
+  selection touches none of them.
+- **A scope name is optional, and its absence means something.**
+  `select scope { … }` is checked against that scope alone, so its
+  refusal names which provider was meant and its agreement reports no
+  shadowing. `select { … }` is a **fragment** (§4.7): checked against
+  whatever scopes the document mounts under, wherever it mounts.
+  A shared module cannot name its scope — untold_lore's sea panel
+  lives under the world root and under the editor, and those are not
+  one scope — which is exactly why the name is optional rather than
+  required. The process rung is reached the same way: it is not a
+  node and so has no id to name.
+- **Any number per module, and no name bound twice.** A document
+  selects from several scopes; two bindings of one name would leave
+  every read of it reaching whichever the lookup found first, so it
+  is refused at parse time and the name is said. `host_state {}` and
+  `select` share that one namespace.
+- **A selection is strict.** A module with a `select` names the state
+  it reads, so identifier resolution runs exactly as it does under
+  `host_state {}`: a name the module neither selects nor declares is
+  an unknown identifier with the same diagnostic. `select` that
+  merely turned strict mode off would compile everything and give a
+  modder nothing.
+- **`select` is contextual, not a keyword** — the measured rule
+  `screen` established. It is a declaration only at module top level
+  with a `{` after it, or a scope name and then a `{`; a call
+  (`select(…)`), a field (`select: string`) and a local all keep
+  working.
+- **Writing a shape is refused, naming what to write instead.** The
+  first thing an author migrating a `host_state {}` block does is
+  paste it in and change the keyword, so `select manor { hud: Hud }`
+  says "`hud` is selected, not declared" rather than "expected `,`".
+
+**`host_state {}` still works and still means what it meant.** The
+two forms coexist by design: three games and an engine ship
+documents written against the declared form, and their migration is
+`APPLICATION_BUILD.md` Phase 6. Where they differ is what the
+framework can check — a declared field's shape is compared against
+the provider's and can refuse for disagreeing (`Finding::Shape`); a
+selected field has no restated shape to disagree.
 
 `parse_identifier_statement` peeks one token to decide:
 - `Identifier (` → call → expression statement
@@ -327,16 +389,18 @@ import "./stationery.ogh";                  // everything it declares
 import { plate, rule } from "./stationery.ogh";   // only these
 ```
 
-Two things cross, and they arrive by two different routes:
+Three things cross, and they arrive by three different routes:
 
 | declaration | how it arrives | who reads it |
 |---|---|---|
 | `let name = …` | copied into the module environment at execution, and injected as host state so `GetState` finds it | the VM, and strict-mode identifier resolution |
 | `record Foo { … }` | merged into the importing module's `ModuleSchema::imports` | the schema resolver, and every `Foo` a field is declared at |
+| a `select` block | appended to the importing module's `selections` | strict-mode resolution, and the contract check at every mount |
 
 `host_state {}` does **not** cross. It is a whole-document
 declaration bound to one mount, and a module that carries one is
-still strict on its own terms.
+still strict on its own terms. `select` is the form that composes
+across files — which is the whole of §4.7's fragment.
 
 **The graph is walked transitively, and the walk mirrors
 execution.** `runtime::imports::walk` is the one answer, read by

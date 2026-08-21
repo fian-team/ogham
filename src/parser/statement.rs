@@ -1,4 +1,4 @@
-use super::typed_bindings::{EventsDecl, HostStateDecl, RecordDecl, ScreenDecl};
+use super::typed_bindings::{EventsDecl, HostStateDecl, RecordDecl, ScreenDecl, SelectDecl};
 use super::{block::*, expression::*, identifier::*, span::Span};
 
 #[derive(PartialEq, Clone, Debug)]
@@ -20,6 +20,9 @@ pub enum Statement {
     EventsDeclaration(EventsDecl),
     /// `screen "<id>" { ... };` — top-level only, ids unique per module.
     ScreenDeclaration(ScreenDecl),
+    /// `select <scope>? { ... };` — top-level only, any number per
+    /// module, no name bound twice.
+    SelectDeclaration(SelectDecl),
 }
 
 impl Statement {
@@ -106,6 +109,7 @@ impl Statement {
             Statement::HostStateDeclaration(s) => s.span,
             Statement::EventsDeclaration(s) => s.span,
             Statement::ScreenDeclaration(s) => s.span,
+            Statement::SelectDeclaration(s) => s.span,
         }
     }
 }

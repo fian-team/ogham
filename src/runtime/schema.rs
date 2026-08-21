@@ -74,6 +74,26 @@ pub struct ModuleSchema {
     /// `host_state {}` remains readable from every screen and is the
     /// only scope they share.
     pub screens: BTreeMap<String, ScreenSchema>,
+    /// The module's `select` blocks, in source order, followed by the
+    /// ones its imports brought in (`APPLICATION.md` §4.6, §4.7).
+    ///
+    /// A list rather than a map because a document selects from several
+    /// scopes and the same field name may not be bound twice across all
+    /// of them — which is checked once, here, so the binding a helper
+    /// body reads is never ambiguous.
+    pub selections: Vec<SelectionSchema>,
+}
+
+/// One resolved `select` block.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectionSchema {
+    /// The scope this selection names, or `None` for a fragment (§4.7):
+    /// a selection stated once and validated against whatever scopes it
+    /// mounts under, which differ between its mounts.
+    pub scope: Option<String>,
+    /// The field names, in source order.
+    pub fields: Vec<String>,
+    pub decl_span: Option<Span>,
 }
 
 /// One declared `screen`, resolved.
@@ -119,21 +139,65 @@ pub struct EventSig {
 }
 
 impl ModuleSchema {
-    /// True iff the source declared *any* schema block — either
-    /// `host_state {}` or `events {}`. The compiler's event-call
-    /// validation keys off this (a module that declares its events
-    /// shouldn't be allowed to emit undeclared ones, even if it
+    /// True iff the source declared *any* schema block — a
+    /// `host_state {}`, an `events {}`, or a `select`. The compiler's
+    /// event-call validation keys off this (a module that declares its
+    /// events shouldn't be allowed to emit undeclared ones, even if it
     /// hasn't also declared host_state).
     pub fn is_strict(&self) -> bool {
-        self.host_state.is_some() || !self.events.is_empty()
+        self.binds_top_level_names() || !self.events.is_empty()
     }
 
-    /// True iff the source declared `host_state {}`. Identifier
-    /// resolution against a host_state field list requires this —
-    /// without it, the compiler can't enumerate valid bare
-    /// identifiers, so it stays loose.
+    /// True iff the source declared `host_state {}`.
     pub fn has_host_state(&self) -> bool {
         self.host_state.is_some()
+    }
+
+    /// True iff this module names the top-level identifiers it reads —
+    /// through a `host_state {}` block, a `select`, or both.
+    ///
+    /// Identifier resolution requires this and nothing weaker: without an
+    /// enumerable list of valid bare names the compiler cannot tell a typo
+    /// from a host key, so it stays loose. §4.6's binding is exactly this
+    /// list gaining a second source — a selected name resolves the way a
+    /// declared one always did, which is what makes a document's
+    /// migration from one form to the other touch no helper body.
+    pub fn binds_top_level_names(&self) -> bool {
+        self.host_state.is_some() || !self.selections.is_empty()
+    }
+
+    /// Whether `name` is bound at top level — declared in `host_state {}`
+    /// or selected.
+    pub fn binds(&self, name: &str) -> bool {
+        self.host_state
+            .as_ref()
+            .is_some_and(|hs| hs.fields.contains_key(name))
+            || self.selects(name)
+    }
+
+    /// Whether `name` is selected, by any of this module's selections.
+    pub fn selects(&self, name: &str) -> bool {
+        self.selections
+            .iter()
+            .any(|s| s.fields.iter().any(|f| f == name))
+    }
+
+    /// Every top-level name this module binds, sorted and deduplicated —
+    /// what a diagnostic suggests from.
+    pub fn bound_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .host_state
+            .iter()
+            .flat_map(|hs| hs.fields.keys().map(|s| s.as_str()))
+            .chain(
+                self.selections
+                    .iter()
+                    .flat_map(|s| s.fields.iter().map(|f| f.as_str())),
+            )
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
     }
 
     /// Look up a record by name in this module. Walks the local
@@ -244,6 +308,28 @@ impl ModuleSchema {
         Self::from_module_with_imports(module, &BTreeMap::new())
     }
 
+    /// [`from_module`] against everything a module's imports bring in:
+    /// the record shapes *and* the `select` blocks (§4.7's fragments,
+    /// which travel with the document that mounts them).
+    ///
+    /// This is the entry point for a module that is going to be *mounted*.
+    /// [`from_module_with_imports`](Self::from_module_with_imports) below
+    /// is the records-only form the LSP uses.
+    pub fn from_module_within(
+        module: &Function,
+        crossing: &crate::runtime::imports::Crossing,
+    ) -> Result<Self, SyntaxError> {
+        let mut schema = Self::from_module_with_imports(module, &crossing.records)?;
+        for selection in &crossing.selections {
+            if schema.selections.contains(selection) {
+                continue;
+            }
+            schema.selections.push(selection.clone());
+        }
+        check_one_binding_per_name(&schema)?;
+        Ok(schema)
+    }
+
     /// Like [`from_module`] but with a pre-built map of imported
     /// records (keyed by their in-scope name). The import resolver
     /// (M3+) provides this map so cross-module record references
@@ -260,6 +346,7 @@ impl ModuleSchema {
         let mut events: BTreeMap<String, EventSig> = BTreeMap::new();
         let mut record_decl_order: Vec<RecordDecl> = Vec::new();
         let mut screens: BTreeMap<String, ScreenSchema> = BTreeMap::new();
+        let mut selections: Vec<SelectionSchema> = Vec::new();
 
         for stmt in &module.body.statement_list {
             match stmt {
@@ -301,6 +388,13 @@ impl ModuleSchema {
                 Statement::EventsDeclaration(decl) => {
                     build_events(decl, &mut events)?;
                 }
+                Statement::SelectDeclaration(decl) => {
+                    selections.push(SelectionSchema {
+                        scope: decl.scope.clone(),
+                        fields: decl.fields.iter().map(|f| f.name.clone()).collect(),
+                        decl_span: Some(decl.span),
+                    });
+                }
                 _ => {}
             }
         }
@@ -311,6 +405,7 @@ impl ModuleSchema {
             events,
             imports: imports.clone(),
             screens,
+            selections,
         };
 
         // -----------------------------------------------------------------
@@ -342,9 +437,58 @@ impl ModuleSchema {
                 resolve_type_ref(&field.ty, None, &schema, field.decl_span)?;
             }
         }
+        check_one_binding_per_name(&schema)?;
 
         Ok(schema)
     }
+}
+
+/// No top-level name is bound twice — not by two `select` blocks, and not
+/// by a `select` and the `host_state {}` block beside it.
+///
+/// §4.6 makes a selected field a top-level identifier, so two scopes both
+/// offering a `heading` would otherwise put a document's helpers on
+/// whichever one the lookup happened to reach. The framework already
+/// *reports* that when two scopes on a mount provide the same field
+/// (`Finding::Shadowed`); this is the case the document can settle by
+/// itself, so it refuses at parse time and names the field.
+fn check_one_binding_per_name(schema: &ModuleSchema) -> Result<(), SyntaxError> {
+    let mut seen: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+    if let Some(host_state) = &schema.host_state {
+        for name in host_state.fields.keys() {
+            seen.insert(name.as_str(), None);
+        }
+    }
+    for selection in &schema.selections {
+        let where_from = selection.scope.as_deref();
+        for field in &selection.fields {
+            let span = selection.decl_span.unwrap_or_else(Span::zero);
+            if let Some(first) = seen.insert(field.as_str(), where_from) {
+                let first = match first {
+                    Some(scope) => format!("`select {scope}`"),
+                    None => "an earlier selection".to_string(),
+                };
+                let first = match schema
+                    .host_state
+                    .as_ref()
+                    .is_some_and(|hs| hs.fields.contains_key(field.as_str()))
+                {
+                    true => "`host_state {}`".to_string(),
+                    false => first,
+                };
+                return Err(SyntaxError::new(
+                    span.start_line,
+                    span.start_column,
+                    format!("`{field}` is already bound by {first}"),
+                )
+                .with_length(field.len())
+                .with_note(
+                    "a selection binds its fields as top-level names, so two                      bindings of one name would leave every read of it ambiguous",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -854,7 +998,7 @@ pub fn load_schema_in(path: &Path, space: &ImportSpace) -> Result<ModuleSchema, 
     let tokens = scan(&source)?;
     let module = Parser::new(tokens).parse()?;
     let crossing = crate::runtime::imports::walk(&module, space);
-    let schema = ModuleSchema::from_module_with_imports(&module, &crossing.records)?;
+    let schema = ModuleSchema::from_module_within(&module, &crossing)?;
     Ok(schema)
 }
 

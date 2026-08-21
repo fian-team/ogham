@@ -253,18 +253,20 @@ impl Compiler {
     }
 
     /// True iff the module being compiled has declared
-    /// `host_state {}`. Used for strict identifier resolution
-    /// (which requires a known list of valid host_state fields).
-    fn has_host_state_schema(&self) -> bool {
+    /// its top-level names — a `host_state {}` block, a `select`, or
+    /// both. Used for strict identifier resolution, which requires an
+    /// enumerable list of valid bare names.
+    fn binds_top_level_names(&self) -> bool {
         self.schema
             .as_ref()
-            .map(|s| s.has_host_state())
+            .map(|s| s.binds_top_level_names())
             .unwrap_or(false)
     }
 
     /// In strict mode, decide whether `name` resolves to something
-    /// the body is allowed to reference: a local, an upvalue,
-    /// a host_state field, a declared/imported record, or a built-in.
+    /// the body is allowed to reference: a local, an upvalue, a bound
+    /// name (declared in `host_state {}` or selected), a
+    /// declared/imported record, or a built-in.
     /// Locals/upvalues are pre-checked by the caller (we already
     /// tried `resolve_local` and `resolve_upvalue` before reaching
     /// this), so this only checks the schema-level slots.
@@ -284,10 +286,8 @@ impl Compiler {
         if self.screen_field(name).is_some() {
             return true;
         }
-        if let Some(hs) = &schema.host_state {
-            if hs.fields.contains_key(name) {
-                return true;
-            }
+        if schema.binds(name) {
+            return true;
         }
         if schema.lookup_record(name).is_some() {
             return true;
@@ -321,9 +321,9 @@ impl Compiler {
         let mut err = SyntaxError::new(line, column, format!("unknown identifier `{}`", name))
             .with_length(name.len())
             .with_note(
-                "this module declares `host_state {}`; identifiers resolve only to \
-                 declared fields, locals, parameters, state, imports, records, \
-                 and built-ins",
+                "this module names the state it reads; identifiers resolve only to \
+                 declared or selected fields, locals, parameters, state, imports, \
+                 records, and built-ins",
             );
         if let Some(suggestion) = self.suggest_identifier(name) {
             err = err.with_help(format!("did you mean `{}`?", suggestion));
@@ -441,13 +441,11 @@ impl Compiler {
 
     /// Suggest an identifier within Levenshtein-1 of `name` from
     /// the union of known-in-scope names. Walks built-ins,
-    /// host_state fields, and declared/imported record names.
+    /// bound names, and declared/imported record names.
     fn suggest_identifier(&self, name: &str) -> Option<String> {
         let mut candidates: Vec<&str> = BUILTINS.to_vec();
         if let Some(schema) = self.schema.as_ref() {
-            if let Some(hs) = &schema.host_state {
-                candidates.extend(hs.fields.keys().map(|s| s.as_str()));
-            }
+            candidates.extend(schema.bound_names());
             candidates.extend(schema.records.keys().map(|s| s.as_str()));
             candidates.extend(schema.imports.keys().map(|s| s.as_str()));
         }
@@ -775,8 +773,8 @@ impl Compiler {
         // a schema with `host_state == None`; strict-mode modules
         // return a fully-resolved schema. Either way, the compiler
         // attaches it so identifier resolution can consult it.
-        let schema = ModuleSchema::from_module_with_imports(module, &crossing.records)
-            .map_err(VMError::StrictMode)?;
+        let schema =
+            ModuleSchema::from_module_within(module, crossing).map_err(VMError::StrictMode)?;
         let screen_ids: Vec<String> = schema.screens.keys().cloned().collect();
         let mut compiler = Compiler::new("<module>".to_string(), 0);
         compiler.schema = Some(Arc::new(schema));
@@ -829,8 +827,8 @@ impl Compiler {
         module: &Function,
         crossing: &Crossing,
     ) -> Result<(FunctionProto, Vec<(String, u8)>), VMError> {
-        let schema = ModuleSchema::from_module_with_imports(module, &crossing.records)
-            .map_err(VMError::StrictMode)?;
+        let schema =
+            ModuleSchema::from_module_within(module, crossing).map_err(VMError::StrictMode)?;
         let mut compiler = Compiler::new("<import>".to_string(), 0);
         compiler.schema = Some(Arc::new(schema));
         compiler.import_values = Arc::new(crossing.values.clone());
@@ -1006,8 +1004,12 @@ impl Compiler {
             // change that.
             Statement::RecordDeclaration(_)
             | Statement::HostStateDeclaration(_)
-            | Statement::EventsDeclaration(_) => {
-                // Intentionally empty.
+            | Statement::EventsDeclaration(_)
+            | Statement::SelectDeclaration(_) => {
+                // Intentionally empty. A `select` block emits nothing:
+                // the names it binds are read through `GetState` like any
+                // other host-state name, which is the whole of §4.6's
+                // top-level binding and why it costs no bytecode.
             }
             // A `screen` is not pure metadata: its `view` is code. It
             // compiles to an ordinary zero-arg module-level closure
@@ -1492,19 +1494,19 @@ impl Compiler {
                     self.emit(OpCode::GetUpvalue(uv));
                     return Ok(());
                 }
-                // 3. Strict mode (host_state {} declared): the
-                //    identifier MUST be a declared host_state field,
-                //    a declared/imported record name, or a built-in.
+                // 3. Strict mode (the module names its top-level
+                //    state): the identifier MUST be a bound name —
+                //    declared in `host_state {}` or selected — a
+                //    declared/imported record name, or a built-in.
                 //    Otherwise it's a typo / missing declaration —
                 //    error with a useful diagnostic.
                 //
-                //    Note: identifier resolution requires
-                //    `host_state {}` specifically (not just any
-                //    schema declaration), because we need a known
-                //    list of valid host_state fields to check
-                //    against. A module with only `events {}`
+                //    Note: identifier resolution requires that the
+                //    module *name* its state (not just any schema
+                //    declaration), because we need an enumerable list
+                //    to check against. A module with only `events {}`
                 //    declared keeps loose identifier resolution.
-                if self.has_host_state_schema() && !self.is_known_in_schema(&name) {
+                if self.binds_top_level_names() && !self.is_known_in_schema(&name) {
                     let err = self.strict_unknown_identifier(
                         &name,
                         ident.span.start_line,

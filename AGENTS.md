@@ -487,6 +487,35 @@ roadmap; today the LSP reports scanner / parser / typed-
 bindings AST validation / lifecycle conditional-registration
 diagnostics only.)
 
+### Selections (`select`)
+
+The consumer's half of the state contract
+(`docs/internal/APPLICATION.md` §4). A document names the fields it
+*reads*; their shapes, optionality and at-mount values are the
+providing scope's declarations, not the document's.
+
+```ogh
+select manor { hud, hotbar, search, tip };   // from the `manor` node's scope
+select { sea_panel, sea_duration };          // a fragment: from wherever this mounts
+```
+
+- Selected names bind at top level, so `hud.clock` reads exactly as it
+  did under `host_state {}` — the same host-state key, the same
+  `GetState`.
+- A module with a `select` is **strict**: any other bare name is an
+  unknown-identifier error.
+- Unlike `host_state {}`, a `select` **crosses an import**, so a shared
+  module states its selection once and it is validated against each
+  mounting document's scopes (§4.7).
+- `host_state {}` is unchanged and still supported; the games migrate in
+  `APPLICATION_BUILD.md` Phase 6.
+- `ogham::contract::Mount::at_mount(&store)` gives the values a
+  selection holds at mount, for
+  `RuntimeConfig::with_host_state` — a selection declares no defaults,
+  so its seed comes from the provider.
+
+Full grammar and rationale: `docs/internal/LANGUAGE.md`.
+
 ### Portal widget (Phase 2 + 2.5)
 
 `Portal { open, focus_trap, layer, cursor, anchor, children }` lifts its

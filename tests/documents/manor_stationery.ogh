@@ -1,0 +1,26 @@
+// The manor's palette, verbatim from regency's `data/ui/client.ogh`
+// (lines 304-323 at 2026-08-21). In regency's target document split
+// (`APPLICATION_BUILD.md` A.2) this is `stationery.ogh`, imported by both
+// instance documents; here it is one half of the pair a selection has to
+// leave untouched.
+
+let col_ink    = { r: 62,  g: 50,  b: 34,  a: 255 };
+let col_muted  = { r: 138, g: 123, b: 97,  a: 255 };
+let col_gold   = { r: 184, g: 145, b: 47,  a: 255 };
+let col_card   = { r: 245, g: 238, b: 220, a: 232 };
+let col_flash  = { r: 243, g: 201, b: 126, a: 255 };
+let col_wash   = { r: 243, g: 201, b: 126, a: 56 };
+let col_clear  = { r: 0,   g: 0,   b: 0,   a: 0 };
+let col_wash_faint  = { r: 243, g: 201, b: 126, a: 28 };
+let col_gold_faint  = { r: 184, g: 145, b: 47,  a: 120 };
+let col_muted_faint = { r: 138, g: 123, b: 97,  a: 90 };
+
+// The card stock's engraving inks (regency-display's holding screen,
+// values verbatim from regency-sheet theme::warm + holding.rs).
+let col_stock      = { r: 245, g: 238, b: 220, a: 255 };  // panel, opaque
+let col_rule       = { r: 90,  g: 70,  b: 50,  a: 255 };  // room_stroke
+let col_rule_faint = { r: 90,  g: 70,  b: 50,  a: 144 };
+let col_ink_soft   = { r: 62,  g: 50,  b: 34,  a: 216 };
+let col_emboss     = { r: 255, g: 246, b: 224, a: 102 };  // plate-light underlay
+let col_shadow     = { r: 42,  g: 32,  b: 18,  a: 70  };
+let col_wax        = { r: 126, g: 58,  b: 70,  a: 255 };  // alarm — sealing wax

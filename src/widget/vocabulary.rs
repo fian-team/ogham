@@ -907,7 +907,7 @@ fn walk_statement(statement: &crate::parser::Statement, f: &mut impl FnMut(&crat
         }
         S::ScreenDeclaration(s) => walk_expression(&s.view, f),
         S::Import(_) | S::RecordDeclaration(_) | S::HostStateDeclaration(_)
-        | S::EventsDeclaration(_) => {}
+        | S::EventsDeclaration(_) | S::SelectDeclaration(_) => {}
     }
 }
 
