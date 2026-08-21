@@ -1,6 +1,15 @@
 # Ogham — The Application Model
 
-> **Status: Design record — agreed direction, not built.** 2026-08-20.
+> **Status: Design record — agreed direction, being built.**
+> 2026-08-20. Phases 0 and 1 have landed: the structure framework
+> exists as the `structure` crate (routing's table, walk and outbox,
+> with §3.2's tiers and areas and §3.4's guard form as table data),
+> and §2's dependency edge holds in the direction that matters —
+> `structure` depends on nothing. The store (§5), the selection
+> contract (§4) and the binding (§6) are not built. Build status,
+> including the one amended acceptance criterion, is
+> `APPLICATION_BUILD.md` §0.5. This header flips to "built" when the
+> last phase gate passes.
 >
 > This document states what Ogham is becoming: **two composed
 > frameworks and a contract between them** — a structure framework
@@ -17,8 +26,12 @@
 > rule is repealed: instance roots gain teardown/mount lifetimes,
 > §5.6), and `untold_lore/docs/ROOMS.md` (a room's `Presentation`
 > becomes a reading of its route node, and its `Requires`/`Refusal`
-> columns move with it, §3.4). Until then those documents stand as
-> written and this one is the direction.
+> columns move with it, §3.4). Those amendments are written in
+> Phase 7, at the end of the build; until they are, those documents
+> stand as written and this one is the direction. One of them is
+> already half-true in the code: the route tier has left the surface
+> framework's crate (WP-1.1), but nothing has been rewritten to say
+> so yet.
 >
 > Amended 2026-08-20 after a four-repo consumer audit (untold_lore,
 > regency, stargazer-celia, and lorekeeper's driver tier). The

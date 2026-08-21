@@ -6,8 +6,122 @@
 > changes. `APPLICATION.md` is the design record — this document
 > never restates its axioms, only cites them (§n.n references are
 > into APPLICATION.md unless prefixed with a repo doc name).
+>
+> **Build status lives in §0.5, updated as packages land.**
 
 ---
+
+## 0.5 Build status
+
+Last updated 2026-08-20, end of the first build session.
+
+| package | state | commits |
+|---|---|---|
+| WP-0.1 | **landed** | ogham `dc30634`, lorekeeper `b9d0dc5` |
+| WP-1.1 | **landed** (acceptance amended, below) | ogham `6c8c847` + consumer lockfiles `d0d689a` / `1508f05` / `0eb1a95` / `7f29d20` |
+| WP-1.2 | **landed** | ogham `fa7092e` |
+| **Phase 1 gate** | **passed** 2026-08-20 | — |
+| P2 onward | not started | — |
+
+**Phase 1 gate, as run:** ogham, untold_lore, regency and
+stargazer-celia-game all green; lorekeeper green except the baseline
+red below. Consumers compile **unchanged** against the re-export.
+
+**Baseline failures that are not this build's** (measure against
+these, not against zero — the standing rule in §0):
+
+- `lorekeeper render/tests/prop_load.rs`
+  `every_slot_binds_and_flags_exactly_one_thing` — red since the
+  skinned-shadow work landed (set 2 now binds 7 and 8; the test
+  still expects `[0..4]`). Maintainer's in-flight work, untouched.
+- `lorekeeper cook` `generated::tests::a_generated_source_reads_with_no_source_tree`
+  — fails in full-workspace runs only, passes under
+  `cargo test -p cook --lib`.
+- ogham clippy/fmt debt. Deltas at the Phase 1 gate: clippy 110→108,
+  fmt diffs 26→24 (both improved; nothing added).
+
+**Pre-build repairs** (done before WP-0.1, so the baseline was a
+real one): in-flight work committed in lorekeeper (`32bc6dc`,
+`a94f0fa`) and untold_lore (`6215880`); regency and celia did not
+compile against the engine's current API and were repaired
+(`ae7a6dd`, `ae15801`) — `FrontConfig::manual_slots` had been
+replaced by directory discovery, and `WindowControls::set_cursor`
+now takes a `CustomCursorSource`, so regency re-rasterizes its
+crosshair per hover swap instead of holding minted handles. regency
+and celia were working on `routing` branches; both fast-forwarded
+to `main` per §0's single-branch rule. **Nothing has been pushed.**
+
+### The WP-1.1 acceptance amendment (decided 2026-08-20)
+
+WP-1.1's two acceptance criteria are mechanically contradictory:
+Rust has no way for `ogham` to `pub use` a `structure` item without
+declaring the dependency, so "`cargo tree -p ogham` shows no
+structure" and "consumers compile via the re-export" cannot both
+hold. This document's own text prescribes the re-export ("Until P4
+lands, `front::RouterHost` keeps working against a thin
+re-export"), so the edge is prescribed with it. Resolution:
+
+- `cargo tree -p structure` shows no ogham — **holds absolutely**,
+  and it is the load-bearing half of §2 (the structure framework
+  depends on nothing of the surface framework). The crate has an
+  empty `[dependencies]`.
+- The `ogham → structure` edge is **declared scaffolding**, marked
+  at the dependency line and in `route/mod.rs`'s module doc, and
+  the "`cargo tree -p ogham` clean" check **moves to the P4 phase
+  gate** — where WP-4.1 deletes ogham's route remainder anyway.
+
+A second finding sharpened the same seam: the `Route` trait cannot
+leave ogham today at all, because its signatures concretely name
+surface types (`read_state` returns `Value`s, `RouteEvent::Input`
+carries a widget event, `own_ui` names `Ogham` itself) and four
+repos' `impl Route<Cx, A>` blocks repeat them. That is coherent
+with the plan's end state — `read_state` dies into the store (P2),
+`own_ui`/`draw` retire in WP-4.1/4.2 — so the trait, `RouteEvent`
+and `chrome.rs` stay ogham-side as scheduled scaffolding.
+
+Consequently WP-1.1 moved the router's **walk** as well as the
+table and outbox (rather than the minimal table+outbox move), so
+that WP-2.2's guard evaluation lands inside a structure-owned walk
+instead of being wired back through ogham's router. The walk is
+generic over a `Node<Cx, A>` bridge trait carrying the nine
+`Route` methods whose signatures name no surface type; ogham's
+`Router` is a newtype over it, keeping only `event` and `draw`
+dispatch. The bridge is scaffolding with the same P4 death date.
+
+### What P2 inherits
+
+`structure/` (workspace member, `publish = false`, zero
+dependencies, 23 tests) holds: `table.rs` (`RouteTable`, `Tier`,
+`TableError`), `router.rs` (the walk + `Node`), `outbox.rs`,
+`guard.rs`, and the vocabulary in `lib.rs` (`RouteId`, `Area`,
+`Handled`, `Occlusion`, `Escape`, `Departure`, `RaiseArg`).
+
+WP-1.2's table API, for the packages that build on it:
+
+- Declarations: `at_root`, `under`, `mounts(id, document)`,
+  `structural`, `in_area`, `default_area`, `occludes`, `guard`.
+- Queries answered **from the table alone**, no route object:
+  `tier_of`, `document_of`, `area_of`, `area_of_path`,
+  `enclosing_instance`, `occlusion_of`, `declared_occlusion`,
+  `guard_of`, `parents_of`, `children_of`.
+- `Tier` defaults to `View` (the un-migrated common case);
+  `InstanceRoot { document }` and `Structural` are declarations.
+- `Area = &'static str`, with `default_area` preserving
+  untold_lore's catch-all property; declaring areas without
+  choosing a catch-all fails at startup, as does an area on a view.
+- Guards: `guard.rs` pins §3.4's form — `type Guard = fn(&Store)
+  -> Result<(), Refusal>`, a plain fn pointer, never a predicate
+  DSL. `Store` is a crate-private placeholder **WP-2.2 fills in
+  under the same name**, so registered guards keep compiling; it is
+  unconstructible outside the crate so no host can grow an
+  ask-then-mount of its own first. `Refusal` carries one authored
+  sentence (§3.4's "written once, read everywhere").
+- `validate()` catches, at startup: unknown parent, duplicate id,
+  cycle, no root, attribute-on-unknown id, and contradictory
+  double declarations (two guards on one door, instance-root-and-
+  structural, an area declared twice).
+
+**Resume at:** Phase 2, WP-2.1 (schemas and derived reflection).
 
 ## 0. How to use this document
 
@@ -83,7 +197,24 @@ These are bugs under the *current* design and land independently
 of everything else. Do them first so hot-reload behavior is sound
 before the store inherits it.
 
-### WP-0.1 Hot reload revalidates and re-projects
+### WP-0.1 Hot reload revalidates and re-projects — **landed**
+
+> ogham `dc30634`, lorekeeper `b9d0dc5`. `Ogham::frame` now returns a
+> `FrameReport { reloaded, rerendered }`; on a reload `Chrome` clears
+> the stale error, calls `forget_projection()` (its first caller
+> ever) and re-runs `validate` against the ids the mount remembered
+> (`expected: Option<Vec<RouteId>>` — `None` when the host never
+> validated, so a reload cannot invent a check the mount never asked
+> for). Three tests in `tests/route.rs`, including a drift named
+> without restart driven through the real file watcher. lorekeeper
+> needed only a doc amendment: its one call site is `Chrome::frame`,
+> whose signature did not change.
+>
+> Finding: the "unchanged keys hold config defaults" half of the bug
+> was already mostly mitigated by `Ogham::carry_host_state_into`,
+> which copies live host state into the replacement runtime.
+> `forget_projection()` on reload is belt-and-braces; the genuinely
+> absent fix was the re-validation.
 
 Today validation runs once, at `RouterHost::new`
 (`lorekeeper/front/src/host.rs:91-119` →
@@ -110,7 +241,7 @@ green in ogham and lorekeeper.
 
 ## Phase 1 — the structure crate (repo: ogham)
 
-### WP-1.1 Extract routing from the surface framework
+### WP-1.1 Extract routing from the surface framework — **landed, acceptance amended (§0.5)**
 
 Reverse the placement half of ROUTING.md phase 8c:
 `ogham/src/route/{table,router,outbox}` moves to a new workspace
@@ -126,7 +257,7 @@ The engineering guarantee is §2's dependency edge. Acceptance:
 `cargo tree -p ogham` shows no dependency on structure; all
 consumers compile via the re-export; tests green.
 
-### WP-1.2 The table grows tiers, areas, guards, documents
+### WP-1.2 The table grows tiers, areas, guards, documents — **landed** (`fa7092e`; API in §0.5)
 
 Implements §3.2 and §3.4 as table data:
 
@@ -156,7 +287,8 @@ occlusion of every node queryable without instantiating any route
 object.
 
 **Phase gate:** ogham + lorekeeper + all three games compile and
-test green against the re-export.
+test green against the re-export. — **passed 2026-08-20**, against
+the baseline reds recorded in §0.5.
 
 ---
 

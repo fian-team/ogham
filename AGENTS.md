@@ -15,6 +15,23 @@ Ogham operates in two modes:
 1. **Library** -- embed Ogham UIs inside a Rust application (the primary use case).
 2. **Standalone browser** -- the `client` binary opens `.ogh` files directly.
 
+### A split is underway — read this before touching `src/route/`
+
+This repo is becoming **two composed frameworks**: a *structure*
+framework (routing fused with a scoped, schema'd state store) in the
+`structure/` workspace member, and the *surface* framework (this
+crate: the DSL, layout, reactivity) — joined by a thin binding that
+will live in lorekeeper. The design record is
+`docs/internal/APPLICATION.md`; the phased plan and its live status
+are `docs/internal/APPLICATION_BUILD.md` (§0.5). Phases 0 and 1 have
+landed; the store, the selection contract and the binding have not.
+
+The rule that outranks convenience: **`structure` depends on nothing
+of the surface framework, and vice versa.** `structure/`'s empty
+`[dependencies]` is load-bearing. The one edge that does exist,
+`ogham → structure`, is declared scaffolding for the re-export that
+keeps consumers compiling, and it is deleted in Phase 4.
+
 ## Architecture
 
 ```
@@ -65,6 +82,8 @@ Source (.ogh)
 | `src/lsp/` | `ogham-lsp` language server binary |
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
+| `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver in `docs/internal/APPLICATION_BUILD.md` Phase 4 |
+| `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
 
 ## LSP Server
 
@@ -1165,6 +1184,10 @@ ogham/
       main.rs               -- standalone browser binary entry point
       client.rs              -- client implementation
       app.rs                 -- application wrapper
+    route/                  -- surface-typed route remainder (Route trait, RouteEvent,
+                            --   Chrome, Router newtype); moves to the driver in Phase 4
+  structure/                 -- THE STRUCTURE FRAMEWORK (workspace member): route table,
+                            --   walk, outbox, guards. Zero dependencies, by design
   crates/
     ogham-derive/           -- #[derive(OghamState)] / #[derive(OghamMsg)] proc macros
   examples/                  -- .ogh example files (incl. portals/components.ogh)
