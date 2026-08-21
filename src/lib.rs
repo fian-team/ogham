@@ -36,6 +36,7 @@ use skia_safe::{FontMgr, Typeface};
 /// [`INTENT.md`](../docs/internal/INTENT.md) §6.
 pub use skia_safe;
 
+pub mod contract;
 mod file_watcher;
 mod macros;
 pub mod parser;
@@ -80,6 +81,34 @@ pub struct FrameReport {
     /// The module re-executed this frame.
     pub rerendered: bool,
 }
+
+/// Why a gated reload did not take (`APPLICATION.md` §4.1).
+///
+/// Either way the running instance stands: the front door stays open, the
+/// file stays watched, and fixing the edit heals the session without a
+/// restart. The two arms differ only in what to tell the author.
+#[derive(Debug)]
+pub enum ReloadRefused {
+    /// The edited document does not compile, or its fresh widget tree would
+    /// not build.
+    Broken(runtime::error::RuntimeError),
+    /// It compiles, and the check refused it — a selection naming a field
+    /// nothing provides, a raise nothing accepts. The sentence names the
+    /// offender, because the case being designed for is a modder's stale
+    /// expectation.
+    Refused(String),
+}
+
+impl std::fmt::Display for ReloadRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReloadRefused::Broken(e) => write!(f, "{e:?}"),
+            ReloadRefused::Refused(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for ReloadRefused {}
 
 impl Ogham {
     /// Create an Ogham instance from a file path with file watching enabled.
@@ -188,6 +217,34 @@ impl Ogham {
         }
     }
 
+    /// Reload the watched file, and take the result only if `accept` says
+    /// the fresh document still holds its contract.
+    ///
+    /// `APPLICATION.md` §4.1: validation runs at document load **and at
+    /// every hot reload**, and a hot-reload refusal rejects the new
+    /// document *without tearing down the running instance*. That last
+    /// clause is what this method is for. `accept` is called on the
+    /// candidate's own module schema after it compiles and before anything
+    /// of the running instance has been touched — so a refusal costs the
+    /// candidate and nothing else: the running runtime, its widget tree,
+    /// its focus stack and its live host state all stand, and the file
+    /// stays watched, so fixing the edit heals the session with no restart.
+    ///
+    /// A document that compiles but does not resolve to a schema is passed
+    /// through unchecked, for the reason
+    /// [`module_schema`](Self::module_schema) returns `None` there: it has
+    /// a real error waiting with real diagnostics, and a second complaint
+    /// on top would bury it.
+    pub fn reload_if(
+        &mut self,
+        accept: impl FnOnce(&runtime::schema::ModuleSchema) -> Result<(), String>,
+    ) -> Result<(), ReloadRefused> {
+        match self.path.clone() {
+            Some(path) => self.reload_file_if(&path, accept),
+            None => Ok(()),
+        }
+    }
+
     /// Load and watch a new file (and all its imports)
     pub fn load_file(&mut self, path: String) -> Result<(), runtime::error::RuntimeError> {
         self.reload_file(&path)?;
@@ -211,19 +268,49 @@ impl Ogham {
 
     /// Reload a specific file (internal helper)
     fn reload_file(&mut self, path: &str) -> Result<(), runtime::error::RuntimeError> {
+        self.reload_file_if(path, |_| Ok(()))
+            .map_err(|refused| match refused {
+                ReloadRefused::Broken(e) => e,
+                ReloadRefused::Refused(_) => {
+                    unreachable!("an ungated reload accepts everything that compiles")
+                }
+            })
+    }
+
+    /// [`reload_file`](Self::reload_file) with the gate
+    /// [`reload_if`](Self::reload_if) supplies.
+    ///
+    /// The order is the whole point: the candidate is built and offered to
+    /// `accept` **before** the running instance is touched at all. Every
+    /// early return above the swap leaves this `Ogham` exactly as it was.
+    fn reload_file_if(
+        &mut self,
+        path: &str,
+        accept: impl FnOnce(&runtime::schema::ModuleSchema) -> Result<(), String>,
+    ) -> Result<(), ReloadRefused> {
+        let new_runtime = Arc::new(Mutex::new(
+            runtime::Runtime::from_file(path, Some(self.config.clone()))
+                .map_err(ReloadRefused::Broken)?,
+        ));
+        let candidate = {
+            let rt = new_runtime.lock().expect("runtime lock poisoned");
+            rt.get_module()
+                .and_then(|module| runtime::schema::ModuleSchema::from_module(module).ok())
+        };
+        if let Some(schema) = candidate {
+            accept(&schema).map_err(ReloadRefused::Refused)?;
+        }
+
         // Phase 2.5 M3: clear the OLD UI's lifecycle state
         // (focus stack + portal_layers + focused) before
         // dropping it. Prevents stale focus restoration
         // pointing at widgets that no longer exist in the
-        // reloaded tree.
+        // reloaded tree. Below the gate, because a refused
+        // candidate must leave the running tree's focus alone.
         self.ui.clear_lifecycle_state();
-
-        let new_runtime = Arc::new(Mutex::new(runtime::Runtime::from_file(
-            path,
-            Some(self.config.clone()),
-        )?));
         self.carry_host_state_into(&new_runtime);
-        let mut new_ui = Self::create_ui_from_runtime(&new_runtime)?;
+        let mut new_ui =
+            Self::create_ui_from_runtime(&new_runtime).map_err(ReloadRefused::Broken)?;
         if let Some(ref fc) = self.font_collection {
             new_ui.set_font_collection(fc.clone());
         }

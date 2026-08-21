@@ -14,8 +14,9 @@
 
 use std::collections::HashMap;
 
+use crate::contract::{Findings, Mount, Store, Validation};
 use crate::runtime::value::Value;
-use crate::Ogham;
+use crate::{Ogham, ReloadRefused};
 
 use crate::route::RouteId;
 
@@ -41,6 +42,12 @@ pub struct Chrome {
     /// table. `None` until a host validates — a reload must not invent a
     /// check the mount never asked for.
     expected: Option<Vec<RouteId>>,
+    /// What the contract check refused, if it has refused something
+    /// (`APPLICATION.md` §4.1). Distinct from [`error`](Self::error) on
+    /// purpose: a refused *edit* leaves the running document perfectly
+    /// healthy, and telling a host its document is broken when it is not is
+    /// how a game ends up showing a fallback it did not need.
+    refusal: Option<String>,
 }
 
 impl Chrome {
@@ -51,6 +58,7 @@ impl Chrome {
             error: None,
             validation: None,
             expected: None,
+            refusal: None,
         }
     }
 
@@ -68,6 +76,7 @@ impl Chrome {
             error: Some(why),
             validation: None,
             expected: None,
+            refusal: None,
         }
     }
 
@@ -172,6 +181,89 @@ impl Chrome {
     /// found nothing, or has not run.
     pub fn validation(&self) -> Option<&str> {
         self.validation.as_deref()
+    }
+
+    // --- the contract (`APPLICATION.md` §4.1) ------------------------------
+
+    /// Check the mounted document against what the store publishes, in the
+    /// two grades.
+    ///
+    /// This is the **load** half of "validation runs at document load and
+    /// at every hot reload"; [`frame_checked`](Self::frame_checked) is the
+    /// reload half. Refusals are kept, and [`refusal`](Self::refusal)
+    /// reports them once rather than per frame; the reports come back in
+    /// the [`Findings`] for a host that wants to print them.
+    ///
+    /// The same question is answerable with no instance at all, over every
+    /// shipped document at once, by
+    /// [`contract::Documents`](crate::contract::Documents) — which is where
+    /// a repo's CI asks it.
+    pub fn check(&mut self, store: &Store, mount: &Mount) -> Findings {
+        let mut check = Validation::new(store);
+        if let Some(schema) = self.ui.module_schema() {
+            mount.check_into(&schema, &mut check);
+        }
+        let found = check.finish();
+        let refused: Vec<String> = found.refusals().map(ToString::to_string).collect();
+        match refused.is_empty() {
+            true => self.refusal = None,
+            false => self.refuse(refused.join("\n")),
+        }
+        found
+    }
+
+    /// What the contract check refused. `None` when it refused nothing, or
+    /// has not run.
+    ///
+    /// A refusal is not an [`error`](Self::error): after a refused reload
+    /// the running document is intact and still drawing, and the sentence
+    /// here is about the file on disk.
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_deref()
+    }
+
+    /// [`frame`](Self::frame) with the hot reload held to the contract.
+    ///
+    /// §4.1's last sentence, as a call: a hot-reload refusal rejects the
+    /// new document and names the field **without tearing down the running
+    /// instance**. The edit is checked before the swap, so a refused one
+    /// costs the candidate and nothing else — the running tree keeps its
+    /// state and its focus, the projection cache is untouched, and the file
+    /// stays watched, so the next save that passes heals the session.
+    pub fn frame_checked(
+        &mut self,
+        store: &Store,
+        mount: &Mount,
+        width: f32,
+        height: f32,
+        dt: f32,
+    ) {
+        if self.ui.check_for_changes() {
+            match self
+                .ui
+                .reload_if(|schema| crate::contract::refusals(schema, store, mount))
+            {
+                Ok(()) => {
+                    self.reloaded();
+                    // The candidate the gate accepted is the running
+                    // document now, so whatever it refused before is over.
+                    self.refusal = None;
+                }
+                Err(ReloadRefused::Broken(e)) => self.record_failure(e),
+                Err(ReloadRefused::Refused(why)) => self.refuse(why),
+            }
+        }
+        // The watcher's events were drained above, so this does not reload
+        // again — and must not, because that reload would be ungated.
+        self.frame(width, height, dt);
+    }
+
+    /// A refused document, reported once rather than per frame.
+    fn refuse(&mut self, why: String) {
+        if self.refusal.as_deref() != Some(why.as_str()) {
+            eprintln!("route: the document was refused, and the running one stands:\n{why}");
+        }
+        self.refusal = Some(why);
     }
 
     /// Push the active path. The document renders these screens in order,

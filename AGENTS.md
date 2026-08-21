@@ -24,12 +24,17 @@ crate: the DSL, layout, reactivity) — joined by a thin binding that
 will live in lorekeeper. The design record is
 `docs/internal/APPLICATION.md`; the phased plan and its live status
 are `docs/internal/APPLICATION_BUILD.md` (§0.5). Phases 0 and 1 have
-landed, and Phase 2 is under way: `structure/src/schema.rs` holds the
+landed, and Phase 2 has: `structure/src/schema.rs` holds the
 derived reflection, `structure/src/store.rs` holds the store core —
-scoped facts, the frame barrier, the two consumption verbs — and
+scoped facts, the frame barrier, the two consumption verbs —
 `structure/src/intent.rs` holds the write side: the intents a scope
-publishes, and the typed raise that lands on the outbox. The selection
-contract and the binding have not landed.
+publishes, and the typed raise that lands on the outbox — and
+`structure/src/validate.rs` grades a document's selection against
+both, in §4.1's two grades. `src/contract.rs` is this crate's half of
+that seam: it turns a `host_state {}` / `events {}` block into the
+structure framework's vocabulary, and `contract::Documents` is the
+"load every shipped document against its schemas" harness a consumer
+instantiates in one test. The binding has not landed.
 
 The rule that outranks convenience: **`structure` depends on nothing
 of the surface framework, and vice versa.** `structure/`'s empty
@@ -87,8 +92,9 @@ Source (.ogh)
 | `src/lsp/` | `ogham-lsp` language server binary |
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
+| `src/contract.rs` | The surface side of the contract seam: a document's declarations in the structure framework's vocabulary, the `Documents` load-validation harness, and the hot-reload gate's check |
 | `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver in `docs/internal/APPLICATION_BUILD.md` Phase 4 |
-| `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, `schema` — §4.3's derived reflection, the thing a document's selection validates against — `store` — §5's scoped facts, their frame-transactional commit, and the subscribe/read verbs — and `intent` — §4.4's write side, the vocabulary a scope publishes and the typed raise that lands on the outbox. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
+| `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, `schema` — §4.3's derived reflection, the thing a document's selection validates against — `store` — §5's scoped facts, their frame-transactional commit, and the subscribe/read verbs — `intent` — §4.4's write side, the vocabulary a scope publishes and the typed raise that lands on the outbox — and `validate` — §4.1's two grades, where a selection that names a missing field refuses and coverage drift reports. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
 
 ## LSP Server
 
