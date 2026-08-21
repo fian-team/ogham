@@ -182,6 +182,29 @@ impl<'a> RouteEvent<'a> {
     }
 }
 
+/// A route, as [`Any`](std::any::Any) — the one method that cannot be
+/// written as a default, so it is written once, here, for every type at
+/// once.
+///
+/// [`Route`]'s supertrait rather than `Any` itself, because `dyn
+/// Route<Cx, A>: Any` would make `Cx` and `A` part of a `'static`
+/// requirement on every router, binding and host in five repositories, to
+/// buy one downcast.
+pub trait AsAny {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+impl<T: std::any::Any> AsAny for T {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
 /// One routable surface.
 ///
 /// Implemented once per surface by a game (or by the services tier, for
@@ -197,7 +220,24 @@ impl<'a> RouteEvent<'a> {
 /// The walk never sees this trait: `structure`'s router drives it through
 /// the [`structure::Node`] bridge in [`router`], which carries exactly
 /// the methods below whose signatures name no surface type.
-pub trait Route<Cx, A> {
+///
+/// # Why [`Any`](std::any::Any) is a supertrait
+///
+/// So a host can get a route back **at the type that registered it**.
+/// The walk hands out `&dyn Route`, and a producer that needs a route's
+/// own state — the half-typed address on the connect screen, which is
+/// route state by `ROUTING.md` §7.1 and by §5's own scope lifetime — had
+/// no way to reach it except through [`read_state`](Route::read_state)'s
+/// map of `Value`s, which is on the deletion ledger. One consumer read it
+/// back through that shim in fourteen labelled lines; the other did not,
+/// and its reply card showed a placeholder forever.
+///
+/// The alternative was to make the address a store field, and it does not
+/// fit: a route may write only through the outbox (§3.3) and a producer
+/// only inside the barrier (§5.4), so a keystroke that *appends* to a
+/// buffer has no single place to live. It is route state; what was
+/// missing was a typed way to read it.
+pub trait Route<Cx, A>: AsAny {
     /// Emit this route's own state slice through `editable`'s read walk.
     ///
     /// **Superseded** by the store (§4.1): a scope's provider owns the

@@ -163,6 +163,23 @@ impl<Cx, A> Router<Cx, A> {
         self.core.get(id)
     }
 
+    /// One route, **at the type that registered it**.
+    ///
+    /// The typed half of [`get`](Self::get): a host that registered a
+    /// `ConnectRoute` gets a `&ConnectRoute` back, rather than a map of
+    /// `Value`s through the `read_state` shim. `None` for an id nobody
+    /// registered *and* for one registered at another type, which is the
+    /// same answer for the same reason — this is not the route you meant.
+    pub fn get_as<T: 'static>(&self, id: RouteId) -> Option<&T> {
+        self.core.get(id)?.as_any().downcast_ref::<T>()
+    }
+
+    /// The same, mutably — for a host that has to *set* a route's own
+    /// state rather than read it.
+    pub fn get_as_mut<T: 'static>(&mut self, id: RouteId) -> Option<&mut T> {
+        self.core.get_mut(id)?.as_any_mut().downcast_mut::<T>()
+    }
+
     pub fn get_mut(&mut self, id: RouteId) -> Option<&mut (dyn Route<Cx, A> + 'static)> {
         self.core.get_mut(id)
     }
