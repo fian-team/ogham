@@ -26,7 +26,11 @@ Last updated 2026-08-20, end of the first build session.
 | WP-2.3 | **landed** (+ the at-mount fix) | ogham `c04b25a`, `dd375c8`; lorekeeper `d20c774`, `0f51ba6` |
 | WP-2.4 | **landed** | ogham `d292cea`, `ba65ae2` |
 | **Phase 2 gate** | **passed** 2026-08-21 | — |
-| P3 onward | not started | — |
+| WP-3.1 / 3.2 / 3.3 | **landed** | ogham `6c46c7e`, `e8344ec`, `1792a89`, `8f57cba` |
+| WP-4.1 – 4.5 | **landed** | ogham `03d895f`, `ac04252`; lorekeeper `34b13d5`, `027a320`, `5d8ee11`, `2489d8f`, `953adaa`; lockfiles regency `19cfb4b`, celia `dedec38` |
+| **P3+P4 gate** | **passed** 2026-08-21 | — |
+| the contract crate | **landed** (maintainer-ruled, below) | ogham `e4397cc`, `a65b886`; lorekeeper `8a0bc4c` |
+| P5 onward | not started | — |
 
 **Phase 1 gate, as run:** ogham, untold_lore, regency and
 stargazer-celia-game all green; lorekeeper green except the baseline
@@ -193,7 +197,108 @@ Appendix C lists only the wire half of the former for deletion, so
 this is consistent — but the remaining half stays until P4's driver
 can answer it.
 
-**Resume at:** Phase 3 and Phase 4 (parallel).
+### Phases 3 and 4, as they landed
+
+**P3+P4 gate, as run (2026-08-21):** ogham 852 passed; lorekeeper
+green except the one baseline red; regency 54 and celia 49 green
+**with no source edits at all** — only lockfile bumps;
+`ogham_preview` runs on the four-method `driver::Host`.
+untold_lore was not gated on: it is mid-surgery in the
+maintainer's tree and does not compile
+(`ul-core/src/server.rs`), which is unrelated to this build.
+
+**Three defects were found that the plan does not list**, each of
+which would have shipped looking correct:
+
+- **The import walk was three readers disagreeing.** The compiler
+  pre-scanned *direct* imports for `let` names only; the schema was
+  handed an empty import map by every caller in the crate, so a
+  `record` could not cross an import at all; and the watcher was
+  built once at mount and never rebuilt — contradicting ROUTING.md
+  §13.4's own claim that reload rebuilds it.
+- **WP-2.4's hot-reload gate had a hole.** It built the candidate
+  schema without imports, so a document declaring a field at an
+  imported record shape produced an `Err`, the candidate became
+  `None`, and **the gate was skipped entirely**.
+- **Stacking two views would have taken the wrong click.**
+  `FlexWidget::handle_event`'s pointer walk is front-to-back,
+  first consumer wins — which a flow never has to decide, because
+  its children do not overlap. Stacked children overlap exactly, so
+  the workspace *underneath* would have taken every press aimed at
+  the prompt drawn on top. WP-3.3 reverses the walk when stacking.
+
+Also fixed in P4, unlisted: a path change *within* the arriving
+instance during a passage cancelled the sweep, so a pause or a card
+one frame in would snap the picture.
+
+**§4.6's binding property is proved, not asserted.** WP-3.2's
+acceptance vendors regency's real in-manor HUD family verbatim from
+`client.ogh` and compiles it twice — once against the real 21-field
+`record Hud` plus `host_state {}`, once against `select manor {
+hud };` — asserting the two files are byte-identical after the
+declaration. If the selected arm needed one edit the two arms could
+not share the file.
+
+### The dependency-edge ruling (decided 2026-08-21)
+
+Phase 1 deferred "`cargo tree -p ogham` shows no structure" to the
+P4 gate. **It cannot be met there**, and P4 correctly stopped rather
+than forcing it. Two things held the edge:
+
+1. `ogham/src/route/` — scaffolding as scheduled, but three games
+   hold ~90 `use ogham::route::{…}` sites and their own `impl
+   Route<Cx, A>` blocks, and ogham cannot re-export from a crate
+   that depends on it. **This half of the criterion moves to the
+   P6 gate**, where the `impl Route` blocks are rewritten anyway.
+2. `ogham/src/contract.rs` — **not scaffolding.** WP-2.4 put
+   document loading in `ogham` deliberately, so the harness would
+   need no platform tier.
+
+**Ruling on (2):** moving `contract.rs` into `driver` is rejected —
+a consumer's `cargo test`-time document check would then link
+`app`, `winit` and Skia, forfeiting the exact property WP-2.4 built
+it for. Amending §2 is rejected — §2 is the spine. But §2 says
+*only the binding depends on both*, not *there is exactly one
+binding crate*, and `contract::Documents` needs the parser and the
+store, so **it is a binding by §2's own definition**. It became its
+own crate (`ogham/contract/`, `cargo tree --depth 1` = `ogham` +
+`structure`, nothing else). `src/route/` is now the sole rider on
+the edge, and the manifest says so.
+
+`Chrome` had to split to make this work, which the ruling did not
+anticipate: `ogham` keeps the mechanism (`Chrome::frame_gated`,
+`Chrome::refuse`) and `contract` supplies the question (`trait
+Checked`, with `check`/`frame_checked`). Call sites are
+byte-identical plus one `use`.
+
+### The leaf-depth gap, closed in the same package
+
+The inversion cost a guarantee, and WP-3.2 flagged it precisely:
+with `host_state {}` a provider renaming `Hud::clock` refuses at
+load; with `select manor { hud }`, `hud.clock` read `Void` and
+nothing said so. That is **a false expectation** — the one thing
+§4.1 promises never to produce — and untold_lore's
+`every_declared_key_is_projected` only deletes if the harness holds
+what that test held.
+
+Closed in the harness, the one place holding both the AST and the
+reflection: `ogham` collects every member-access path off a
+top-level bound name onto `ModuleSchema.reads` (grading nothing —
+grading needs the reflection), and `contract`/`structure` resolve
+each path with `Kind::field_at`. Because both the harness and the
+reload gate read a `ModuleSchema`, **both moments get the check
+with no API change**.
+
+Grades, deliberately: a missing leaf **refuses** (`Unreached`); a
+path that steps into a list, map, union or back-edge is **silent**,
+not a report — §4.2 makes a collection one field in v1, so this is
+the boundary of what is checkable, and a report here would fire on
+every correct list read in every document and be switched off
+within a week; a read off a `fn` parameter, `let`, `state` or `for`
+variable is never collected at all, because a name the document
+bound is its own. A false refusal would be worse than the gap.
+
+**Resume at:** Phase 5.
 
 ## 0. How to use this document
 
