@@ -15,16 +15,19 @@ Ogham operates in two modes:
 1. **Library** -- embed Ogham UIs inside a Rust application (the primary use case).
 2. **Standalone browser** -- the `client` binary opens `.ogh` files directly.
 
-### A split is underway — read this before touching `src/route/`
+### The split has landed — read this before touching `src/route/`
 
-This repo is becoming **two composed frameworks**: a *structure*
+This repo is **two composed frameworks**: a *structure*
 framework (routing fused with a scoped, schema'd state store) in the
 `structure/` workspace member, and the *surface* framework (this
-crate: the DSL, layout, reactivity) — joined by a thin binding that
-will live in lorekeeper. The design record is
-`docs/internal/APPLICATION.md`; the phased plan and its live status
-are `docs/internal/APPLICATION_BUILD.md` (§0.5). Phases 0 and 1 have
-landed, and Phase 2 has: `structure/src/schema.rs` holds the
+crate: the DSL, layout, reactivity) — joined by thin bindings, one
+here (`contract/`) and one in lorekeeper (`driver`). The design record
+is `docs/internal/APPLICATION.md`; the build's own account of itself,
+phase by phase, is `docs/internal/APPLICATION_BUILD.md` §0.5 — read it
+before believing any plan text further down that document, because
+several of the plan's own sentences were corrected as it ran and §0.5
+is where each correction is recorded. Where the pieces are:
+`structure/src/schema.rs` holds the
 derived reflection, `structure/src/store.rs` holds the store core —
 scoped facts, the frame barrier, the two consumption verbs —
 `structure/src/intent.rs` holds the write side: the intents a scope
@@ -45,8 +48,14 @@ one — it depends on `ogham` and `structure` and nothing else, and it
 must stay reachable without a window, because its whole purpose is a
 `cargo test`-time answer. The one edge that should not exist,
 `ogham → structure`, is declared scaffolding for `src/route/`'s
-re-export, and it is deleted at the Phase 6 gate when the three
-games' `impl Route` blocks are rewritten.
+re-export. **It is still there.** The Phase 6 gate was where it was
+meant to go, on the reasoning that the games' `impl Route` blocks were
+being rewritten anyway — but rewriting them did not remove them, and
+the `Route` trait is what `front`'s six routes and every game's nodes
+still implement. Closing it means the trait itself moving into the
+driver, which is the last consumer-visible move of this split and has
+not been scheduled. The load-bearing half — `cargo tree -p structure`
+printing one line — holds absolutely and is checked at every gate.
 
 ## Architecture
 
@@ -101,7 +110,11 @@ Source (.ogh)
 | `src/file_watcher.rs` | File watching for hot-reload |
 | `crates/ogham-derive/` | `#[derive(OghamState)]` / `#[derive(OghamMsg)]` proc macros |
 | `contract/` | **The document contract** (workspace member, working name): a document's declarations in the structure framework's vocabulary, the `Documents` load-validation harness, the `Checked` hot-reload gate, and the leaf-depth read check that a selection's names-only form would otherwise cost. Depends on `ogham` and `structure` and *nothing else* — it is a binding by §2's own definition, and it stays out of `lorekeeper/driver` so a consumer can ask its question with no window |
-| `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver when the games' `impl Route` blocks are rewritten (`docs/internal/APPLICATION_BUILD.md` Phase 6) |
+| `src/route/` | The surface-typed remainder of the route tier: the `Route` trait, `RouteEvent`, `Chrome`, and a `Router` newtype over `structure`'s walk. Scaffolding — it moves into the driver when the games' `impl Route` blocks are rewritten (`docs/internal/APPLICATION_BUILD.md` Phase 6). **Still standing:** the
+three games' `impl Route` blocks were rewritten in P6 and this module
+outlived them, because `front`'s six routes and every game's nodes are
+still written against the `Route` trait. It is the sole rider on the
+`ogham → structure` edge |
 | `structure/` | **The structure framework** (workspace member, working name): the route table, the walk, the outbox, guards, `schema` — §4.3's derived reflection, the thing a document's selection validates against — `store` — §5's scoped facts, their frame-transactional commit, and the subscribe/read verbs — `intent` — §4.4's write side, the vocabulary a scope publishes and the typed raise that lands on the outbox — and `validate` — §4.1's two grades, where a selection that names a missing field refuses and coverage drift reports. Depends on *nothing* — that edge is the guarantee in `docs/internal/APPLICATION.md` §2, so never add a dependency here, least of all on ogham |
 
 ## LSP Server
@@ -513,7 +526,33 @@ select { sea_panel, sea_duration };          // a fragment: from wherever this m
   unknown-identifier error.
 - Unlike `host_state {}`, a `select` **crosses an import**, so a shared
   module states its selection once and it is validated against each
-  mounting document's scopes (§4.7).
+  mounting document's scopes (§4.7). Strictness does **not** cross: a
+  file is loose or strict on its own source, so adding a selection to a
+  leaf module does not refuse every loose document above it.
+
+**Writing a split document.** Three rules, and the second is the one
+that costs a debugging cycle when it is not known:
+
+- **An import carries declarations up, never down.** A module cannot
+  see the document that mounts it. So a module with a `select` is
+  strict, and **a strict module declares its own `events {}`** — the
+  mounting root's does not reach it, and a raise the module has not
+  declared is refused with a message that says exactly that.
+- **`events {}` does not cross either**, and the asymmetry with the
+  `select` beside it is deliberate. A shared module's vocabulary is the
+  *union over every mount*, because the file compiles under all of
+  them — regency's `stationery.ogh` declares `join`, which only the
+  foyer accepts, beside `confirm`, which only the table does. Handing
+  that union to each importer would have both claiming raises they
+  never make. A module's raises are checked where they are written, for
+  name and arity, against its own block.
+- **The gap that leaves is named, not closed.** Nothing checks that the
+  scopes a shared module *mounts under* accept the raises its helpers
+  make. It cannot be checked by syntax — the file contains every raise
+  regardless of which mount draws the button — and a refusal a correct
+  document cannot avoid would be worse than the gap. If you are adding
+  a raise to a shared module, the mount is what you have to check by
+  hand.
 - `host_state {}` is unchanged and still supported; the games migrate in
   `APPLICATION_BUILD.md` Phase 6.
 - `contract::Mount::at_mount(&store)` gives the values a
