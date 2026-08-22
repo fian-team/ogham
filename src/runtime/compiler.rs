@@ -430,6 +430,19 @@ impl Compiler {
                 err = err.with_help(format!("did you mean `{}`?", suggestion));
             } else if !candidates.is_empty() {
                 err = err.with_help(format!("declared events: {}", candidates.join(", ")));
+            } else {
+                // The file declares no vocabulary at all, so it is being
+                // checked because of something *else* it declared — and
+                // saying only "unknown event" sends the reader looking for
+                // an `events {}` block that is in another file and does not
+                // reach this one. A raise crosses an import upward, never
+                // down, so the answer is always here.
+                err = err.with_help(format!(
+                    "this file declares no events, and it is checked because it \
+                     names the state it reads; the mounting document's `events {{}}` \
+                     does not reach here, so declare `events {{ {}(...) }};` here",
+                    event_name
+                ));
             }
             return Err(VMError::StrictMode(err));
         };

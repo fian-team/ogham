@@ -62,7 +62,19 @@ pub struct ModuleSchema {
     pub records: BTreeMap<String, RecordSchema>,
     /// The module's host_state schema, or `None` in loose mode.
     pub host_state: Option<RecordSchema>,
-    /// Events the module declares it emits, keyed by name.
+    /// Events the module declares it emits, keyed by name — **this
+    /// module's own**, never an import's (§4.4).
+    ///
+    /// A `select` crosses an import and this does not, and the asymmetry
+    /// is the difference between the two contracts rather than an
+    /// oversight. A selection is what the mounting document *reads*, and
+    /// it reads the same fields wherever the helper lives. An `events {}`
+    /// block in a shared module is that module's whole vocabulary — the
+    /// union over every mount, because the file has to compile under all
+    /// of them — and regency's `stationery.ogh` is the proof: it declares
+    /// `join`, which only the foyer accepts, beside `confirm`, which only
+    /// the table does. Crossing it would have each document claiming
+    /// raises it never makes, and both would refuse.
     pub events: BTreeMap<String, EventSig>,
     /// Records imported from other modules, keyed by their name in
     /// *this* module's namespace (after any `as` aliasing). Phase 1
@@ -111,6 +123,18 @@ pub struct SelectionSchema {
     /// The field names, in source order.
     pub fields: Vec<String>,
     pub decl_span: Option<Span>,
+    /// True when an import brought this block in rather than this file
+    /// declaring it.
+    ///
+    /// What it decides is **strictness, and only strictness**. A
+    /// selection binds its names wherever it arrives from — that is
+    /// §4.7's fragment, and the reason a `select` crosses an import at
+    /// all — but whether a module is *held* to naming the state it reads
+    /// is a fact about the module's own source, exactly as it is for
+    /// `host_state {}`. Without this flag, adding a `select` to a leaf
+    /// module refused every loose document that imported it, naming an
+    /// identifier in a file that had not changed.
+    pub imported: bool,
 }
 
 /// One declared `screen`, resolved.
@@ -156,11 +180,18 @@ pub struct EventSig {
 }
 
 impl ModuleSchema {
-    /// True iff the source declared *any* schema block — a
-    /// `host_state {}`, an `events {}`, or a `select`. The compiler's
-    /// event-call validation keys off this (a module that declares its
-    /// events shouldn't be allowed to emit undeclared ones, even if it
-    /// hasn't also declared host_state).
+    /// True iff *this file* declared a schema block — a `host_state {}`,
+    /// an `events {}`, or a `select`. The compiler's event-call
+    /// validation keys off this (a module that declares its events
+    /// shouldn't be allowed to emit undeclared ones, even if it hasn't
+    /// also declared host_state).
+    ///
+    /// **On its own terms**, which is the whole of the sentence. A
+    /// `select` crosses an import, because the mount is what checks it
+    /// and the mount is the importing document's — but it does not
+    /// *confer* strictness on the file that imported it, any more than a
+    /// `host_state {}` block does. Strictness is a property of what a
+    /// file says about itself.
     pub fn is_strict(&self) -> bool {
         self.binds_top_level_names() || !self.events.is_empty()
     }
@@ -179,8 +210,12 @@ impl ModuleSchema {
     /// list gaining a second source — a selected name resolves the way a
     /// declared one always did, which is what makes a document's
     /// migration from one form to the other touch no helper body.
+    ///
+    /// Own-source, per [`is_strict`](Self::is_strict): a selection an
+    /// import brought in binds its names here (see [`binds`](Self::binds))
+    /// without making this module strict.
     pub fn binds_top_level_names(&self) -> bool {
-        self.host_state.is_some() || !self.selections.is_empty()
+        self.host_state.is_some() || self.selections.iter().any(|s| !s.imported)
     }
 
     /// Whether `name` is bound at top level — declared in `host_state {}`
@@ -338,7 +373,14 @@ impl ModuleSchema {
     ) -> Result<Self, SyntaxError> {
         let mut schema = Self::from_module_with_imports(module, &crossing.records)?;
         for selection in &crossing.selections {
-            if schema.selections.contains(selection) {
+            // By shape, not by span: the same block reached twice is one
+            // selection, and two files' worth of identical spans is not
+            // what "bound twice" is about.
+            if schema
+                .selections
+                .iter()
+                .any(|s| s.scope == selection.scope && s.fields == selection.fields)
+            {
                 continue;
             }
             schema.selections.push(selection.clone());
@@ -413,6 +455,7 @@ impl ModuleSchema {
                         scope: decl.scope.clone(),
                         fields: decl.fields.iter().map(|f| f.name.clone()).collect(),
                         decl_span: Some(decl.span),
+                        imported: false,
                     });
                 }
                 _ => {}

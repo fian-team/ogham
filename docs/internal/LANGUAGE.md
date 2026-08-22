@@ -267,6 +267,14 @@ drift from the first.
   an unknown identifier with the same diagnostic. `select` that
   merely turned strict mode off would compile everything and give a
   modder nothing.
+- **A selection crosses an import; strictness does not.** The block
+  travels up to the document that mounts the module, because the mount
+  is what checks it — but the file that imported it is loose or strict
+  on its own terms, exactly as it is under `host_state {}`. See *What
+  crosses an import* below, which is also where the rule's other half
+  lives: a module with a `select` is strict, and a strict module
+  declares its own `events {}` — the mounting document's does not
+  reach it, and a shared module's could not be shared if it did.
 - **`select` is contextual, not a keyword** — the measured rule
   `screen` established. It is a declaration only at module top level
   with a `{` after it, or a scope name and then a `{`; a call
@@ -429,6 +437,52 @@ Three things cross, and they arrive by three different routes:
 declaration bound to one mount, and a module that carries one is
 still strict on its own terms. `select` is the form that composes
 across files — which is the whole of §4.7's fragment.
+
+**`events {}` does not cross either**, and the asymmetry with the
+`select` beside it is the difference between the two contracts rather
+than an oversight. A selection is what the mounting document *reads*,
+and it reads the same fields wherever the helper that reads them
+lives. A shared module's `events {}` is that module's whole
+vocabulary — the **union over every mount**, because the file has to
+compile under all of them. regency's `stationery.ogh` is the live
+case: it declares `join`, which only the foyer accepts, beside
+`confirm`, which only the table does. Handing that union to each
+importing document would have both of them claiming raises they never
+make, and the contract check would refuse both for buttons they never
+draw. So a mounting document's raises are the ones it declares
+itself, and a shared module's are checked where they are written —
+for name and arity, against its own block.
+
+The gap that leaves is named rather than papered over: nothing checks
+that the scopes a shared module *mounts under* accept the raises its
+helpers make. It cannot be checked by syntax, because the file
+contains every raise regardless of which mount draws the button — the
+same boundary §4.2 draws for a read that steps into a collection, and
+for the same reason: a refusal a correct document cannot avoid would
+be worse than the gap.
+
+**Strictness is a property of a file's own source.** A `select`
+crosses an import; it does not make the importing file strict. This
+is not a nicety — the failure it prevents cost two debugging cycles
+in untold_lore's migration and named the wrong file both times. A
+loose `front.ogh` reading `continue_world` out of the
+root's host state was refused, naming `continue_world`, because a
+`settings.ogh` it imported had gained a `select`; nothing in
+`front.ogh` had changed. So `binds_top_level_names` and `is_strict`
+ask what *this file* declared, while `binds` and `bound_names` — the
+names available to resolve — see everything the graph brought in.
+Without that split, `host_state {}` and `select` could not coexist
+during a migration at all: adding a selection to any leaf module
+would refuse every loose document above it.
+
+The direction is worth saying out loud, because it is the whole
+answer to the other half of that story. **An import carries
+declarations up, never down.** A module cannot see the document that
+mounts it, so a module that names the state it reads names the
+intents it raises *in its own file* — the mounting root's `events {}`
+does not reach it, and a raise it has not declared is refused with a
+message that says exactly that rather than "unknown event", which
+sends the reader to the root where the declaration already is.
 
 **The graph is walked transitively, and the walk mirrors
 execution.** `runtime::imports::walk` is the one answer, read by

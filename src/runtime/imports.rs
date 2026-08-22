@@ -223,6 +223,7 @@ fn walk_into(
                         scope: select.scope.clone(),
                         fields: select.fields.iter().map(|f| f.name.clone()).collect(),
                         decl_span: Some(select.span),
+                        imported: true,
                     });
                 }
                 _ => {}

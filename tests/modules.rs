@@ -230,3 +230,120 @@ fn a_module_a_hot_edit_adds_is_watched_from_then_on() {
         },
     );
 }
+
+// ── strictness is a property of a file's own source ────────────────────
+
+/// A `select` in a module does not make its importers strict.
+///
+/// The shape untold_lore hit twice: `front.ogh` is a loose document that
+/// reads `continue_world` out of the root's host state, and the whole of
+/// its migration was adding a `select` to `settings.ogh`, a file it
+/// imports. A selection crosses the import — that is §4.7's fragment, and
+/// the mount is what checks it — but strictness is not a thing an import
+/// confers. It was, and the refusal named an identifier in a file nobody
+/// had edited, which is the false expectation §4.1 exists to prevent
+/// wearing a loud error's clothes.
+#[test]
+fn a_select_in_a_module_leaves_the_document_that_imports_it_alone() {
+    let dir = scratch("infectious");
+    write(
+        &dir,
+        "settings.ogh",
+        "select settings { options };\nlet panel = fn () { Text { text: options } };\n",
+    );
+    let path = write(
+        &dir,
+        "front.ogh",
+        "import \"./settings.ogh\";\n\
+         let main = fn () { Text { text: continue_world } };\n",
+    );
+
+    let config = rooted(&dir).with_host_state(std::collections::HashMap::from([
+        ("options".to_string(), Value::String("audio".into())),
+        (
+            "continue_world".to_string(),
+            Value::String("Aldwich".into()),
+        ),
+    ]));
+
+    Ogham::watch(path.to_string_lossy().into_owned(), config)
+        .expect("a loose document stays loose when the module it imports selects");
+}
+
+/// A module that names the state it reads names the intents it raises too,
+/// in the same file — and the refusal says so.
+///
+/// An import carries declarations *up*, and there is no way for one to
+/// travel down: the mounting document is not a thing an imported file can
+/// see. So the answer is always in the file that raises, and the error has
+/// to say that rather than "unknown event", which sends the reader to the
+/// root that declared it and does nothing.
+#[test]
+fn a_module_that_selects_declares_the_events_it_raises() {
+    let dir = scratch("raises");
+    write(
+        &dir,
+        "pause.ogh",
+        "select pause { rows };\n\
+         let body = fn () { Text { text: rows, on_click: fn () { event(\"menu\", \"quit\") } } };\n",
+    );
+    let path = write(
+        &dir,
+        "root.ogh",
+        "import \"./pause.ogh\";\nevents { menu(string) };\nlet main = fn () { body() };\n",
+    );
+
+    let why = match Ogham::watch(path.to_string_lossy().into_owned(), rooted(&dir)) {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => panic!("the module raises an intent it has not declared"),
+    };
+    assert!(why.contains("unknown event `menu`"), "{why}");
+    assert!(
+        why.contains("does not reach here"),
+        "the refusal has to name the cause, not just the symptom: {why}"
+    );
+    assert!(
+        why.contains("events { menu(...) }"),
+        "and say what to write: {why}"
+    );
+}
+
+/// A module's `events {}` is its own, and does not cross the import.
+///
+/// The asymmetry with the `select` beside it is the difference between the
+/// two contracts. A selection is what the mounting document *reads*, and it
+/// reads the same fields wherever the helper lives. A shared module's
+/// vocabulary is the **union over its mounts** — it has to be, because the
+/// file compiles under all of them — so handing it to each mounting
+/// document would have every one of them claiming raises it never makes.
+/// regency's `stationery.ogh` is the live case: `join` is the foyer's and
+/// `confirm` is the table's, and both are declared in the one file both
+/// import.
+#[test]
+fn a_shared_modules_vocabulary_stays_its_own() {
+    let dir = scratch("vocabulary");
+    write(
+        &dir,
+        "stationery.ogh",
+        "events { join(), confirm() };\n\
+         let joiner = fn () { Text { text: \"Join\", on_click: fn () { event(\"join\") } } };\n\
+         let sealer = fn () { Text { text: \"Seal\", on_click: fn () { event(\"confirm\") } } };\n",
+    );
+    let path = write(
+        &dir,
+        "foyer.ogh",
+        "import \"./stationery.ogh\";\nevents { join() };\nlet main = fn () { joiner() };\n",
+    );
+
+    let ui = Ogham::watch(path.to_string_lossy().into_owned(), rooted(&dir)).expect("mounts");
+    let schema = ui
+        .module_schema()
+        .expect("the mounted document has a schema");
+    assert_eq!(
+        schema.event_names(),
+        vec!["join"],
+        "the foyer raises what the foyer declares; `confirm` is the table's, \
+         and a document that inherited it would be refused for a button it \
+         never draws"
+    );
+}
