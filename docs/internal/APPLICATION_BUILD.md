@@ -13,7 +13,7 @@
 
 ## 0.5 Build status
 
-Last updated 2026-08-20, end of the first build session.
+Last updated 2026-08-21, during Phase 7.
 
 | package | state | commits |
 |---|---|---|
@@ -34,10 +34,12 @@ Last updated 2026-08-20, end of the first build session.
 | re-seed on reload | not started | — |
 | re-seed on reload | **landed** | ogham `be0779c`; lorekeeper `338d2ca` |
 | **P6C celia** | **landed, complete** | celia `7b93b5e`, `85bc49f`, `fa4abdc`, `41cd2f9` |
-| **P6U untold_lore** | **partial — blocked twice, both reported** | ul `1393641`, `985e51e`, `7b43731`, `6527df1`, `c029e9b` |
-| P6R regency | in flight | — |
-| driver gaps package | **ruled in, not started** | — |
-| P6S, P7 | not started | — |
+| **P6U untold_lore** | **landed, and a live regression is open against it** (below) | ul `1393641` … `2beffd0` (21 commits) |
+| **P6R regency** | **landed** | regency `7a95348` … `c16237e` (13 commits) |
+| **driver gaps package** | **landed, all five** | lorekeeper `8919ed5`, `b883b67`+`14094f9`, `e280e0c`, `2c13ad7`+`2e7640f`, `9b6053e`+`5f8111c`; ogham `9b6053e`, `2c13ad7`, `b883b67`, `1809915` |
+| **P6S shell deletion** | **landed** | lorekeeper `6f00d42` |
+| **P6 gate** | **one criterion not met** (the `ogham → structure` edge, below) | — |
+| P7 the docs settle | **in flight, stopped short of the header** | lorekeeper `ea39cf1`, `8b296e7`, `bde48ae`, `bd1b2d3`, `0dc5341`, `5d3370a`; ogham `00253bd`; regency `1ca13a8`, `43bbf44`; celia `ddf6771`; ul `3ac12c4`, `91f6709`, `00c82bb` |
 
 **Phase 1 gate, as run:** ogham, untold_lore, regency and
 stargazer-celia-game all green; lorekeeper green except the baseline
@@ -504,8 +506,127 @@ also resolved B.1's second deviation: `Hud` split onto
 `Scope::Node(WORLD)`, which only became sayable once a node existed
 whose lifetime is the session.
 
-**Resume at:** P6R, then the driver gaps package, then P6U's
-remainder, then P6S, then P7.
+### The rest of Phase 6, as it landed
+
+**P6R (regency) is complete and green**: two instance roots under a
+structural `house`, five pages as views, three documents, 50 tests. The
+promotions Appendix A.2 asked for all held — `wheel` and `epilogue` are
+views, so stage ↔ path is a bijection and the page-turn edge detector
+is deleted; `settings` is one multi-parent node; `saveload` is not
+registered rather than drawn dead. The colon-packed
+`menu("stash:item:container")` vocabulary split into five per-scope
+intents, which is where two of this build's five live bugs surfaced: a
+settings adjustment that had been dead since the shell went, and two
+buttons whose raises reached nobody.
+
+**P6U (untold_lore) landed the rest of its sequence** — the areas as
+table data, both documents selecting per scope, the rooms as guarded
+nodes, the readiness checklist as one subscription, and pause as a fact
+of the node it is over. `chrome::project` is deleted, five hundred and
+eighty-one lines of it.
+
+> **A live regression is open against P6U, reported 2026-08-21 by the
+> maintainer**, and it is the reason this document does not yet say the
+> build is done. In the world view nothing renders — a black screen —
+> the escape menu opens and cannot be closed by key or click, and audio
+> keeps playing. Under investigation; fixes are expected to land in
+> `ul-client`. **The suite is green.** That gap between a green
+> `cargo test` and a black screen is the most useful thing this build
+> has to say about its own gates: every check this build added answers
+> a question about *contracts* — does a selection name a field that
+> exists, does a raise reach a vocabulary, does a scope mount when its
+> node joins the path — and none of them answers whether a frame was
+> drawn. Three games have entrance/render tests that do drive a frame;
+> untold_lore's `tests/launch.rs` drives the title's chrome, not the
+> session's. What is missing is named rather than guessed at: nothing
+> renders a *world* instance under a real path and asserts it painted.
+
+**P6S is done in one commit** (`6f00d42`): `shell/` deleted, 5,168
+lines, `shell-core` untouched. WP-P6U-ED's premise had already been
+found wrong — every `shell::` in `ul-editor` was `crate::shell`, its own
+module — so there was no shim to write and nothing to unpick.
+
+### The driver gaps package, as it landed
+
+All five closed, and two of them turned out to be one shape:
+
+1. `Runner`'s frame gained the barrier and two side-channel seams
+   (`8919ed5`), so a game with producers of its own stops re-writing
+   seventy lines of the frame. Both regency and celia deleted their
+   copies (`f400d63`, `6d19b41`).
+2. `Binding::supply_at` exists (`14094f9`, `b883b67`) — the most
+   consequential of the five, as predicted. An instance root may leave
+   its document to the host and is an instance root either way, so
+   `in_area` became reachable for a host-owned tree and untold_lore's
+   library stopped being the thing that could not be a root.
+3. `Binding::mount_for` filters unpublished ancestors (`e280e0c`), and
+   the mount is assembled from the table, the store and the assets, so
+   no consumer builds one by hand any more.
+4. Typed route access out of the walk (`2c13ad7`, `2e7640f`): a route
+   comes back at the type that registered it, and celia's half-typed
+   address reaches the scope that publishes it without the `read_state`
+   shim.
+5. `Route::child_popped` carries the store and the outbox (`9b6053e`,
+   `5f8111c`), so a claim the router releases reaches a scope in the
+   frame it was released.
+
+**(5) did not land the same way in both games, and the difference is
+worth recording.** celia's `paused` claim moved into the scope of the
+node it is over (`f3c4a16`), and untold_lore's went with it
+(`2beffd0`, taking four flags that had deferred a release). **regency's
+did not**: it is still `Rc<Cell<bool>>` shared between the table root
+and its pages (`routes.rs`, `PauseClaim`). That is a deliberate stop,
+not an oversight — regency's pause hangs under four sibling views that
+each need to read and clear it, and moving it needs the claim to live
+on the *table* root's scope while the views that set it are its
+children, which is a shape the ladder reads but the release path did
+not yet write. Appendix C's `TableRoute.paused` item therefore does not
+land whole.
+
+### The P6 gate: one criterion did not come true
+
+`cargo tree -p ogham` showing no `structure` was deferred from the
+Phase 1 gate to the P4 gate, then ruled from the P4 gate to the P6
+gate, on the reasoning that P6 rewrites the three games' `impl Route`
+blocks anyway. **P6 rewrote them and the edge is still there**, and the
+reasoning is what was wrong rather than the execution: rewriting an
+`impl Route` block does not remove it. `front`'s six routes and all
+three games' nodes still implement `ogham::route::Route`, so
+`src/route/` still has consumers and ogham still declares
+`structure = { path = "structure" }`.
+
+Today: `cargo tree -p structure` is **one line**, absolutely, which is
+§2's load-bearing half. `cargo tree -p contract --depth 1` is `ogham` +
+`structure` and nothing else. `cargo tree -p ogham | grep -c structure`
+is **3** — one real edge, plus two `synstructure` lines that are a
+substring match inside the `skia-safe` subtree.
+
+Closing it means the `Route` trait itself moving into `driver`, which
+is a consumer-visible move in four repositories and is **not
+scheduled**. It should be scheduled deliberately rather than deferred a
+fourth time; deferring it three times is how it came to be true that
+nobody had checked whether the reason would still apply.
+
+### Phase 7, and where it stopped
+
+Landed: `lorekeeper/docs/{MP_SEAM,CANVAS_COMPOSITION,REFACTOR_PLAN,
+ROUTING}.md`, `regency/docs/history/player_client_outline.md`, the
+`front` module docs, and the `AGENTS.md`/`CLAUDE.md` of ogham,
+lorekeeper, regency and celia. untold_lore's `CROSSING.md` and
+`ROOMS.md` took their amendments and three citations came off its lint
+allowlist before the regression above was reported; the rest of that
+repo's corpus is **held** until the regression is understood, because
+what those documents say about the crossing and the instance tier may
+depend on what it turns out to be.
+
+**`APPLICATION.md`'s header is deliberately not flipped.** The last
+phase gate cannot pass while a shipped game is black in the world view,
+whatever the suite says. The header stays honest until it does.
+
+**Also held:** untold_lore's nine-line `#[cfg(test)] mount_for_test`,
+which now collapses to about five lines since `Assets::mount` is
+public. It lives in `ul-client/src/client.rs`, which is where the
+regression's fix is likely to land, so it is sequenced after.
 
 ## 0. How to use this document
 
