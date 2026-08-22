@@ -657,9 +657,72 @@ repo's corpus is **held** until the regression is understood, because
 what those documents say about the crossing and the instance tier may
 depend on what it turns out to be.
 
-**`APPLICATION.md`'s header is deliberately not flipped.** The last
-phase gate cannot pass while a shipped game is black in the world view,
-whatever the suite says. The header stays honest until it does.
+**`APPLICATION.md`'s header is deliberately not flipped.** The
+regression above is fixed, but the last phase gate still has one
+criterion that did not come true — see (1) below. The header stays
+honest until it does.
+
+### Where this stopped, 2026-08-21 evening
+
+Written down because the next session resumes from this document, not
+from a conversation.
+
+**Landed and verified:** P0–P5, the contract crate, the re-seed fix,
+all three game migrations, the five-gap driver package, P6S, and P7's
+documentation pass **except untold_lore's held corpus and the header**.
+Five repos green — ogham 871, lorekeeper 1304 (the one baseline red),
+untold_lore 1191, regency 383, celia 134. `cargo tree -p structure`
+prints one line; `cargo tree -p contract --depth 1` is `ogham` +
+`structure`. Roughly eighty commits are local and unpushed.
+
+**Three things remain, in order.**
+
+**1. The `ogham → structure` edge — the criterion that did not come
+true.** `cargo tree -p ogham` showing no `structure` was deferred from
+the P1 gate to P4, then ruled from P4 to P6 on the reasoning that P6
+rewrites the games' `impl Route` blocks. **P6 rewrote them and the
+edge is still there; the reasoning was wrong, not the execution.**
+`front`'s six routes and all three games' nodes still *implement*
+`ogham::route::Route`, so `src/route/` still has consumers. Closing it
+means the `Route` trait moving into `driver`: consumer-visible across
+four repos, real work rather than cleanup. **Schedule it; do not defer
+it a fourth time.** This is the second half of §2 — the half saying the
+surface framework depends on nothing of the structure framework — and
+the first half has held absolutely since Phase 1.
+
+**2. The driver-seed gap, with its caveat.** `Binding::seed` resolves
+against the **live path** (`facts::scopes_on`) rather than the mount's
+declared rungs, so a selected name whose scope is not standing at the
+moment of the mount gets no at-mount value. `contract::Mount::seeding`
+— the same answer, written first — resolves against the declared list
+and is correct; the driver can do the same from `descendants(table,
+root)` plus ancestors plus `Scope::Process`. `Binding::project`'s
+hot-reload gate appears to carry the same narrowing and should be
+checked. **The caveat is the whole difficulty:** closing this in
+isolation would have turned the regression above from a loud
+`UndefinedVariable` into a silent stale value on the dashboard for
+ever, which is exactly the false expectation §4.1 forbids. The right
+answer is both halves — the driver seeds everything a mount may
+select, *and* a seeded-but-not-live field stays distinguishable from a
+live one. If those cannot both hold, state the trade rather than
+quietly picking one. Consider unifying the two implementations; two
+answers to one question is how they diverged.
+
+**3. Then the header**, once (1) lands and the gate genuinely passes.
+
+**Smaller, also open:** untold_lore's `mount_for_test` collapse (check
+the `data_dir == None` error sentence, and whether `blank_document()`
+loses its last caller); untold_lore's `CROSSING.md`/`ROOMS.md` re-read
+against what the regression taught, and its `PUBLISHING.md` /
+`ENGINE_GAPS.md` / `PLAY_FIRST.md`, all amended before the fix was
+understood; regency's `paused` claim, still `Rc<Cell<bool>>` for a
+stated reason; `FrontOfHouse::reads` being a skippable call; ROOMS.md's
+`presentation` column still shadowing the node's occlusion; the
+ul-editor family's contract migration (blocks untold_lore's library
+area and `crossing::side_of`'s last two roots); keyed collections
+(§4.2); `services/src/connect.rs`'s stale module doc; the `auth` →
+`platform` rename, now known to be one method wide; §4.5's mod-facing
+stability policy and §8.4's naming.
 
 **Also held:** untold_lore's nine-line `#[cfg(test)] mount_for_test`,
 which now collapses to about five lines since `Assets::mount` is
