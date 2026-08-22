@@ -525,21 +525,59 @@ nodes, the readiness checklist as one subscription, and pause as a fact
 of the node it is over. `chrome::project` is deleted, five hundred and
 eighty-one lines of it.
 
-> **A live regression is open against P6U, reported 2026-08-21 by the
-> maintainer**, and it is the reason this document does not yet say the
-> build is done. In the world view nothing renders — a black screen —
-> the escape menu opens and cannot be closed by key or click, and audio
-> keeps playing. Under investigation; fixes are expected to land in
-> `ul-client`. **The suite is green.** That gap between a green
-> `cargo test` and a black screen is the most useful thing this build
-> has to say about its own gates: every check this build added answers
-> a question about *contracts* — does a selection name a field that
-> exists, does a raise reach a vocabulary, does a scope mount when its
-> node joins the path — and none of them answers whether a frame was
-> drawn. Three games have entrance/render tests that do drive a frame;
-> untold_lore's `tests/launch.rs` drives the title's chrome, not the
-> session's. What is missing is named rather than guessed at: nothing
-> renders a *world* instance under a real path and asserts it painted.
+> **A live regression was opened against P6U on 2026-08-21 by the
+> maintainer and is now closed** (`7ec044f`, `dbf1c5a`; confirmed
+> working by the maintainer the same evening). In the world view
+> nothing rendered — a black screen — the escape menu opened and
+> could not be closed by key or click, and audio kept playing.
+>
+> **One cause, and it explains all three.** `readiness_note` and
+> `can_author` sat on the `worldbuilder` node's scope, but the
+> *dashboard* reads both — `choose.ogh` prints the note and gates the
+> whole "Edit world" row on `can_author`. `worldbuilder` is a child of
+> `roster`, on the path only once Edit world has been pressed, so at
+> the dashboard (`[session, roster]`) those two names were provided by
+> nothing and the outlet raised `UndefinedVariable` **before building
+> a single widget**. The pause screen reads neither, so it built fine;
+> and because ogham keeps the last tree it built when the next frame
+> raises, the overlay stayed painted over the black after Escape had
+> already left the path — the route was gone, the picture was not.
+> Clicking Resume then raised at a `PauseRoute` no longer standing.
+> The claim was always lifting; it could not be seen. Introduced by
+> `fee24b1`/`d8c8fed`, which split the one 79-field union struct —
+> which had always projected every key into every document — into
+> per-node scopes; `a4beca0` removed the last thing covering for it.
+>
+> **The fix declined the easy route deliberately.** Seeding the union
+> into the runtime config would have bound the names and left the
+> dashboard drawing an at-mount default forever with nothing saying
+> so — a false expectation, the one thing §4.1 promises never to
+> produce. A loud `UndefinedVariable` is *correct* for a fact read
+> where its node is not standing. So the fact moved to the scope that
+> stands where it is read.
+>
+> **Why the suite could not see it, which is the lasting lesson.**
+> `Harness::hosting` passes `assets(None)`, so every document the
+> table names mounts as `Chrome::failed` over a blank tree: the whole
+> session test family ran against no document at all and asserted on
+> facts. Worse, `TestChrome` seeds from the *declared* scope list, so
+> the harness was strictly better-seeded than the real binding and
+> could never have reproduced it. **The suite was green at 1188 while
+> a shipped game showed a black screen.** That gap is the most useful
+> thing this build has to say about its own gates: every check it
+> added answers a question about *contracts* — does a selection name a
+> field that exists, does a raise reach a vocabulary, does a scope
+> mount when its node joins the path — and none of them answers
+> whether a frame was drawn.
+>
+> Three tests now do (`7ec044f`, `dbf1c5a`), and they are the shape to
+> copy: a real path, the shipped documents, assertions on the **tree**
+> rather than the facts. `every_screen_a_session_walks_through_draws_its_tree`
+> walks the dashboard, pause up and down by key *and* by row (asserting
+> the overlay is gone from the picture and not merely off the walk),
+> the hub, creation, the wardrobe, the world, and the rooms; the other
+> two do the same for `client.ogh` and `library.ogh`. Verified failing
+> before the fix and passing after.
 
 **P6S is done in one commit** (`6f00d42`): `shell/` deleted, 5,168
 lines, `shell-core` untouched. WP-P6U-ED's premise had already been
