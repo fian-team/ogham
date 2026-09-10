@@ -961,6 +961,7 @@ impl Surface for SkiaEnv {
             &mut ui.portal_layers,
             (0.0, 0.0), // accumulated_translate — viewport origin at root
             anchors,
+            None, // no laid-out ancestor above the root
         );
 
         // Phase 3 M2: synthesize a CursorAttached layer entry
@@ -1054,6 +1055,28 @@ struct AnchorContext<'a> {
 }
 
 impl AnchorContext<'_> {
+    /// The viewport-absolute rect for a box of `size` seated
+    /// against `frame` — the laid-out box of the widget a
+    /// `Portal { anchor: "parent" }` was declared inside — under
+    /// `policy`. The walk carries the frame, so unlike a host
+    /// anchor there is nothing that can be missing.
+    fn resolve_frame(
+        &self,
+        frame: &crate::widget::rect::Rect,
+        size: (f32, f32),
+        policy: crate::widget::portal_layer::AnchorPolicy,
+        offset: (f32, f32),
+    ) -> crate::widget::rect::Rect {
+        let (x, y) = crate::widget::portal_layer::resolve_anchor_rect(
+            (frame.x, frame.y, frame.width, frame.height),
+            offset,
+            policy,
+            size,
+            self.viewport,
+        );
+        crate::widget::rect::Rect::new(x, y, size.0, size.1)
+    }
+
     /// The viewport-absolute rect for a box of `size` seated at
     /// anchor `id` under `policy`, or `None` when the host has
     /// no anchor for that id this frame.
@@ -1110,6 +1133,12 @@ fn warn_missing_anchor_once(id: &str) {
 fn warn_missing_anchor_once(_id: &str) {}
 
 impl SkiaEnv {
+    /// `anchor_frame` is the viewport-absolute border box of the nearest
+    /// ancestor with a non-zero laid-out rect — what a
+    /// `Portal { anchor: "parent" }` seats against. Carried down the walk
+    /// rather than looked up, because a widget does not know its parent
+    /// and the walk is already standing on it.
+    #[allow(clippy::too_many_arguments)]
     fn draw_widget_recursive(
         env: &mut SkiaEnv,
         widget_ref: &WidgetRef,
@@ -1118,6 +1147,7 @@ impl SkiaEnv {
         portal_layers: &mut crate::widget::PortalLayers,
         accumulated_translate: (f32, f32),
         anchors: AnchorContext,
+        anchor_frame: Option<crate::widget::rect::Rect>,
     ) {
         use crate::widget::RenderContext;
 
@@ -1160,36 +1190,52 @@ impl SkiaEnv {
                     // that would pin every anchored portal to the
                     // inset corner. The children's extent is the
                     // card, which is what the policies must fit.
-                    let content_size = if info.anchor.is_some() {
+                    let content_size = if info.anchor.is_some() || info.anchor_parent {
                         Self::children_extent(&children)
                     } else {
                         (local_rect.width, local_rect.height)
                     };
                     drop(widget);
-                    let viewport_rect = match info.anchor.as_deref() {
-                        // Anchored: the host's point replaces the
-                        // declared slot entirely, so
-                        // accumulated_translate plays no part. A
-                        // missing anchor skips the entry — the
-                        // portal paints nothing this frame.
-                        Some(id) => match anchors.resolve(
-                            id,
-                            content_size,
-                            info.anchor_policy,
-                            info.anchor_offset,
-                        ) {
-                            Some(rect) => rect,
-                            None => {
-                                warn_missing_anchor_once(id);
-                                return;
-                            }
-                        },
-                        None => crate::widget::rect::Rect::new(
-                            local_rect.x + accumulated_translate.0,
-                            local_rect.y + accumulated_translate.1,
-                            local_rect.width,
-                            local_rect.height,
-                        ),
+                    let viewport_rect = if info.anchor_parent {
+                        // Anchored to the widget it was declared inside:
+                        // the walk's frame is that widget's box. No frame
+                        // means nothing above it has laid out yet, which
+                        // only happens before the first layout pass.
+                        match anchor_frame.as_ref() {
+                            Some(frame) => anchors.resolve_frame(
+                                frame,
+                                content_size,
+                                info.anchor_policy,
+                                info.anchor_offset,
+                            ),
+                            None => return,
+                        }
+                    } else {
+                        match info.anchor.as_deref() {
+                            // Anchored: the host's point replaces the
+                            // declared slot entirely, so
+                            // accumulated_translate plays no part. A
+                            // missing anchor skips the entry — the
+                            // portal paints nothing this frame.
+                            Some(id) => match anchors.resolve(
+                                id,
+                                content_size,
+                                info.anchor_policy,
+                                info.anchor_offset,
+                            ) {
+                                Some(rect) => rect,
+                                None => {
+                                    warn_missing_anchor_once(id);
+                                    return;
+                                }
+                            },
+                            None => crate::widget::rect::Rect::new(
+                                local_rect.x + accumulated_translate.0,
+                                local_rect.y + accumulated_translate.1,
+                                local_rect.width,
+                                local_rect.height,
+                            ),
+                        }
                     };
                     portal_layers.push(crate::widget::PortalEntry {
                         widget: widget_ref.clone(),
@@ -1238,6 +1284,21 @@ impl SkiaEnv {
             .map(|r| (r.x, r.y))
             .unwrap_or((0.0, 0.0));
         let (scroll_x, scroll_y) = widget.scroll_offset();
+        // This widget's own box, viewport-absolute, becomes the frame
+        // for any `anchor: "parent"` Portal among its descendants — if
+        // it has a size. A zero-sized wrapper passes its parent's on.
+        let own_frame = widget
+            .border_box()
+            .filter(|r| r.width > 0.0 && r.height > 0.0)
+            .map(|r| {
+                crate::widget::rect::Rect::new(
+                    r.x + accumulated_translate.0,
+                    r.y + accumulated_translate.1,
+                    r.width,
+                    r.height,
+                )
+            })
+            .or(anchor_frame);
         drop(widget);
 
         // Step into this widget's own content coordinate space before
@@ -1269,6 +1330,7 @@ impl SkiaEnv {
                 portal_layers,
                 child_accumulated,
                 anchors,
+                own_frame.clone(),
             );
         }
 
@@ -1353,6 +1415,9 @@ impl SkiaEnv {
                 &mut nested,
                 (entry.viewport_rect.x, entry.viewport_rect.y),
                 anchors,
+                // A Portal nested directly in this entry's children
+                // seats against the entry's own box.
+                Some(entry.viewport_rect.clone()),
             );
         }
         // Paint nested portals if any. Pass-through to the

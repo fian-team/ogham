@@ -997,7 +997,7 @@ impl ModuleSchema {
             },
             TypeRef::Map(key_ty, value_ty) => match value {
                 Value::Map(map) => {
-                    for (key, item) in map {
+                    for (key, item) in map.iter() {
                         if matches!(key_ty, KeyType::Int) && key.parse::<i32>().is_err() {
                             errors.push(SchemaValueError {
                                 path: join_path(path, key),
@@ -1625,7 +1625,7 @@ mod tests {
         let mut m = HashMap::new();
         m.insert("name".to_string(), Value::String(name.to_string()));
         m.insert("count".to_string(), Value::Integer(2));
-        Value::Map(m)
+        Value::Map(m.into())
     }
 
     fn roster_schema() -> ModuleSchema {
@@ -1651,7 +1651,7 @@ mod tests {
             ("open".to_string(), Value::Boolean(true)),
             (
                 "items".to_string(),
-                Value::Array(vec![plate("candle"), plate("key")]),
+                Value::Array(vec![plate("candle"), plate("key")].into()),
             ),
             ("pending".to_string(), Value::Void),
         ])
@@ -1706,7 +1706,7 @@ mod tests {
         bad.insert("count".to_string(), Value::String("two".to_string()));
         state.insert(
             "items".to_string(),
-            Value::Array(vec![plate("key"), Value::Map(bad)]),
+            Value::Array(vec![plate("key"), Value::Map(bad.into())].into()),
         );
         let errs = roster_schema().validate_host_state(&state).unwrap_err();
         assert_eq!(errs.len(), 1);
@@ -1747,7 +1747,7 @@ mod tests {
     fn validate_single_value_per_key_form() {
         let s = roster_schema();
         let ty = TypeRef::Array(Box::new(TypeRef::Record("Item".to_string())));
-        s.validate_value(&ty, &Value::Array(vec![plate("candle")]), "items")
+        s.validate_value(&ty, &Value::Array(vec![plate("candle")].into()), "items")
             .unwrap();
         let errs = s
             .validate_value(&ty, &Value::String("nope".to_string()), "items")

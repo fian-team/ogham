@@ -85,7 +85,7 @@ fn collect_texts(value: &Value, out: &mut Vec<String>) {
             }
         }
         Value::Array(items) => {
-            for v in items {
+            for v in items.iter() {
                 collect_texts(v, out);
             }
         }

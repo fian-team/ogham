@@ -7,6 +7,7 @@ use crate::widget::{
     grid_widget::{GridPlacement, GridStyle, GridWidget},
     image_widget::ImageWidget,
     presence_widget::{PresenceMode, PresenceWidget},
+    slider_widget::SliderWidget,
     style::*,
     text_input_widget::TextInputWidget,
     text_widget::TextWidget,
@@ -69,6 +70,9 @@ impl WidgetRegistry {
         // Host-painted leaf — consumer .ogh writes
         // `Canvas { painter: "name", props: { … }, style: { … } }`.
         reg.register("canvas", |_reg, rt, desc| create_canvas_widget(rt, desc));
+        // Native slider — `Slider { value, min, max, step, on_change,
+        // on_commit, style, track_color, fill_color, thumb_color }`.
+        reg.register("slider", |_reg, rt, desc| create_slider_widget(rt, desc));
         reg
     }
 
@@ -168,9 +172,10 @@ fn make_event_listener_with_arg(
 }
 
 /// Phase 3 M1: like `make_event_listener_with_arg`, but the
-/// closure receives the drag payload (`Event.payload`) rather
-/// than `Event.value`. Used for `drag_start` / `drag_move` /
-/// `drag_end` listeners.
+/// closure receives the payload (`Event.payload`) rather than
+/// `Event.value`. Used for `drag_start` / `drag_move` /
+/// `drag_end` listeners, and for the slider's numeric
+/// `on_change` / `on_commit`.
 fn make_drag_event_listener(
     value: &Value,
     runtime: &Arc<Mutex<Runtime>>,
@@ -634,7 +639,7 @@ fn parse_transition_value(value: &Value) -> Option<TransitionSet> {
         }
         Value::Map(map) => {
             let mut set = TransitionSet::default();
-            for (key, entry_value) in map {
+            for (key, entry_value) in map.iter() {
                 let cfg = parse_transition_entry(entry_value)?;
                 match key.as_str() {
                     "background_color" => set.background_color = Some(cfg),
@@ -890,6 +895,49 @@ fn create_flex_widget(
         "drag_end",
     )?;
 
+    // `keydown: { ctrl_k: fn () {…}, escape: fn () {…} }` — a map of
+    // chord → handler. Keys are identifiers, so the joiner is `_`; the
+    // chord is normalised (`keys::normalize`) and a spelling that names
+    // no key is refused here rather than left as a listener that never
+    // fires.
+    if let Some(value) = descriptor.properties.get("keydown") {
+        match value {
+            Value::Map(map) => {
+                for (spelling, handler) in map.iter() {
+                    let chord = crate::widget::keys::normalize(spelling).map_err(|why| {
+                        BridgeError::InvalidPropertyType("keydown".to_string(), why)
+                    })?;
+                    match make_event_listener(handler, runtime, "keydown") {
+                        Some(listener) => flex_widget
+                            .key_listeners
+                            .entry(chord)
+                            .or_default()
+                            .push(listener),
+                        None => {
+                            return Err(BridgeError::InvalidPropertyType(
+                                "keydown".to_string(),
+                                format!(
+                                    "Expected a closure for chord {:?}, got {:?}",
+                                    spelling, handler
+                                ),
+                            ))
+                        }
+                    }
+                }
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "keydown".to_string(),
+                    format!(
+                        "Flex expects 'keydown' as a map of chord → closure \
+                         (e.g. {{ ctrl_k: fn () {{ … }} }}); got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+
     // Phase 3 M1: drag-source / drop-target properties.
     if let Some(payload) = descriptor.properties.get("drag_payload") {
         flex_widget.drag_payload = Some(payload.clone());
@@ -921,7 +969,7 @@ fn create_flex_widget(
 
     if let Some(value) = descriptor.properties.get("children") {
         if let Value::Array(children_array) = value {
-            for child_value in children_array {
+            for child_value in children_array.iter() {
                 if let Value::Widget(child_widget) = child_value {
                     let child_ref = widget_value_to_widget_ref(
                         registry,
@@ -1078,7 +1126,7 @@ fn create_presence_widget(
     if let Some(value) = descriptor.properties.get("children") {
         match value {
             Value::Array(children_array) => {
-                for child_value in children_array {
+                for child_value in children_array.iter() {
                     if let Value::Widget(child_widget) = child_value {
                         let child_ref = widget_value_to_widget_ref(
                             registry,
@@ -1116,9 +1164,13 @@ fn create_presence_widget(
 ///
 /// Anchoring (seats the subtree at a host-set viewport point
 /// instead of at its declared slot):
-/// - `anchor: string` — a host anchor id. `__`-prefixed ids are
-///   reserved for the runtime. Mutually exclusive with
-///   `focus_trap: true`.
+/// - `anchor: string` — a host anchor id, or one of two reserved
+///   words: `"parent"` (the laid-out box of the widget the Portal is
+///   declared in) and `"press"` (the point of the last pointer press —
+///   a `mouse_down` or a `contextmenu` — which is where a context
+///   menu opens; `crate::widget::PRESS_ANCHOR`). Other `__`-prefixed
+///   ids are reserved for the runtime. A host or press anchor is
+///   mutually exclusive with `focus_trap: true`.
 /// - `anchor_policy: string` — `raw`, `clamp` (default), `flip`.
 /// - `anchor_offset: { x, y }` — nudge applied before the policy;
 ///   either component may be omitted.
@@ -1245,6 +1297,16 @@ fn create_portal_widget(
                     ),
                 ));
             }
+            // Two reserved words. "parent": seat against the widget
+            // this Portal was declared inside. "press": seat at the
+            // last pointer press, which the runtime records under
+            // `PRESS_ANCHOR` — a context menu's anchor, spelt without
+            // the host passing a point. A host anchor cannot be called
+            // either; the builder takes them first.
+            Value::String(id) if id == "parent" => portal.anchor_parent = true,
+            Value::String(id) if id == "press" => {
+                portal.anchor = Some(crate::widget::PRESS_ANCHOR.to_string())
+            }
             Value::String(id) => portal.anchor = Some(id.clone()),
             other => {
                 return Err(BridgeError::InvalidPropertyType(
@@ -1323,11 +1385,50 @@ fn create_portal_widget(
         }
     }
 
+    // `backdrop:` — this entry's press policy, overriding the layer's
+    // default. Validated like `layer`: an unknown name is an error,
+    // not a silent fallback.
+    if let Some(value) = descriptor.properties.get("backdrop") {
+        match value {
+            Value::String(name) => {
+                match crate::widget::portal_layer::BackdropPolicy::from_source_name(name) {
+                    Some(policy) => portal.backdrop = Some(policy),
+                    None => {
+                        return Err(BridgeError::InvalidPropertyType(
+                            "backdrop".to_string(),
+                            format!(
+                                "Portal expects 'backdrop' to be one of: {}. Got: {:?}",
+                                crate::widget::portal_layer::BackdropPolicy::all_names_for_diagnostic(),
+                                name
+                            ),
+                        ));
+                    }
+                }
+            }
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "backdrop".to_string(),
+                    format!("Portal expects 'backdrop' as a string; got {:?}", other),
+                ));
+            }
+        }
+    }
+
+    // `dismiss: fn () {…}` — fired when a press lands outside this
+    // portal's content under a `dismiss` policy.
+    {
+        let mut listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>> = HashMap::new();
+        register_event_listener(&mut listeners, &descriptor.properties, runtime, "dismiss")?;
+        portal.dismiss_listeners = listeners.remove("dismiss").unwrap_or_default();
+    }
+
     // A focus-trapping modal that follows a host-computed point
     // is a design error: the trap gates input to a subtree whose
     // position the user can't predict, and a host that stops
     // setting the anchor leaves the trap live over nothing on
     // screen. Reject the combination rather than let it ship.
+    // `anchor: "parent"` is not that case — the frame it seats
+    // against is the walk's own and cannot go missing.
     if portal.anchor.is_some() && portal.focus_trap {
         return Err(BridgeError::InvalidPropertyType(
             "anchor".to_string(),
@@ -1341,7 +1442,7 @@ fn create_portal_widget(
     if let Some(value) = descriptor.properties.get("children") {
         match value {
             Value::Array(children_array) => {
-                for child_value in children_array {
+                for child_value in children_array.iter() {
                     match child_value {
                         Value::Widget(child_widget) => {
                             let child_ref = widget_value_to_widget_ref(
@@ -1471,12 +1572,35 @@ fn create_text_input_widget(
         runtime,
         "on_submit",
     )?;
+    register_event_listener_with_arg(
+        &mut text_input.event_listeners,
+        &descriptor.properties,
+        runtime,
+        "on_blur",
+    )?;
     register_event_listener(
         &mut text_input.event_listeners,
         &descriptor.properties,
         runtime,
         "mouse_down",
     )?;
+
+    // `placeholder:` — shown while the value is empty and the field is
+    // not focused.
+    if let Some(value) = descriptor.properties.get("placeholder") {
+        match value {
+            Value::String(s) => text_input.placeholder = s.clone(),
+            other => {
+                return Err(BridgeError::InvalidPropertyType(
+                    "placeholder".to_string(),
+                    format!(
+                        "TextInput expects 'placeholder' as a string; got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
     register_event_listener(
         &mut text_input.event_listeners,
         &descriptor.properties,
@@ -1514,6 +1638,90 @@ fn create_text_input_widget(
     }
 
     Ok(Arc::new(Mutex::new(text_input)))
+}
+
+/// Build a `Slider`. Recognised properties:
+/// - `value` (**required**, number): the controlled value. The document
+///   supplies it every render; the widget reports what the pointer asked
+///   for and never keeps a value the document did not write back.
+/// - `min` / `max` (numbers, default `0` / `1`).
+/// - `step` (number, optional): snaps reported values to `min + n·step`.
+///   Must be positive.
+/// - `on_change: fn (value)` — every change while the button is held, and
+///   on a key step. `on_commit: fn (value)` — the release, and a key step.
+/// - `style`: the flex style map for the box. `shrink` is 160 × 16 plus
+///   insets.
+/// - `track_color` / `fill_color` / `thumb_color`: colour maps.
+fn create_slider_widget(
+    runtime: &Arc<Mutex<Runtime>>,
+    descriptor: &WidgetDescriptor,
+) -> Result<WidgetRef, BridgeError> {
+    let mut slider = SliderWidget::new();
+
+    let number = |name: &str| -> Result<Option<f32>, BridgeError> {
+        match descriptor.properties.get(name) {
+            None => Ok(None),
+            Some(v) => value_to_f32(v).map(Some).ok_or_else(|| {
+                BridgeError::InvalidPropertyType(
+                    name.to_string(),
+                    format!("Slider expects '{}' as a number; got {:?}", name, v),
+                )
+            }),
+        }
+    };
+    slider.value =
+        number("value")?.ok_or_else(|| BridgeError::MissingProperty("value".to_string()))?;
+    if let Some(min) = number("min")? {
+        slider.min = min;
+    }
+    if let Some(max) = number("max")? {
+        slider.max = max;
+    }
+    if let Some(step) = number("step")? {
+        if step <= 0.0 {
+            return Err(BridgeError::InvalidPropertyType(
+                "step".to_string(),
+                format!("Slider expects 'step' to be positive; got {}", step),
+            ));
+        }
+        slider.step = Some(step);
+    }
+    // The value the document supplied, seen through its own grid and
+    // range, so the thumb never sits where a report could not put it.
+    slider.value = slider.snap(slider.value);
+
+    for name in ["on_change", "on_commit"] {
+        register_drag_event_listener(
+            &mut slider.event_listeners,
+            &descriptor.properties,
+            runtime,
+            name,
+        )?;
+    }
+
+    if let Some(style_map) = optional_style_map(descriptor) {
+        apply_flex_style_from_map(&mut slider.style, style_map);
+    }
+
+    for (name, slot) in [
+        ("track_color", &mut slider.track_color),
+        ("fill_color", &mut slider.fill_color),
+        ("thumb_color", &mut slider.thumb_color),
+    ] {
+        if let Some(value) = descriptor.properties.get(name) {
+            match parse_color_value(value) {
+                Some(color) => *slot = color,
+                None => {
+                    return Err(BridgeError::InvalidPropertyType(
+                        name.to_string(),
+                        format!("Slider expects '{}' as a colour; got {:?}", name, value),
+                    ))
+                }
+            }
+        }
+    }
+
+    Ok(Arc::new(Mutex::new(slider)))
 }
 
 fn create_image_widget(
@@ -1645,7 +1853,7 @@ fn create_grid_widget(
     }
 
     if let Some(Value::Array(children_array)) = descriptor.properties.get("children") {
-        for child_value in children_array {
+        for child_value in children_array.iter() {
             if let Value::Widget(child_widget) = child_value {
                 let placement = extract_grid_placement(&child_widget.properties);
                 let child_ref = widget_value_to_widget_ref(

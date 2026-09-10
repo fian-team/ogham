@@ -80,6 +80,21 @@ pub struct EventContext {
     focus_request: Option<Arc<Mutex<dyn Widget>>>,
     /// Currently focused widget (if any)
     pub focused_widget: Option<Arc<Mutex<dyn Widget>>>,
+    /// The widget holding pointer capture while this event is
+    /// dispatched, if any. Read-only inside dispatch — a widget checks
+    /// `ctx.is_captured(self_ref)` to learn that the point it was handed
+    /// may lie outside its own rect and must be clamped rather than
+    /// hit-tested. Set by `UI::call_event` on the captured path only.
+    pub captured_widget: Option<Arc<Mutex<dyn Widget>>>,
+    /// A widget that consumed `mouse_down` asking to receive every
+    /// pointer event until the button is released, regardless of hover.
+    /// Carries the point *as the widget saw it* (its parent-relative
+    /// space), so the UI can derive the translation from viewport
+    /// coordinates without walking the ancestor chain. Taken by
+    /// `UI::call_event` after dispatch.
+    capture_request: Option<(Arc<Mutex<dyn Widget>>, Point)>,
+    /// Set by a captured widget that wants to let go before the release.
+    release_request: bool,
     /// Set true by any widget that fires a pointer listener during the
     /// current dispatch. Lets ancestors distinguish "a descendant fired a
     /// real listener" from "a descendant returned `true` only because its
@@ -109,6 +124,9 @@ impl EventContext {
         Self {
             focus_request: None,
             focused_widget: None,
+            captured_widget: None,
+            capture_request: None,
+            release_request: false,
             listener_fired: false,
             drag_state: None,
             needs_layout: false,
@@ -120,9 +138,45 @@ impl EventContext {
         Self {
             focus_request: None,
             focused_widget,
+            captured_widget: None,
+            capture_request: None,
+            release_request: false,
             listener_fired: false,
             drag_state: None,
             needs_layout: false,
+        }
+    }
+
+    /// Ask for pointer capture. `local_point` is the event point as this
+    /// widget received it (parent-relative); the UI subtracts it from the
+    /// viewport point to learn where this widget's space sits. Only
+    /// meaningful from a `mouse_down` handler — a request made on any
+    /// other event is dropped.
+    pub fn request_capture(&mut self, widget: Arc<Mutex<dyn Widget>>, local_point: Point) {
+        self.capture_request = Some((widget, local_point));
+    }
+
+    /// Take the capture request, consuming it.
+    pub fn take_capture_request(&mut self) -> Option<(Arc<Mutex<dyn Widget>>, Point)> {
+        self.capture_request.take()
+    }
+
+    /// A captured widget letting go before the release.
+    pub fn release_capture(&mut self) {
+        self.release_request = true;
+    }
+
+    /// Whether the captured widget asked to be released.
+    pub fn wants_release(&self) -> bool {
+        self.release_request
+    }
+
+    /// Whether `widget_ref` holds pointer capture for this dispatch.
+    /// Pointer identity, like [`Self::is_focused`].
+    pub fn is_captured(&self, widget_ref: &Arc<Mutex<dyn Widget>>) -> bool {
+        match self.captured_widget.as_ref() {
+            Some(captured) => std::ptr::eq(Arc::as_ptr(captured), Arc::as_ptr(widget_ref)),
+            None => false,
         }
     }
 

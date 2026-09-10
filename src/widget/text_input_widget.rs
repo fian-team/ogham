@@ -48,6 +48,10 @@ impl Selection {
 
 pub struct TextInputWidget {
     pub value: String,
+    /// Drawn in place of the text — in the text style at half its alpha —
+    /// while the value is empty and the field is not focused. Empty means
+    /// no placeholder.
+    pub placeholder: String,
     /// Current selection / caret. Replaces the old single `cursor_position`.
     pub selection: Selection,
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
@@ -78,6 +82,7 @@ impl TextInputWidget {
     pub fn new() -> Self {
         Self {
             value: String::new(),
+            placeholder: String::new(),
             selection: Selection::default(),
             event_listeners: HashMap::new(),
             style: FlexStyle::default(),
@@ -282,6 +287,80 @@ impl TextInputWidget {
         }
     }
 
+    /// Fire `on_blur` listeners with the current value. Called by `UI`
+    /// through [`Widget::lost_focus`] whichever way focus left.
+    fn fire_blur(&self) {
+        if let Some(listeners) = self.event_listeners.get("on_blur") {
+            let ev = Event::with_value("on_blur".to_string(), self.value.clone());
+            for listener in listeners {
+                listener(&ev);
+            }
+        }
+    }
+
+    /// The style the text run is measured and painted with. A
+    /// single-line field paints its run at a left origin and seats it by
+    /// [`Self::run_offset`] — the paragraph is laid out at infinite width
+    /// so it cannot scroll, and Skia's own alignment at infinite width
+    /// puts a centred or right-aligned run at +∞. A wrapping field lays
+    /// out at its content width, where the paragraph aligns itself.
+    fn run_style(&self, focused: bool) -> TextStyle {
+        let mut style = self.effective_text_style(focused).clone();
+        if !self.is_multiline() {
+            style.align = TextAlign::Left;
+        }
+        style
+    }
+
+    /// Where a single-line run starts inside the content box, by
+    /// `align`. The slack is distributed only when the run fits: an
+    /// overflowing run starts at the left and horizontal scroll keeps
+    /// the caret in view, whatever the alignment.
+    fn run_offset(&self, focused: bool, text: &str, content_w: f32) -> f32 {
+        if self.is_multiline() {
+            return 0.0;
+        }
+        let run_w = text_layout::measure(
+            self.measure_fc.as_ref(),
+            self.measure_font.as_deref(),
+            &self.run_style(focused),
+            text,
+            f32::INFINITY,
+        )
+        .intrinsic_width;
+        let slack = content_w - run_w;
+        if slack <= 0.0 {
+            return 0.0;
+        }
+        match self.effective_text_style(focused).get_align() {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => slack / 2.0,
+            TextAlign::Right => slack,
+        }
+    }
+
+    /// The caret's rect in the widget's parent-relative space, as it
+    /// would be painted while focused: `(x, top, height)`. `None` before
+    /// layout. Exposed so a host or a test can read where the caret is
+    /// without a paint pass.
+    pub fn caret_rect(&self) -> Option<(f32, f32, f32)> {
+        let (text_x, text_y, content_w, _ch, wrap_w) = self.text_geometry(true)?;
+        let caret = text_layout::caret_geometry(
+            self.measure_fc.as_ref(),
+            self.measure_font.as_deref(),
+            &self.run_style(true),
+            &self.value,
+            wrap_w,
+            self.selection.caret,
+        );
+        let dx = self.run_offset(true, &self.value, content_w);
+        Some((
+            text_x + dx - self.scroll_x + caret.x,
+            text_y + caret.top,
+            caret.height,
+        ))
+    }
+
     // ---- measurement geometry helpers (E1 consumers) ----
 
     /// `(text_origin_x, text_origin_y, content_width, content_height, wrap_width)`
@@ -309,15 +388,16 @@ impl TextInputWidget {
 
     /// Map a point in the widget's parent-relative space to a byte offset.
     fn index_at_point(&self, point: &Point) -> usize {
-        let Some((text_x, text_y, _cw, _ch, wrap_w)) = self.text_geometry(true) else {
+        let Some((text_x, text_y, content_w, _ch, wrap_w)) = self.text_geometry(true) else {
             return 0;
         };
-        let local_x = point.x() - text_x + self.scroll_x;
+        let dx = self.run_offset(true, &self.value, content_w);
+        let local_x = point.x() - text_x - dx + self.scroll_x;
         let local_y = point.y() - text_y;
         text_layout::glyph_index_at(
             self.measure_fc.as_ref(),
             self.measure_font.as_deref(),
-            self.effective_text_style(true),
+            &self.run_style(true),
             &self.value,
             wrap_w,
             (local_x, local_y),
@@ -337,7 +417,7 @@ impl TextInputWidget {
         let caret = text_layout::caret_geometry(
             self.measure_fc.as_ref(),
             self.measure_font.as_deref(),
-            self.effective_text_style(true),
+            &self.run_style(true),
             &self.value,
             wrap_w,
             self.selection.caret,
@@ -376,6 +456,10 @@ impl Widget for TextInputWidget {
         true
     }
 
+    fn lost_focus(&mut self) {
+        self.fire_blur();
+    }
+
     fn update(&mut self, new_widget: WidgetRef) -> UpdateResult {
         let mut new_widget = new_widget.lock().expect("widget lock poisoned");
         if let Some(new_text_input_widget) = new_widget.downcast_mut::<TextInputWidget>() {
@@ -391,6 +475,8 @@ impl Widget for TextInputWidget {
                 &mut self.event_listeners,
                 &mut new_text_input_widget.event_listeners,
             );
+            let placeholder_changed = self.placeholder != new_text_input_widget.placeholder;
+            self.placeholder = std::mem::take(&mut new_text_input_widget.placeholder);
             let new_value = new_text_input_widget.value.clone();
             let value_unchanged = new_value == self.value;
             self.value = new_value;
@@ -411,7 +497,7 @@ impl Widget for TextInputWidget {
             UpdateResult {
                 absorbed: true,
                 needs_layout: style_changed || value_affects_layout,
-                needs_repaint: style_changed || value_changed,
+                needs_repaint: style_changed || value_changed || placeholder_changed,
                 cancelled_unmount_prefixes: Vec::new(),
                 drained_path_prefixes: Vec::new(),
             }
@@ -530,21 +616,51 @@ impl Widget for TextInputWidget {
     ) -> bool {
         let mut event_handled = false;
 
-        // Pointer: focus the field and place the caret where it was clicked.
+        // Pointer: focus the field and place the caret where it was
+        // clicked. A press takes pointer capture, so the moves that
+        // follow reach this field wherever the cursor goes and extend
+        // the selection from the press — drag-select — and the release
+        // ends it. While captured the point may lie outside the box;
+        // `glyph_index_at` clamps it to the nearest glyph.
         if let Some(point) = &event.point {
-            if self.contains_point(point)
-                && (event.name == "mouse_down" || event.name == "mouse_up")
-            {
-                ctx.request_focus(self_ref.clone());
-                ctx.listener_fired = true;
-                let idx = self.index_at_point(point);
-                self.set_caret(idx, false);
-                if let Some(listeners) = self.event_listeners.get(&event.name) {
-                    for listener in listeners {
-                        listener(event);
+            let captured = ctx.is_captured(self_ref);
+            match event.name.as_str() {
+                "mouse_down" if captured || self.contains_point(point) => {
+                    ctx.request_focus(self_ref.clone());
+                    ctx.request_capture(self_ref.clone(), point.clone());
+                    ctx.listener_fired = true;
+                    let idx = self.index_at_point(point);
+                    self.set_caret(idx, false);
+                    self.update_scroll();
+                    if let Some(listeners) = self.event_listeners.get(&event.name) {
+                        for listener in listeners {
+                            listener(event);
+                        }
                     }
+                    event_handled = true;
                 }
-                event_handled = true;
+                "mouse_move" if captured => {
+                    let idx = self.index_at_point(point);
+                    self.set_caret(idx, true);
+                    self.update_scroll();
+                    event_handled = true;
+                }
+                "mouse_up" if captured || self.contains_point(point) => {
+                    ctx.request_focus(self_ref.clone());
+                    ctx.listener_fired = true;
+                    let idx = self.index_at_point(point);
+                    // A release that ends a drag keeps the selection; a
+                    // bare click (no capture) places the caret.
+                    self.set_caret(idx, captured);
+                    self.update_scroll();
+                    if let Some(listeners) = self.event_listeners.get(&event.name) {
+                        for listener in listeners {
+                            listener(event);
+                        }
+                    }
+                    event_handled = true;
+                }
+                _ => {}
             }
         }
 
@@ -741,7 +857,8 @@ impl Widget for TextInputWidget {
         // horizontally-scrolled single-line case) doesn't spill past the box.
         ctx.push_clip_rect(text_x, box_y, content_w, box_height);
 
-        let origin_x = text_x - self.scroll_x;
+        let run_style = self.run_style(focused);
+        let origin_x = text_x + self.run_offset(focused, &self.value, content_w) - self.scroll_x;
         let origin_y = text_y;
 
         // Selection highlight (painted under the text).
@@ -750,7 +867,7 @@ impl Widget for TextInputWidget {
             for (rx, ry, rw, rh) in text_layout::selection_rects(
                 self.measure_fc.as_ref(),
                 self.measure_font.as_deref(),
-                text_style,
+                &run_style,
                 &self.value,
                 wrap_w,
                 self.selection.start(),
@@ -760,9 +877,17 @@ impl Widget for TextInputWidget {
             }
         }
 
-        // Text
+        // Text — or the placeholder, when there is none and nobody is
+        // typing here. The placeholder is the text style at half alpha:
+        // one style, no second vocabulary to keep in step.
         if !self.value.is_empty() {
-            ctx.draw_text(&self.value, text_style, origin_x, origin_y, wrap_w);
+            ctx.draw_text(&self.value, &run_style, origin_x, origin_y, wrap_w);
+        } else if !focused && !self.placeholder.is_empty() {
+            let mut muted = run_style.clone();
+            muted.color.a /= 2;
+            let placeholder_x =
+                text_x + self.run_offset(focused, &self.placeholder, content_w) - self.scroll_x;
+            ctx.draw_text(&self.placeholder, &muted, placeholder_x, origin_y, wrap_w);
         }
 
         // Caret
@@ -770,7 +895,7 @@ impl Widget for TextInputWidget {
             let caret = text_layout::caret_geometry(
                 self.measure_fc.as_ref(),
                 self.measure_font.as_deref(),
-                text_style,
+                &run_style,
                 &self.value,
                 wrap_w,
                 self.selection.caret,
@@ -789,7 +914,7 @@ impl Widget for TextInputWidget {
         }
 
         ctx.pop_clip_rect();
-        let _ = content_h;
+        let _ = (content_h, text_style);
     }
 }
 

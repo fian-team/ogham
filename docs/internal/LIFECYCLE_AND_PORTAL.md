@@ -75,7 +75,7 @@ priorities, defaults, and use cases:
 |---|---:|---|---|---|
 | `"main"` | 0 | None | Inherit | Reserved (base tree) |
 | `"overlay-modal"` | 100 | Block | Free | Modal dialogs, escape menu |
-| `"popover"` | 200 | None | Free | Dropdown menus, comboboxes |
+| `"popover"` | 200 | Dismiss (since 2026-09-07; was None) | Free | Dropdown menus, comboboxes |
 | `"tooltip"` | 300 | None | Inherit | Hover tooltips |
 | `"toast"` | 400 | None | Inherit | Transient notifications |
 | `"cursor-attached"` | 500 | None | Inherit | Drag previews; positioned at cursor |
@@ -84,6 +84,15 @@ priorities, defaults, and use cases:
 Phase 2 known limitation around nested-portal positioning).
 Hit-testing walks open layers high-priority-to-low *before*
 the base tree.
+
+**2026-09-07 — the dismiss policy and two more Portal properties.**
+`BackdropPolicy` gained `Dismiss`: a press no entry in the layer
+claims is swallowed *and reported* to each dismissing entry as a
+`dismiss` event, so a popover closes on an outside press without a
+full-viewport catch child. `Popover` defaults to it; a Portal
+overrides its own with `backdrop: "none" | "dismiss" | "block"` and
+listens with `dismiss: fn () {…}`. See *The dismiss policy* below.
+The same day `anchor: "parent"` landed (`ANCHORED_PORTALS.md` §7).
 
 Two new `Ogham`-side coordination signals shipped with the
 layer work:
@@ -881,11 +890,12 @@ Portal {
 }
 ```
 
-Eight properties, five of them optional. `layer` and `cursor`
-default to the layer's declared defaults and the three `anchor*`
-properties default to absent, so existing Phase 2 Portals without
-any of them continue to work — they land on the `overlay-modal`
-layer with a `Block` backdrop, positioned at their declared slot.
+Ten properties, seven of them optional. `layer`, `cursor` and
+`backdrop` default to the layer's declared defaults and the three
+`anchor*` properties default to absent, so existing Phase 2 Portals
+without any of them continue to work — they land on the
+`overlay-modal` layer with a `Block` backdrop, positioned at their
+declared slot.
 
 | Property | Type | Default | Meaning |
 |---|---|---|---|
@@ -894,7 +904,9 @@ layer with a `Block` backdrop, positioned at their declared slot.
 | `layer` | `string` | `"overlay-modal"` | Which named layer to paint into. One of `"main"`, `"overlay-modal"`, `"popover"`, `"tooltip"`, `"toast"`, `"cursor-attached"` (Phase 2.5). The layer determines paint priority, default backdrop policy, and default cursor preference. |
 | `cursor` | `string` | layer default | `"free"` requests a visible system cursor; `"inherit"` defers to the host. Aggregated by `Ogham::wants_cursor_free()`. |
 | `children` | `array<widget>` | `[]` | The widgets to render in the portal layer. Layout starts at the parent's slot rect; transforms apply normally. |
-| `anchor` | `string` | none | Names a host-set anchor point. When present, the entry's viewport origin comes from `UI`'s anchor map instead of from Pass-A translate accumulation. See *The anchor contract* below. |
+| `anchor` | `string` | none | Names a host-set anchor point, or `"parent"` for the laid-out box of the widget the Portal is declared inside (`ANCHORED_PORTALS.md` §7). When present, the entry's viewport origin comes from the anchor instead of from Pass-A translate accumulation. See *The anchor contract* below. |
+| `backdrop` | `string` | layer default | This entry's outside-press policy: `"none"`, `"dismiss"`, `"block"`. See *The dismiss policy*. |
+| `dismiss` | `fn ()` | none | Fires when a press lands outside this portal's content while its policy is `dismiss`. |
 | `anchor_policy` | `string` | `"clamp"` | How the anchor point is seated against the viewport once the subtree's size is known. One of `"raw"`, `"clamp"`, `"flip"`. Inert without `anchor`. |
 | `anchor_offset` | `{ x, y }` | `{ x: 0, y: 0 }` | Fixed nudge applied to the anchor point *before* the policy. Either component may be omitted. Inert without `anchor`. |
 
@@ -968,6 +980,61 @@ an ordinary anchored `cursor-attached` entry seated through exactly
 this path — the special case the mechanism was generalised from no
 longer exists as a separate code path.
 
+### The dismiss policy
+
+A press that no entry in a portal layer claims is settled by the
+strongest policy among that layer's entries, in `UI::handle_click_event`:
+
+| Policy | Outside press | Reported | Falls through | Hover outside the layer's entries |
+|---|---|---|---|---|
+| `none` | ignored by this layer | no | yes — next layer down, then the base tree | falls through — the widget under the pointer hovers |
+| `dismiss` | swallowed, except a `contextmenu` | `dismiss` fires on every dismissing entry in the layer, on `mouse_down` and on `contextmenu` | a `contextmenu` only — after the dismiss has fired, so the row under a right-click opens its own menu as the old one closes | stopped — everything under the layer reads as un-hovered, `mouse_leave` fired |
+| `block` | swallowed | no | no | stopped — as `dismiss` |
+
+Hover is settled by the same walk as a press (`UI::update_hover`,
+`EVENTS.md` *Hover propagation*): an entry whose content contains
+the pointer hovers that content at its painted position and nothing
+below it; a layer no entry claims is settled by its *open* entries'
+policies as above — a closing portal's ghost entry neither claims
+nor obstructs. `hovered_blocks` and `blocks_point` obstruct on the
+same gate.
+
+The `mouse_up` after a dismissing press is swallowed too (nothing
+under the popover gets half a gesture), but it is not a second
+dismissal. A press *inside* any entry of the layer is that entry's and
+the policy never runs. `call_event` returns `true` for a dismissed
+press — the chrome owns the gesture — and `false` for a blocked one,
+which is the pre-existing behaviour of `Block`.
+
+A right-click is the one press that dismisses *and* goes on
+(2026-09-10). A context menu is about what is under the hand, so
+while one is open a right-click elsewhere has to close it and open
+whatever the new target offers, as one gesture; swallowing it would
+cost the user a second click for every re-target. The dismiss fires
+first and `listener_fired` is left alone until the walk is done, or
+the lower `contextmenu:` listener would be suppressed as a
+bubbled-over one. `call_event` returns `true` when either fired.
+`tests/press_anchored_portals.rs` is the guard.
+
+`Popover` defaults to `dismiss`; `OverlayModal` stays `block`; the rest
+stay `none`. A Portal overrides its own layer default with `backdrop:`,
+which is how a popover-layer palette that wants presses to pass through
+opts out. The effective policy rides `PortalInfo::backdrop`, so the
+hit-test, `hit_test_drag_target`, `hit_test_drop_target` and
+`blocks_point` read one field. `blocks_point` answers `true` everywhere
+while a dismissing entry is open — the world under the chrome gets no
+vote until the popover is gone.
+
+Why a policy rather than the catch-child composition below: the catch
+child lays out inside the Portal's parent box, and a parent-anchored
+popover's parent is a button. There was no box to catch in.
+
+**Escape stays the host's.** `lorekeeper/driver/src/binding.rs`
+intercepts Escape before any tree, and untold_lore's editor does the
+same on the library screen; a document that wants Escape to dismiss
+writes a `keydown: { escape: … }` listener (`EVENTS.md`) and gets it
+only when no host intercept claimed it.
+
 ### What's deliberately not in the API
 
 Everything that *was* bundled into Portal in the first
@@ -979,8 +1046,10 @@ primitives:
   (The layer's `BackdropPolicy` paints a runtime backdrop
   separately for `Block`-policy layers; consumers can layer
   styled chrome on top.)
-- **Dismiss-on-outside** → `on_click` on the backdrop child
-  toggles the consumer's `open` state.
+- **Dismiss-on-outside** → *was* an `on_click` on a full-viewport
+  backdrop child. Since 2026-09-07 it is the `dismiss` policy and
+  the `dismiss` listener above; the composition still works where
+  the parent box is the viewport.
 - **Static anchor positioning** → the second child uses
   `transform: { translate_x, translate_y }` to position
   itself relative to the portal's slot. (Positioning at a
@@ -1006,9 +1075,9 @@ input-blocking needs.
 | Originally proposed | Resolution |
 |---|---|
 | `backdrop: bool` | Authors compose with a full-viewport Flex child — gives full control over color, opacity, dismiss behavior, animation. The layer's `BackdropPolicy` (Phase 2.5) handles the input-blocking *behaviour* separately from the styled chrome. |
-| `dismiss_on_outside: bool` | An `on_click` on the backdrop child does this exactly. |
+| `dismiss_on_outside: bool` | Was composition (an `on_click` on a backdrop child). Became `backdrop: "dismiss"` + `dismiss:` on 2026-09-07, once parent-anchored popovers had no viewport-sized box to compose it in. |
 | `dismiss_on_escape: bool` | A consumer-level key handler does this — and is needed for non-Portal dismissable UIs anyway. |
-| `anchor: WidgetRef` | Still rejected. Widget-relative anchoring needs a measured-position query and a second layout dependency, and no consumer has asked for it. The `anchor: string` that *did* ship takes a host-supplied point, not a widget — a different feature that happens to share a name. |
+| `anchor: WidgetRef` | Rejected as a *reference*; shipped as `anchor: "parent"` on 2026-09-07 — the one widget a Portal can name without a query is the one it is declared inside, and the Pass-A walk is already standing on that widget's box. `ANCHORED_PORTALS.md` §7. |
 | `z_index: int` | Phase 2 said multiple portals stack last-opened-on-top; Phase 2.5 made the priority explicit via the named-layer set. Six layers cover every use case the UL audit found, with a fixed enum keeping the priority math obvious. |
 | `layer: string` (Phase 2.5) | Added. The audit showed tooltip / popover / overlay-modal / toast / cursor-attached have genuinely different priorities and backdrop policies; encoding them in a fixed-set enum is simpler than a free-form `z_index`. |
 | `cursor: string` (Phase 2.5) | Added. Modal-style overlays need to release a host's pointer lock; per-Portal declaration aggregates through `Ogham::wants_cursor_free()`. |
@@ -1062,11 +1131,15 @@ base tree only if no layer claims the click. Within a
 single entry, hit-testing is normal recursive depth-first.
 A `Block`-policy layer with at least one open entry stops
 the hit-test there — clicks in the runtime backdrop don't
-reach lower layers or the base tree.
+reach lower layers or the base tree. Hover (`mouse_move`) is
+resolved by the same walk and stopped by the same gate, so
+nothing under a backdrop lights up or hears `mouse_enter`
+(*The dismiss policy* below).
 
 A portal's children whose layout covers the full viewport
-(a backdrop child) will swallow clicks naturally — no
-Portal-level `dismiss_on_outside` flag needed.
+(a backdrop child) will swallow clicks naturally. Where there is
+no such box to lay out in, the layer's `dismiss` policy does it
+(*The dismiss policy* above).
 
 ### What this does NOT support
 

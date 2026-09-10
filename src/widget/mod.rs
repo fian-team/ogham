@@ -28,6 +28,9 @@ pub mod grid_widget;
 pub mod image;
 /// Image rendering widget.
 pub mod image_widget;
+/// Key chords: the names a `keydown:` map is keyed by and the chord a
+/// host key event resolves to.
+pub mod keys;
 /// Phase 2.5 M0: named portal layers + per-layer backdrop
 /// policies. Portal widgets declare a layer; the renderer
 /// dispatches to per-layer storage and paints in priority
@@ -45,6 +48,8 @@ pub mod presence_widget;
 pub mod event;
 pub mod point;
 pub mod rect;
+/// Native horizontal slider: a controlled value the pointer drags.
+pub mod slider_widget;
 pub mod style;
 /// Text input field widget.
 pub mod text_input_widget;
@@ -189,9 +194,19 @@ pub struct PortalInfo {
     pub anchor_policy: portal_layer::AnchorPolicy,
     /// Fixed `(x, y)` nudge applied to the anchor point *before*
     /// the policy, so cursor chrome can sit below-right of the
-    /// pointer rather than under it. Ignored when `anchor` is
-    /// `None`.
+    /// pointer rather than under it. Ignored when neither anchor
+    /// mode is set.
     pub anchor_offset: (f32, f32),
+    /// `anchor: "parent"`: the entry seats against the laid-out box
+    /// of the nearest ancestor with a non-zero rect — the frame the
+    /// Pass-A walk carries — rather than a host point. Exclusive
+    /// with [`Self::anchor`].
+    pub anchor_parent: bool,
+    /// The press policy this entry is settled by: the Portal's own
+    /// `backdrop:` or its layer's default. The hit-test path reads
+    /// it from here so a per-portal override and a layer default
+    /// go through one field.
+    pub backdrop: portal_layer::BackdropPolicy,
 }
 
 /// Phase 2.5 M0: per-frame storage for portal entries, keyed
@@ -388,6 +403,20 @@ pub struct UI {
     /// Hosts read it for pointer-anchored effects (a backdrop's parallax,
     /// a spotlight) without shadowing the event stream themselves.
     last_mouse: Option<Point>,
+    /// Pointer capture: the widget that consumed a `mouse_down` and asked
+    /// to receive every pointer event until the release, plus the
+    /// translation from viewport coordinates into the space that widget
+    /// hit-tests in (`viewport − local`, taken at the press). While set,
+    /// `call_event` routes `mouse_move` / `mouse_up` / `mouse_down`
+    /// straight to it — no hover walk, no hit test — and clears it on
+    /// `mouse_up` or when the widget lets go.
+    captured: Option<(WidgetRef, (f32, f32))>,
+    /// Whether the last hover walk was stopped by a portal layer's
+    /// backdrop before it reached the base tree — an open `block` or
+    /// `dismiss` entry with the pointer outside every entry of its
+    /// layer. Read by [`UI::hovered_blocks`]: the world under such a
+    /// layer gets no vote, exactly as a press there is swallowed.
+    hover_obstructed: bool,
 }
 
 /// The anchor id the runtime keeps its own drag preview at.
@@ -402,6 +431,22 @@ pub struct UI {
 /// anchors starting with it, so no userspace Portal can attach
 /// itself to the drag cursor by naming this id.
 pub const DRAG_PREVIEW_ANCHOR: &str = "__drag_preview";
+
+/// The point of the last pointer *press* that reached the tree — a
+/// `mouse_down` or a `contextmenu`, through [`UI::call_event`] or
+/// [`UI::dispatch_contextmenu`]. A `Portal { anchor: "press" }` seats
+/// its subtree there: the builder maps the reserved word onto this id,
+/// which is how a context menu opens where the hand was without the
+/// host passing coordinates, and how a popover can open at a click
+/// rather than under the face that took it.
+///
+/// A press, never the pointer: a menu anchored to the live pointer
+/// would follow the mouse. The point is retained after the press, so
+/// a portal that opens on the *next* frame (a host-state flip in
+/// answer to the listener) still finds it. Absent until the first
+/// press, and then a portal naming it is not painted — the honest
+/// answer for "nothing has been pressed yet".
+pub const PRESS_ANCHOR: &str = "__press";
 
 /// Phase 3 M2: state captured by `UI` during an in-flight
 /// drag so the renderer can paint a drag preview attached to
@@ -451,6 +496,21 @@ impl UI {
             pending_cancelled_unmount_prefixes: Vec::new(),
             active_drag_preview: None,
             last_mouse: None,
+            captured: None,
+            hover_obstructed: false,
+        }
+    }
+
+    /// The widget holding pointer capture, if any.
+    pub fn captured(&self) -> Option<&WidgetRef> {
+        self.captured.as_ref().map(|(w, _)| w)
+    }
+
+    /// Drop pointer capture without a release reaching the widget — for a
+    /// host whose window lost the pointer mid-gesture. Idempotent.
+    pub fn release_capture(&mut self) {
+        if self.captured.take().is_some() {
+            self.mark_needs_repaint();
         }
     }
 
@@ -554,6 +614,42 @@ impl UI {
     }
 
     pub fn call_event(&mut self, event: &Event) -> bool {
+        // A captured widget owns the pointer: every pointer event goes to
+        // it, translated into its own space, with no hover walk and no
+        // hit test — that is what lets a slider keep tracking after the
+        // cursor leaves its track. The release ends the capture after it
+        // has been delivered, so the widget sees its own `mouse_up`.
+        if let Some((widget, offset)) = self.captured.clone() {
+            if let Some(point) = &event.point {
+                if matches!(
+                    event.name.as_str(),
+                    "mouse_down" | "mouse_move" | "mouse_up"
+                ) {
+                    if event.name == "mouse_move" {
+                        self.last_mouse = Some(point.clone());
+                    }
+                    let local = event.shift_point(-offset.0, -offset.1);
+                    let mut ctx = EventContext::with_focused(self.focused.clone());
+                    ctx.captured_widget = Some(widget.clone());
+                    let handled = {
+                        let mut g = widget.lock().expect("widget lock poisoned");
+                        g.handle_event(&local, &mut ctx, &widget)
+                    };
+                    if let Some(focus_target) = ctx.take_focus_request() {
+                        self.try_set_focus(focus_target);
+                    }
+                    if event.name == "mouse_up" || ctx.wants_release() {
+                        self.captured = None;
+                    }
+                    self.mark_after_event(&ctx);
+                    // The gesture is the chrome's whether or not the widget
+                    // reported the individual event handled.
+                    let _ = handled;
+                    return true;
+                }
+            }
+        }
+
         if event.name == "mouse_move" {
             if let Some(point) = &event.point {
                 self.last_mouse = Some(point.clone());
@@ -570,10 +666,17 @@ impl UI {
         }
 
         if let Some(point) = &event.point {
-            // For click events, clear focus before handling
-            // Create context without focused widget since we're clearing focus
+            // A press is remembered as a point before anything answers
+            // it, so a portal the answer opens can seat itself there
+            // (`PRESS_ANCHOR`).
+            if matches!(event.name.as_str(), "mouse_down" | "contextmenu") {
+                self.set_anchor(PRESS_ANCHOR, point.clone());
+            }
+            // For click events, clear focus before handling. Whatever was
+            // focused is remembered so it can be told it lost focus once
+            // the dispatch has settled where focus went.
             let mut ctx = EventContext::new();
-            self.focused = None;
+            let previous_focus = self.focused.take();
 
             // For click events, we need to find all widgets that contain the point
             // and call their event handlers in order from child to parent
@@ -585,6 +688,16 @@ impl UI {
             if let Some(focus_target) = ctx.take_focus_request() {
                 self.try_set_focus(focus_target);
             }
+            self.blur_if_moved(previous_focus);
+
+            // Capture is granted on a press only: a widget asking on a
+            // release would own a pointer with no button down.
+            if event.name == "mouse_down" {
+                if let Some((widget, local)) = ctx.take_capture_request() {
+                    let offset = (point.x() - local.x(), point.y() - local.y());
+                    self.captured = Some((widget, offset));
+                }
+            }
 
             if handled {
                 self.mark_after_event(&ctx);
@@ -595,12 +708,12 @@ impl UI {
             // an input is focused — so Tab / Escape pass through to the host
             // (game hotkeys etc.) when the user isn't in a field. Mirrors the
             // character-key gate (`consumes_character_key`).
+            let keydown = event
+                .keyboard_data
+                .as_ref()
+                .filter(|_| event.name == "keydown");
             if self.focused.is_some() {
-                if let Some(kb) = event
-                    .keyboard_data
-                    .as_ref()
-                    .filter(|_| event.name == "keydown")
-                {
+                if let Some(kb) = keydown {
                     match kb.key_code {
                         // Tab / Shift-Tab → move focus through the ring.
                         Some(9) => {
@@ -610,13 +723,31 @@ impl UI {
                         }
                         // Escape → blur the focused field.
                         Some(27) => {
-                            self.focused = None;
+                            let previous = self.focused.take();
+                            self.blur_if_moved(previous);
                             self.mark_needs_repaint();
                             return true;
                         }
                         _ => {}
                     }
                 }
+            }
+
+            // Key chords. A chord with ctrl / alt / meta is a command, and
+            // commands are offered to `keydown:` listeners before the tree
+            // — innermost listener on the focus chain wins — so a focused
+            // field cannot swallow the document's shortcuts. Everything
+            // else reaches the tree first; what the tree declines is then
+            // offered to the listeners, except text a focused field would
+            // type, which is the field's whether it reported handling the
+            // keydown or not (the character arrives on the `keypress`
+            // that follows).
+            let chorded = keydown
+                .map(|kb| kb.modifiers.ctrl || kb.modifiers.alt || kb.modifiers.meta)
+                .unwrap_or(false);
+            if chorded && self.dispatch_key_chord(event) {
+                self.mark_needs_repaint();
+                return true;
             }
 
             // For non-click events, pass the focused widget to the context
@@ -637,8 +768,67 @@ impl UI {
 
             if handled {
                 self.mark_after_event(&ctx);
+                return true;
             }
-            handled
+
+            let text_for_field = keydown
+                .map(|kb| keys::is_text_key(kb) && self.consumes_character_key())
+                .unwrap_or(false);
+            if keydown.is_some() && !chorded && !text_for_field && self.dispatch_key_chord(event) {
+                self.mark_needs_repaint();
+                return true;
+            }
+            false
+        }
+    }
+
+    /// Offer a `keydown` to the `keydown:` listeners on the focus chain —
+    /// the focused widget and each ancestor up to the root, innermost
+    /// first — or to the root alone when nothing is focused. The first
+    /// listener whose chord matches consumes the key. Returns whether one
+    /// fired.
+    fn dispatch_key_chord(&mut self, event: &Event) -> bool {
+        let Some(kb) = event.keyboard_data.as_ref() else {
+            return false;
+        };
+        let Some(chord) = keys::chord_of(kb) else {
+            return false;
+        };
+        let chain = match self.focused.as_ref() {
+            Some(focused) => {
+                let mut path = Vec::new();
+                if !path_to(&self.root, focused, &mut path) {
+                    vec![self.root.clone()]
+                } else {
+                    path
+                }
+            }
+            None => vec![self.root.clone()],
+        };
+        for widget in chain.iter().rev() {
+            let g = widget.lock().expect("widget lock poisoned");
+            if g.fire_key_chord(&chord, event) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Tell `previous` it lost focus, unless focus is still on it. Every
+    /// write to `focused` that can take focus *away* funnels through here
+    /// (a press elsewhere, Tab, Escape, a trap's restoration), so a
+    /// field's `on_blur` cannot depend on which door the focus left by.
+    fn blur_if_moved(&mut self, previous: Option<WidgetRef>) {
+        let Some(previous) = previous else {
+            return;
+        };
+        let unchanged = self
+            .focused
+            .as_ref()
+            .is_some_and(|now| Arc::ptr_eq(now, &previous));
+        if !unchanged {
+            let mut g = previous.lock().expect("widget lock poisoned");
+            g.lost_focus();
         }
     }
 
@@ -659,58 +849,117 @@ impl UI {
     fn handle_click_event(&mut self, event: &Event, point: &Point, ctx: &mut EventContext) -> bool {
         // Phase 2.5 M0: walk portal_layers high-priority-to-low,
         // within a layer reverse-mount-order (top-most-mount
-        // first). Track block_lower from layer policies; if
-        // any layer with a Block policy has any open entry,
-        // fall-through to the base tree is suppressed (per
-        // UI_RUNTIME.md §1's "lower layers receive nothing if
-        // the topmost layer's policy is `block`").
-        let mut block_lower = false;
-        // Use the convenience entries() collection rather than
-        // borrowing self in a closure — handle_event needs &mut.
-        let entries: Vec<PortalEntry> = self.portal_layers.iter_hit_test_order().cloned().collect();
-        for entry in &entries {
-            // Translate the click into the portal's child
-            // coordinate space — viewport_rect is now
-            // viewport-absolute (P25-M0), so this subtraction
-            // gives the child-relative point directly.
-            let child_point = Point::new(
-                point.x() - entry.viewport_rect.x,
-                point.y() - entry.viewport_rect.y,
-            );
-            let widget_ref = entry.widget.clone();
-            let mut widget = widget_ref.lock().expect("widget lock poisoned");
-            // Check children directly because the Portal node
-            // itself returns false from contains_point.
-            let children = widget.get_children_mut();
-            drop(widget);
-            for child in &children {
-                let mut g = child.lock().expect("widget lock poisoned");
-                if g.contains_point(&child_point) {
-                    let handled = g.handle_event(event, ctx, child);
-                    if handled {
+        // first). A press no entry in a layer claims is settled by
+        // the layer's entries' policies: `None` lets it fall
+        // through to the next layer down and finally the base
+        // tree, `Block` swallows it, and `Dismiss` swallows it and
+        // reports it to each dismissing entry — the light-dismiss
+        // rule a popover wants, without a full-viewport catch
+        // child laid out inside its parent's box.
+        //
+        // A `contextmenu` outside a dismissing entry is reported the
+        // same way and then **falls through**: a context menu is about
+        // what is under the hand, so a right-click while one is open
+        // closes it *and* reaches the row beneath, which opens its own
+        // — one gesture, not two. The dismiss is fired before the walk
+        // goes on, so the document sees `dismiss` then `contextmenu`
+        // in that order; `listener_fired` is left alone until the
+        // walk has finished, or the lower listener would be
+        // suppressed as a bubbled-over one.
+        let mut dismissed_through = false;
+        for layer in portal_layer::PortalLayer::ALL.iter().rev() {
+            let entries: Vec<PortalEntry> = self
+                .portal_layers
+                .entries_in(*layer)
+                .iter()
+                .rev()
+                .cloned()
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
+            for entry in &entries {
+                // Translate the click into the portal's child
+                // coordinate space — viewport_rect is viewport-
+                // absolute (P25-M0), so this subtraction gives the
+                // child-relative point directly. The *event* is
+                // shifted too: a child hit-tests the point it is
+                // handed against its own parent-relative rect.
+                let local = event.shift_point(-entry.viewport_rect.x, -entry.viewport_rect.y);
+                let child_point = local.point.clone().expect("pointer event keeps its point");
+                let widget_ref = entry.widget.clone();
+                let mut widget = widget_ref.lock().expect("widget lock poisoned");
+                // Check children directly because the Portal node
+                // itself returns false from contains_point.
+                let children = widget.get_children_mut();
+                drop(widget);
+                for child in &children {
+                    let mut g = child.lock().expect("widget lock poisoned");
+                    if g.contains_point(&child_point) && g.handle_event(&local, ctx, child) {
                         return true;
                     }
                 }
             }
-            // Layer-policy gate: a Block-policy layer with any
-            // open entry suppresses fall-through to the base
-            // tree. Even if no specific child claimed the
-            // click, the modal "swallows" it.
-            if entry.layer.default_backdrop() == portal_layer::BackdropPolicy::Block {
-                block_lower = true;
+            // Nothing in this layer claimed the press. Settle it by
+            // the strongest policy among the layer's entries.
+            let mut consumed = false;
+            let mut dismissed = false;
+            for entry in &entries {
+                match Self::entry_policy(entry) {
+                    portal_layer::BackdropPolicy::None => {}
+                    portal_layer::BackdropPolicy::Block => consumed = true,
+                    portal_layer::BackdropPolicy::Dismiss => {
+                        let fire = || {
+                            let dismiss = Event::with_point("dismiss".to_string(), point.clone());
+                            let g = entry.widget.lock().expect("widget lock poisoned");
+                            g.fire_event_listener(&dismiss)
+                        };
+                        match event.name.as_str() {
+                            "contextmenu" => dismissed_through |= fire(),
+                            "mouse_down" => {
+                                consumed = true;
+                                dismissed |= fire();
+                            }
+                            _ => consumed = true,
+                        }
+                    }
+                }
+            }
+            if consumed {
+                // A dismiss is a handled press — the document was told
+                // and will re-render. A blocked press is swallowed
+                // silently, as before.
+                if dismissed {
+                    ctx.listener_fired = true;
+                }
+                return dismissed;
             }
         }
 
-        if block_lower {
-            return false;
-        }
-
         // Fall through to the base tree.
-        let mut root = self.root.lock().expect("widget lock poisoned");
-        if root.contains_point(point) {
-            return root.handle_event(event, ctx, &self.root.clone());
+        let handled = {
+            let mut root = self.root.lock().expect("widget lock poisoned");
+            if root.contains_point(point) {
+                root.handle_event(event, ctx, &self.root.clone())
+            } else {
+                false
+            }
+        };
+        if dismissed_through {
+            ctx.listener_fired = true;
         }
-        false
+        handled || dismissed_through
+    }
+
+    /// The press policy an entry is settled by: the portal's own
+    /// (its `backdrop:` override or its layer's default, resolved by
+    /// `as_portal`), or the layer's default for a synthesized entry
+    /// such as the drag preview.
+    fn entry_policy(entry: &PortalEntry) -> portal_layer::BackdropPolicy {
+        let g = entry.widget.lock().expect("widget lock poisoned");
+        g.as_portal()
+            .map(|info| info.backdrop)
+            .unwrap_or_else(|| entry.layer.default_backdrop())
     }
 
     /// Phase 3 M1: dispatch `drag_start` directly on the
@@ -851,6 +1100,13 @@ impl UI {
                     return true;
                 }
             }
+            drop(widget);
+            // An open blocking or dismissing entry swallows every press
+            // outside itself, so the world under it gets no vote anywhere
+            // on screen. The same gate hover resolution stops at.
+            if Self::entry_obstructs(entry) {
+                return true;
+            }
         }
         self.root
             .lock()
@@ -867,6 +1123,11 @@ impl UI {
     /// a host reads this to decide whether the chrome under the pointer
     /// wants the interactive glyph, and `hovered_blocks` to know whether
     /// the world underneath still gets a vote.
+    ///
+    /// The hover chain lives in at most one place — an open portal
+    /// entry's content, or the base tree — so this reads the entries
+    /// in hit-test order and then the root, and the first chain found
+    /// is the only one.
     ///
     /// [`update_hover`]: Self::update_hover
     /// [`hovered_blocks`]: Self::hovered_blocks
@@ -888,14 +1149,35 @@ impl UI {
             }
             own
         }
+        for child in self.hovered_portal_content() {
+            let role = walk(&child);
+            if role != style::CursorRole::Default {
+                return role;
+            }
+        }
         walk(&self.root)
+    }
+
+    /// The direct children of every portal entry, in hit-test order —
+    /// the roots the hover walk tags besides the base tree's.
+    fn hovered_portal_content(&self) -> Vec<WidgetRef> {
+        self.portal_layers
+            .iter_hit_test_order()
+            .flat_map(|entry| {
+                let g = entry.widget.lock().expect("widget lock poisoned");
+                g.get_children()
+            })
+            .collect()
     }
 
     /// Whether the chrome under the pointer would consume a press — any
     /// widget in the hovered chain that `block_interactions` or carries a
     /// pointer listener. The chain twin of [`blocks_point`](Self::blocks_point)
     /// (no coordinate needed), for hosts that gate world hover on the hover
-    /// state this UI already tracks.
+    /// state this UI already tracks. `true` as well while a portal
+    /// layer's backdrop stopped the last hover walk — an open `block`
+    /// or `dismiss` entry swallows the press wherever it lands, so the
+    /// world under it gets no vote there either.
     pub fn hovered_blocks(&self) -> bool {
         fn walk(widget: &WidgetRef) -> bool {
             let g = widget.lock().expect("widget lock poisoned");
@@ -909,10 +1191,11 @@ impl UI {
             drop(g);
             children.iter().any(|child| walk(child))
         }
-        walk(&self.root)
+        self.hover_obstructed || self.hovered_portal_content().iter().any(walk) || walk(&self.root)
     }
 
     pub fn dispatch_contextmenu(&mut self, point: Point) -> bool {
+        self.set_anchor(PRESS_ANCHOR, point.clone());
         let target = self.hit_test_drag_target(&point);
         if let Some(target_ref) = target {
             let mut event = Event::with_point("contextmenu".to_string(), point);
@@ -952,7 +1235,7 @@ impl UI {
                     return Some(child.clone());
                 }
             }
-            if entry.layer.default_backdrop() == portal_layer::BackdropPolicy::Block {
+            if Self::entry_policy(entry).consumes_outside_press() {
                 return None;
             }
         }
@@ -997,7 +1280,7 @@ impl UI {
                     }
                 }
             }
-            if entry.layer.default_backdrop() == portal_layer::BackdropPolicy::Block {
+            if Self::entry_policy(entry).consumes_outside_press() {
                 return None;
             }
         }
@@ -1081,23 +1364,112 @@ impl UI {
         }
     }
 
-    /// Walk the widget tree and set `hovered = true` on every widget in the
-    /// path from the root to the deepest widget that contains `point`.
-    /// All other widgets are set to `hovered = false`. Returns `true` if
-    /// any widget's hover state changed.
+    /// Re-tag the hover chain for a pointer at `point`, and fire
+    /// `mouse_enter` / `mouse_leave` for every transition. Returns `true`
+    /// if any widget's hover state changed.
+    ///
+    /// Hover is resolved the way a press is (`handle_click_event`):
+    /// portal layers high→low, within a layer in reverse mount order,
+    /// then the base tree. The first entry whose content contains the
+    /// point owns the hover chain and everything else reads as
+    /// un-hovered. A layer nothing claims is settled by its open
+    /// entries' backdrop policies: `block` or `dismiss` stops hover
+    /// there — every lower layer and the base tree is cleared, with
+    /// `mouse_leave` fired for whatever was hovered — and `none` falls
+    /// through. The `cursor-attached` layer never claims: its content
+    /// is pinned under the pointer, so it would hover itself on every
+    /// move and shadow whatever a drag is over.
+    ///
+    /// Portal content is hovered here at its *painted* position (the
+    /// entry's `viewport_rect`), never at its declaration site: the
+    /// base-tree walk stops at a Portal node that has an entry this
+    /// frame, and clears the content of one that has none — a closed
+    /// portal whose children are still reachable through the node.
     fn update_hover(&mut self, point: &Point) -> bool {
+        let entry_widgets: Vec<WidgetRef> = self
+            .portal_layers
+            .iter_hit_test_order()
+            .map(|e| e.widget.clone())
+            .collect();
+        let mut changed = false;
+        // Once true, nothing lower may take hover: something above
+        // claimed the point, or a backdrop settled it.
+        let mut settled = false;
+        let mut obstructed = false;
+        for layer in portal_layer::PortalLayer::ALL.iter().rev() {
+            let entries: Vec<PortalEntry> = self
+                .portal_layers
+                .entries_in(*layer)
+                .iter()
+                .rev()
+                .cloned()
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
+            let may_claim = *layer != portal_layer::PortalLayer::CursorAttached;
+            for entry in &entries {
+                let child_point = Point::new(
+                    point.x() - entry.viewport_rect.x,
+                    point.y() - entry.viewport_rect.y,
+                );
+                let children = {
+                    let g = entry.widget.lock().expect("widget lock poisoned");
+                    g.get_children()
+                };
+                // Claim by the same test a press uses — a direct child of
+                // the entry contains the point — with ghosts invisible.
+                let claims = !settled
+                    && may_claim
+                    && children.iter().any(|c| {
+                        let g = c.lock().expect("widget lock poisoned");
+                        !g.is_exiting() && g.contains_point(&child_point)
+                    });
+                for child in &children {
+                    changed |=
+                        Self::update_hover_recursive(child, &child_point, !claims, &entry_widgets);
+                }
+                settled |= claims;
+            }
+            if !settled && entries.iter().any(Self::entry_obstructs) {
+                settled = true;
+                obstructed = true;
+            }
+        }
         let root = self.root.clone();
-        Self::update_hover_recursive(&root, point, false)
+        changed |= Self::update_hover_recursive(&root, point, settled, &entry_widgets);
+        self.hover_obstructed = obstructed;
+        changed
     }
 
-    fn update_hover_recursive(widget_ref: &WidgetRef, point: &Point, suppressed: bool) -> bool {
+    /// Whether an entry stands in the way of everything below it: an
+    /// open entry (a synthesized one, such as the drag preview, counts
+    /// as open) whose effective backdrop policy consumes an outside
+    /// press. Read by hover resolution and by `blocks_point`, so the
+    /// two cannot disagree about what the world under the chrome gets.
+    fn entry_obstructs(entry: &PortalEntry) -> bool {
+        let g = entry.widget.lock().expect("widget lock poisoned");
+        match g.as_portal() {
+            Some(info) => info.open && info.backdrop.consumes_outside_press(),
+            None => entry.layer.default_backdrop().consumes_outside_press(),
+        }
+    }
+
+    /// One widget of the hover walk. `suppressed` clears hover for this
+    /// widget and everything under it (still recursing, so cleared
+    /// descendants get their `mouse_leave`); an exiting subtree is
+    /// suppressed as a unit (PRESENCE_POP.md §6) so a ghost cannot steal
+    /// hover from the live content it overlaps. `entry_widgets` are the
+    /// Portal nodes with a layer entry this frame: the walk stops at one
+    /// of those, because its content is hovered by the layer pass at its
+    /// painted position, and clears the content of any other Portal node.
+    fn update_hover_recursive(
+        widget_ref: &WidgetRef,
+        point: &Point,
+        suppressed: bool,
+        entry_widgets: &[WidgetRef],
+    ) -> bool {
         let mut widget = widget_ref.lock().expect("widget lock poisoned");
-        // Exiting subtrees are hit-test-invisible (PRESENCE_POP.md §6):
-        // suppress hover for this widget and everything below it so a
-        // ghost can't steal hover from the live content it overlaps.
-        // Suppression still recurses — descendants that were hovered
-        // before the exit began get their hover cleared (and their
-        // mouse_leave fired) like any other miss.
         let suppressed = suppressed || widget.is_exiting();
         let hit = !suppressed && widget.contains_point(point);
 
@@ -1112,6 +1484,15 @@ impl UI {
             let event = Event::new("mouse_leave".to_string());
             widget.fire_listeners("mouse_leave", &event);
         }
+
+        let suppressed = if widget.as_portal().is_some() {
+            if entry_widgets.iter().any(|e| Arc::ptr_eq(e, widget_ref)) {
+                return changed;
+            }
+            true
+        } else {
+            suppressed
+        };
 
         // Transform the point into this widget's own content coordinate
         // space before recursing: subtract its origin and add any scroll
@@ -1130,7 +1511,7 @@ impl UI {
         drop(widget);
 
         for child in &children {
-            changed |= Self::update_hover_recursive(child, &child_point, suppressed);
+            changed |= Self::update_hover_recursive(child, &child_point, suppressed, entry_widgets);
         }
 
         changed
@@ -1257,6 +1638,13 @@ impl UI {
             // focus target.
             if focused_ref_count == 1 {
                 self.focused = None;
+            }
+        }
+        // Same for a captured widget that left the tree mid-gesture: the
+        // release would otherwise go to a widget nothing draws.
+        if let Some((captured, _)) = self.captured.as_ref() {
+            if Arc::strong_count(captured) == 1 {
+                self.captured = None;
             }
         }
         result
@@ -1395,7 +1783,8 @@ impl UI {
                 return false;
             }
         }
-        self.focused = Some(target);
+        let previous = self.focused.replace(target);
+        self.blur_if_moved(previous);
         true
     }
 
@@ -1499,7 +1888,8 @@ impl UI {
                 break;
             }
             let popped = self.focus_stack.pop().unwrap();
-            self.focused = popped.previous_focus;
+            let previous = std::mem::replace(&mut self.focused, popped.previous_focus);
+            self.blur_if_moved(previous);
         }
         // Filter out any deeper stale entries silently. These
         // are entries below a still-active top — non-top closes
@@ -1520,6 +1910,8 @@ impl UI {
         self.focus_stack.clear();
         self.portal_layers.clear();
         self.focused = None;
+        self.captured = None;
+        self.hover_obstructed = false;
         // Phase 3 M2: drop the drag preview if any was in
         // flight when the reload landed — its WidgetRef
         // points into the old tree.
@@ -2137,6 +2529,29 @@ pub trait Widget: Downcast {
         false
     }
 
+    /// Focus left this widget — by a press elsewhere, Tab, Escape, or a
+    /// focus trap restoring what it saved. `UI` calls it from the one
+    /// place every focus move funnels through, after the move has
+    /// settled, so a widget never has to work out *why*. `TextInput`
+    /// fires `on_blur` here. Default: nothing.
+    fn lost_focus(&mut self) {}
+
+    /// Offer a normalised key chord (`ctrl+k`, `escape`) to this widget's
+    /// `keydown:` listeners. Returns whether one fired. `UI` walks the
+    /// focus chain innermost-first and stops at the first `true`.
+    /// Default: no listeners.
+    fn fire_key_chord(&self, _chord: &str, _event: &Event) -> bool {
+        false
+    }
+
+    /// The box a `Portal { anchor: "parent" }` declared inside this
+    /// widget seats against, parent-relative: the laid-out rect less any
+    /// margin, so it matches what `contains_point` answers to. Default:
+    /// the layout rect as is. `None` while unlaid-out.
+    fn border_box(&self) -> Option<Rect> {
+        self.get_layout_rect().cloned()
+    }
+
     /// Phase 2 lifecycle: the call-stack path at which this widget
     /// was constructed. Used to identify which paths a draining
     /// widget "owns" — when the widget is removed from the tree
@@ -2233,6 +2648,28 @@ fn widget_subtree_contains(root: &WidgetRef, target: &WidgetRef) -> bool {
             return true;
         }
     }
+    false
+}
+
+/// The chain of widgets from `root` down to `target`, inclusive at both
+/// ends, in root-first order. `false` (with `out` left empty) when
+/// `target` is not under `root`. Portals expose their inner children, so
+/// a widget inside an open portal has a chain through the Portal node.
+fn path_to(root: &WidgetRef, target: &WidgetRef, out: &mut Vec<WidgetRef>) -> bool {
+    out.push(root.clone());
+    if Arc::ptr_eq(root, target) {
+        return true;
+    }
+    let children = {
+        let g = root.lock().expect("widget lock poisoned");
+        g.get_children()
+    };
+    for child in &children {
+        if path_to(child, target, out) {
+            return true;
+        }
+    }
+    out.pop();
     false
 }
 

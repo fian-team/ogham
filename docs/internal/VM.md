@@ -379,7 +379,17 @@ runtime, and the widget builder. The variants:
 
 - `Integer(i32)`, `Float(f64)`, `Boolean(bool)`,
   `String(String)` — primitives.
-- `Map(HashMap<String, Value>)`, `Array(Vec<Value>)` — composite.
+- `Map(Rc<HashMap<String, Value>>)`, `Array(Rc<Vec<Value>>)` —
+  composite, and shared rather than copied: the VM clones a `Value`
+  at every read (`GetHostState`, `GetLocal`, `GetProperty`), and a
+  deep copy made `rows[i]` cost the whole of `rows` — quadratic in a
+  list's length, 194 ms to rerender an 800-row sidebar against 9 ms
+  shared (2026-09-08). No opcode mutates a container after it is
+  built, so sharing needs no copy-on-write; the one in-place writer,
+  `AppendForExpr`, goes through `Rc::make_mut` on a collector nothing
+  else holds. Hosts build through `Value::array` / `Value::map` or
+  `.into()`, and `PartialEq` answers by pointer before by content.
+  `tests/shared_values.rs` guards the sharing.
 - `BytecodeClosure(Rc<VMClosure>)` — single-threaded; safe
   because the VM owns the only `Rc` paths into them, and the
   runtime is wrapped in `Arc<Mutex<...>>` externally.

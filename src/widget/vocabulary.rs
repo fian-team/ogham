@@ -66,6 +66,7 @@ pub const FLEX_PROPERTIES: &[&str] = &[
     "hover_style",
     "initial",
     "key",
+    "keydown",
     "mouse_down",
     "mouse_enter",
     "mouse_leave",
@@ -82,8 +83,10 @@ pub const TEXT_INPUT_PROPERTIES: &[&str] = &[
     "hover_style",
     "mouse_down",
     "mouse_up",
+    "on_blur",
     "on_change",
     "on_submit",
+    "placeholder",
     "style",
     "value",
 ];
@@ -110,12 +113,31 @@ pub const PORTAL_PROPERTIES: &[&str] = &[
     "anchor",
     "anchor_offset",
     "anchor_policy",
+    "backdrop",
     "children",
     "cursor",
+    "dismiss",
     "focus_trap",
     "layer",
     "open",
 ];
+
+/// `Slider`.
+pub const SLIDER_PROPERTIES: &[&str] = &[
+    "fill_color",
+    "max",
+    "min",
+    "on_change",
+    "on_commit",
+    "step",
+    "style",
+    "thumb_color",
+    "track_color",
+    "value",
+];
+
+/// The colour-map properties a `Slider` carries at its root.
+pub const SLIDER_COLOR_PROPERTIES: &[&str] = &["fill_color", "thumb_color", "track_color"];
 
 /// `Canvas`.
 pub const CANVAS_PROPERTIES: &[&str] = &[
@@ -232,9 +254,7 @@ pub const TRANSITION_KEYS: &[&str] = &[
     "transform",
 ];
 pub const SPRING_KEYS: &[&str] = &["damping", "delay", "stiffness"];
-pub const BORDER_KEYS: &[&str] = &[
-    "bottom", "color", "left", "right", "style", "top", "width",
-];
+pub const BORDER_KEYS: &[&str] = &["bottom", "color", "left", "right", "style", "top", "width"];
 pub const BORDER_SIDE_KEYS: &[&str] = &["color", "style", "width"];
 pub const POSITION_KEYS: &[&str] = &["type", "x", "y"];
 pub const GROW_KEYS: &[&str] = &["grow"];
@@ -270,6 +290,7 @@ fn widget_vocabulary(name: &str) -> Option<(&'static [&'static str], StyleKind)>
         "presence" => Some((PRESENCE_PROPERTIES, StyleKind::Flex)),
         "portal" => Some((PORTAL_PROPERTIES, StyleKind::None)),
         "canvas" => Some((CANVAS_PROPERTIES, StyleKind::Flex)),
+        "slider" => Some((SLIDER_PROPERTIES, StyleKind::Flex)),
         _ => None,
     }
 }
@@ -280,7 +301,7 @@ fn style_slots(name: &str) -> &'static [&'static str] {
         "flex" | "presence" => &["style", "hover_style", "initial", "exit"],
         "text" => &["style", "hover_style"],
         "textinput" => &["style", "hover_style", "focus_style"],
-        "grid" | "canvas" => &["style"],
+        "grid" | "canvas" | "slider" => &["style"],
         _ => &[],
     }
 }
@@ -352,10 +373,7 @@ impl std::fmt::Display for Violation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let what = match self.kind {
             Kind::Key => format!("`{}` is not a property of {}", self.path, self.widget),
-            Kind::Value => format!(
-                "`{}` on {} is not {:?}",
-                self.path, self.widget, self.found
-            ),
+            Kind::Value => format!("`{}` on {} is not {:?}", self.path, self.widget, self.found),
         };
         write!(f, "{}: {what}", self.site)?;
         match self.suggestion {
@@ -474,13 +492,7 @@ fn node_from_expression(expr: &Expression) -> Node<'_> {
         Expression::Literal(Literal::Map(map)) => Node::Map(
             map.properties
                 .iter()
-                .map(|(key, value)| {
-                    (
-                        key.as_str(),
-                        key.span,
-                        node_from_expression(value),
-                    )
-                })
+                .map(|(key, value)| (key.as_str(), key.span, node_from_expression(value)))
                 .collect(),
         ),
         Expression::Grouping(g) => node_from_expression(&g.value),
@@ -826,6 +838,9 @@ impl<'a> Check<'a> {
             if self.widget == "portal" && *key == "anchor_offset" {
                 self.map_keys(key, value, ANCHOR_OFFSET_KEYS);
             }
+            if self.widget == "slider" && SLIDER_COLOR_PROPERTIES.contains(key) {
+                self.map_keys(key, value, COLOR_KEYS);
+            }
         }
     }
 }
@@ -878,7 +893,10 @@ fn walk_block(block: &crate::parser::Block, f: &mut impl FnMut(&crate::parser::W
     }
 }
 
-fn walk_statement(statement: &crate::parser::Statement, f: &mut impl FnMut(&crate::parser::Widget)) {
+fn walk_statement(
+    statement: &crate::parser::Statement,
+    f: &mut impl FnMut(&crate::parser::Widget),
+) {
     use crate::parser::Statement as S;
     match statement {
         S::Expression(s) => walk_expression(&s.value, f),
@@ -906,8 +924,11 @@ fn walk_statement(statement: &crate::parser::Statement, f: &mut impl FnMut(&crat
             walk_block(&s.body, f);
         }
         S::ScreenDeclaration(s) => walk_expression(&s.view, f),
-        S::Import(_) | S::RecordDeclaration(_) | S::HostStateDeclaration(_)
-        | S::EventsDeclaration(_) | S::SelectDeclaration(_) => {}
+        S::Import(_)
+        | S::RecordDeclaration(_)
+        | S::HostStateDeclaration(_)
+        | S::EventsDeclaration(_)
+        | S::SelectDeclaration(_) => {}
     }
 }
 
@@ -1053,6 +1074,13 @@ mod tests {
     use super::*;
 
     fn scan(source: &str) -> Vec<String> {
+        // A source that does not parse scans clean, by design; a fixture
+        // that does not parse would therefore pass every "nothing is
+        // reported" assertion below without testing anything.
+        let tokens = crate::scanner::Scanner::new(source.to_string()).scan();
+        crate::parser::Parser::new(tokens)
+            .parse()
+            .unwrap_or_else(|e| panic!("fixture does not parse: {e:?}"));
         scan_source("t.ogh", source)
             .iter()
             .map(|v| format!("{}|{:?}|{}", v.path, v.kind, v.found))
@@ -1076,8 +1104,11 @@ mod tests {
         let found = scan(r#"let main = fn () { Flex { style: { wrap: true } } };"#);
         assert_eq!(found, vec!["style.wrap|Key|wrap"]);
         assert_eq!(
-            scan_source("t.ogh", r#"let main = fn () { Flex { style: { wrap: "wrap" } } };"#)[0]
-                .suggestion,
+            scan_source(
+                "t.ogh",
+                r#"let main = fn () { Flex { style: { wrap: "wrap" } } };"#
+            )[0]
+            .suggestion,
             Some("flex_wrap")
         );
     }
@@ -1086,17 +1117,16 @@ mod tests {
     /// and lays out plausibly for as long as the children `"grow"`.
     #[test]
     fn stretch_is_not_a_cross_alignment() {
-        let found = scan(
-            r#"let main = fn () { Flex { style: { cross_alignment: "stretch" } } };"#,
-        );
+        let found = scan(r#"let main = fn () { Flex { style: { cross_alignment: "stretch" } } };"#);
         assert_eq!(found, vec![r#"style.cross_alignment|Value|stretch"#]);
     }
 
     #[test]
     fn the_alignments_that_exist_are_not_reported() {
         for value in ALIGNMENTS {
-            let source =
-                format!(r#"let main = fn () {{ Flex {{ style: {{ cross_alignment: "{value}" }} }} }};"#);
+            let source = format!(
+                r#"let main = fn () {{ Flex {{ style: {{ cross_alignment: "{value}" }} }} }};"#
+            );
             assert!(scan(&source).is_empty(), "{value} should be accepted");
         }
     }
@@ -1132,9 +1162,8 @@ mod tests {
 
     #[test]
     fn a_nested_map_key_is_checked_too() {
-        let found = scan(
-            r#"let main = fn () { Flex { style: { padding: { top: 4, botom: 4 } } } };"#,
-        );
+        let found =
+            scan(r#"let main = fn () { Flex { style: { padding: { top: 4, botom: 4 } } } };"#);
         assert_eq!(found, vec!["style.padding.botom|Key|botom"]);
     }
 
@@ -1165,7 +1194,44 @@ mod tests {
         };"#;
         let mut found = scan(source);
         found.sort();
-        assert_eq!(found, vec!["exit.opacty|Key|opacty", "hover_style.wrap|Key|wrap"]);
+        assert_eq!(
+            found,
+            vec!["exit.opacty|Key|opacty", "hover_style.wrap|Key|wrap"]
+        );
+    }
+
+    #[test]
+    fn the_new_properties_pass_clean_and_their_neighbours_do_not() {
+        let source = r#"let main = fn () {
+            Flex {
+              keydown: { ctrl_k: fn () { 1 }, escape: fn () { 1 } },
+              children: [
+                TextInput { value: "", placeholder: "Name", on_blur: fn (v: string) { v }, style: { align: "right" } },
+                Slider { value: 0.5, min: 0, max: 1, step: 0.25, on_change: fn (v: float) { v }, on_commit: fn (v: float) { v },
+                         track_color: { r: 1, g: 1, b: 1, a: 255 }, fill_color: { r: 1, g: 1, b: 1, a: 255 },
+                         thumb_color: { r: 1, g: 1, b: 1, a: 255 }, style: { width: "grow" } },
+                Portal { open: true, layer: "popover", anchor: "parent", backdrop: "dismiss",
+                         dismiss: fn () { 1 }, children: [] },
+              ],
+            }
+        };"#;
+        assert!(scan(source).is_empty(), "{:?}", scan(source));
+        assert_eq!(
+            scan(r#"let main = fn () { TextInput { value: "", placeholdr: "x" } };"#),
+            vec!["placeholdr|Key|placeholdr"]
+        );
+        assert_eq!(
+            scan(r#"let main = fn () { Slider { value: 0, track_colour: { r: 1 } } };"#),
+            vec!["track_colour|Key|track_colour"]
+        );
+        assert_eq!(
+            scan(r#"let main = fn () { Slider { value: 0, thumb_color: { red: 1 } } };"#),
+            vec!["thumb_color.red|Key|red"]
+        );
+        assert_eq!(
+            scan(r#"let main = fn () { Portal { open: true, on_dismiss: fn () { 1 } } };"#),
+            vec!["on_dismiss|Key|on_dismiss"]
+        );
     }
 
     #[test]

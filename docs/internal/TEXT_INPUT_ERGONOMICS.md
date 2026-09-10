@@ -58,9 +58,10 @@ the seam is half-built and unused. This work finishes it.
   live tree in render order. An explicit `tab_index:` prop is a later option.
 - **[DEFERRED]** grapheme-cluster movement (emoji/combining), full IME /
   composition, newline entry / multi-line *editing* (display-wrapping of a
-  single logical value is in scope; entering `\n` is not), placeholder text,
+  single logical value is in scope; entering `\n` is not),
   undo/redo, password masking, max-length, read-only/disabled, caret blink,
-  `text_align`-aware caret, word-wise nav (Ctrl+←/→), accessibility.
+  word-wise nav (Ctrl+←/→), accessibility. (Placeholder text and the
+  `text_align`-aware caret left this list on 2026-09-07 — Stage 6.)
 
 ## 3. The measurement seam (E1) in detail
 
@@ -87,7 +88,8 @@ what `draw_text` paints (modulo sub-pixel wrap rounding — acceptable).
 | **1** | UTF-8 movement/insert/delete; drop ascii filter; caret from `caret_geometry`; click-to-caret | E1, E2 | ✅ done |
 | **2** | wrap + auto-height (`Shrink` height = measured); clip to box; horizontal scroll-into-view | E1 | ✅ done |
 | **3** | on_change fires only on real edits; Tab/Shift-Tab traversal; `on_submit` on Enter; Escape-to-blur | — | ✅ done |
-| **4** | shift+arrows extend ✅; Ctrl+A ✅; mouse drag + double-click select (pointer capture) | E2 | ◐ partial (keyboard done; mouse pending) |
+| **4** | shift+arrows extend ✅; Ctrl+A ✅; mouse drag-select via pointer capture ✅ (2026-09-07); double-click-word ☐ | E2 | ◐ (double-click pending on the host pump) |
+| **6** | `on_blur`, `align` honoured, `placeholder` | E1 | ✅ done (2026-09-07) |
 | **5** | Ctrl+C/X/V via clipboard intent; `arboard` at host | E2 | ☐ |
 
 **As-built notes (E1/E2/1/2):**
@@ -113,14 +115,42 @@ what `draw_text` paints (modulo sub-pixel wrap rounding — acceptable).
   registered in the builder alongside `on_change`. 5 traversal tests cover
   order / wrap / reverse / nesting / trap confinement.
 
-**Remaining — own pass each (both touch the dispatch model / host repo):**
-- **Stage 4 mouse** — drag-select + double-click-word need a *pointer-capture*
-  path: `call_event` short-circuits `mouse_move` to hover only, and a drag must
-  keep reaching the captured widget after the cursor leaves its rect — which
-  requires translating the global point into the captured widget's local space
-  (accumulated ancestor offset + scroll). Double-click needs the host pump
-  (`input.rs` already detects it) to emit a distinct event. Keyboard selection
-  already gives a usable selection story without this.
+**As-built notes (Stage 4 mouse + Stage 6, 2026-09-07):**
+- **Pointer capture** is `UI`'s (`EVENTS.md` → *Pointer capture*). A widget
+  that consumes `mouse_down` calls `ctx.request_capture(self_ref, point)` with
+  the point *as it received it*; the UI derives `viewport − local` from that
+  and routes every `mouse_down` / `mouse_move` / `mouse_up` to the widget,
+  shifted by the offset, until the release. No ancestor walk: the offset is
+  taken at the press, which is exact for the length of a drag. `TextInput`
+  takes capture on its press, extends the selection on captured moves and
+  keeps it on the release — drag-select fell out of capture as predicted.
+  Double-click-word still waits on the host pump emitting a distinct event.
+- **`on_blur`** fires with the value whichever way focus left: a press
+  elsewhere (after that press's own handlers), Tab, Escape, or a focus
+  trap restoring what it saved. Every focus move funnels through
+  `UI::blur_if_moved`, so the widget never learns *why*. It does **not**
+  fire when the widget is reconciled out of the tree — a widget that no
+  longer exists has nobody to report to — and a press on the same field
+  is not a blur.
+- **`align`** was parsed onto `text_style` and read by nothing. A
+  single-line field now measures and paints its run at a left origin and
+  seats it by `run_offset` — `(content_w − run_w)` for `right`, half that
+  for `center` — because the run is laid out at infinite width (it has to
+  scroll) and Skia's own alignment at infinite width places a right-aligned
+  run at +∞. The offset applies only while the run fits; an overflowing run
+  starts at the left and scrolls, whatever the alignment. Click-to-caret,
+  the caret, the selection and the scroll all read the same offset. A
+  wrapping field keeps `align` on the paragraph, and `text_layout::build_with`
+  now lays out at a finite width whenever it is given one (mirroring
+  `SkiaEnv::build_laid_out_paragraph`) so the aligned caret measures where
+  it paints. `TextInputWidget::caret_rect` exposes the result.
+- **`placeholder`** draws in the text style at half its alpha while the
+  value is empty and the field is unfocused, seated by the same alignment
+  rule. No `placeholder_style`: one vocabulary to keep in step.
+
+**Remaining:**
+- **Double-click-word** — the host pump (`input.rs` already detects a
+  double click) needs to emit a distinct event.
 - **Stage 5 clipboard** — `EventContext` clipboard intent + `UI::call_event`
   drain + host `arboard` impl, and the lorekeeper seam (§5.3). New dependency +
   cross-repo, so genuinely separate.
@@ -136,8 +166,9 @@ letting it reach game hotkeys. Three additions ride the same precedent:
 1. **Tab / Escape consumption.** When an input is focused, Tab (traversal) and
    Escape (blur) must be consumed at the UI level *before* the host treats them
    as hotkeys — extend the focused-widget gate analogously.
-2. **`on_submit`.** New widget listener; surfaces through the builder like
-   `on_change`. Host handlers register the same way.
+2. **`on_submit`** (and, since 2026-09-07, **`on_blur`**). New widget
+   listeners; surface through the builder like `on_change`. Host handlers
+   register the same way.
 3. **Clipboard intents.** `EventContext` grows a clipboard request (copy/cut
    text out, paste text in); `UI::call_event` drains it and the host services
    it against the window via `arboard`. The widget never touches a clipboard

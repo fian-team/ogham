@@ -154,8 +154,18 @@ fn build_with(
     builder.add_text(text);
     let mut paragraph = builder.build();
     paragraph.layout(f32::INFINITY);
-    if max_width.is_finite() && max_width < paragraph.max_intrinsic_width() - 0.5 {
-        paragraph.layout(max_width);
+    if max_width.is_finite() {
+        // Mirrors `SkiaEnv::build_laid_out_paragraph`: a finite width is
+        // always laid out finite, wrapping only when the content
+        // overflows, so `text_align` has a real width to distribute
+        // slack in. At infinite width a centred or right-aligned run
+        // measures at +∞, which is where the caret would then be drawn.
+        let intrinsic = paragraph.max_intrinsic_width();
+        if max_width < intrinsic - 0.5 {
+            paragraph.layout(max_width);
+        } else {
+            paragraph.layout(max_width.max(intrinsic) + 1.0);
+        }
     }
     paragraph
 }

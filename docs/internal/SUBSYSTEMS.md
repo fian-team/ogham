@@ -357,7 +357,7 @@ This subsystem has its own document:
 **Invariants:**
 - `WidgetRegistry` is keyed by lowercased type name; the built-in
   set is `flex`, `text`, `textinput`, `svg`, `image`, `grid`,
-  `presence`, `portal`, `canvas`. Host-registered widgets override
+  `presence`, `portal`, `canvas`, `slider`. Host-registered widgets override
   built-ins on name collision.
 - **Painter names are not widget type names.** `Canvas`'s
   `painter:` resolves against `Runtime::painters` (populated from

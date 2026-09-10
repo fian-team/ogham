@@ -1,8 +1,10 @@
 //! Phase 2.5 M0 — backdrop policy tests.
 //!
-//! `OverlayModal` defaults to `Block` policy; everything
-//! else defaults to `None`. Block-policy layers gate
-//! fall-through clicks to the base tree.
+//! `OverlayModal` defaults to `Block` policy, `Popover` to
+//! `Dismiss` (an outside press is swallowed and reported — see
+//! `tests/popover_dismiss.rs`); everything else defaults to
+//! `None`. Block-policy layers gate fall-through clicks to the
+//! base tree.
 //!
 //! Tests construct UI + portal_layers state directly and
 //! verify the hit-test path's policy behavior.
@@ -35,10 +37,17 @@ fn overlay_modal_defaults_to_block_policy() {
 }
 
 #[test]
+fn popover_defaults_to_dismiss_policy() {
+    assert_eq!(
+        PortalLayer::Popover.default_backdrop(),
+        BackdropPolicy::Dismiss
+    );
+}
+
+#[test]
 fn other_layers_default_to_none_policy() {
     for layer in [
         PortalLayer::Main,
-        PortalLayer::Popover,
         PortalLayer::Tooltip,
         PortalLayer::Toast,
         PortalLayer::CursorAttached,

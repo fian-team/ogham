@@ -772,9 +772,9 @@ impl Parser {
         self.consume();
 
         let id_start = self.span_start();
-        let id_token = self.current().ok_or_else(|| {
-            SyntaxError::new(0, 0, "unexpected end of input after `screen`")
-        })?;
+        let id_token = self
+            .current()
+            .ok_or_else(|| SyntaxError::new(0, 0, "unexpected end of input after `screen`"))?;
         let scanner::TokenType::String(id) = id_token.token_type.clone() else {
             return Err(SyntaxError::new(
                 id_token.line,

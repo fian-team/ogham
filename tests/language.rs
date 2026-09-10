@@ -479,7 +479,7 @@ let main = fn () {
             Value::Integer(2),
             Value::Integer(4),
             Value::Integer(6),
-        ])
+        ].into())
     );
 }
 
@@ -527,7 +527,7 @@ let main = fn () {
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3),
-        ])
+        ].into())
     );
 }
 
@@ -551,7 +551,7 @@ let main = fn () {
             Value::String("a".to_string()),
             Value::String("b".to_string()),
             Value::String("c".to_string()),
-        ])
+        ].into())
     );
 }
 
@@ -733,7 +733,7 @@ fn array_literal() {
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3),
-        ])
+        ].into())
     );
 }
 
@@ -799,7 +799,7 @@ let main = fn () {
             Value::Integer(2),
             Value::Integer(3),
             Value::Integer(4),
-        ])
+        ].into())
     );
 }
 
@@ -817,13 +817,13 @@ let main = fn () {
             Value::Integer(0),
             Value::Integer(2),
             Value::Integer(4),
-        ])
+        ].into())
     );
 }
 
 #[test]
 fn empty_array() {
-    assert_eq!(eval("let arr = []; arr"), Value::Array(vec![]));
+    assert_eq!(eval("let arr = []; arr"), Value::Array(vec![].into()));
 }
 
 #[test]
@@ -834,7 +834,7 @@ fn array_of_strings() {
             Value::String("a".to_string()),
             Value::String("b".to_string()),
             Value::String("c".to_string()),
-        ])
+        ].into())
     );
 }
 

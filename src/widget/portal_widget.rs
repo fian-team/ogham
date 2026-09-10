@@ -14,17 +14,29 @@
 //! - `anchor` / `anchor_policy` / `anchor_offset` — seat the
 //!   subtree at a host-set viewport point instead of at the slot
 //!   it was declared in. See [`super::portal_layer::resolve_anchor`].
+//!   `anchor: "parent"` seats it against the laid-out box of the
+//!   widget the Portal was declared inside — below its bottom-left,
+//!   or above it under `flip` — with no host coordinates at all.
+//!   `anchor: "press"` seats it at the last pointer press
+//!   ([`super::PRESS_ANCHOR`]): a context menu opens where the
+//!   right-click was, a popover where the click was.
+//! - `backdrop: "none" | "dismiss" | "block"` — overrides the
+//!   layer's default press policy for this entry.
+//! - `dismiss: fn () {}` — fires when a press lands outside the
+//!   portal's content while its policy is `dismiss`.
 //!
-//! Backdrop, dismiss-on-outside, and escape-to-dismiss are *not*
-//! properties — they're consumer-side composition with regular
-//! widgets. **Anchoring is the exception**, and only because the
-//! policies need the subtree's measured size: `.ogh` cannot see
-//! it, so an author cannot express "flip above the pointer when
-//! the card would overrun the bottom" no matter how the tree is
-//! composed. Anything that *can* be composed still should be.
+//! Escape-to-dismiss is still the host's or a `keydown:` listener's.
+//! **Anchoring is the exception** to "positioning is composition",
+//! and only because the policies need the subtree's measured size:
+//! `.ogh` cannot see it, so an author cannot express "flip above
+//! the pointer when the card would overrun the bottom" no matter
+//! how the tree is composed. Outside-press dismissal joined it for
+//! a neighbouring reason: the full-viewport catch child it used to
+//! be composed from lays out inside the parent's box, and a
+//! parent-anchored popover's parent is a button.
 
 use super::flex_widget::FlexWidget;
-use super::portal_layer::{AnchorPolicy, CursorPreference, PortalLayer};
+use super::portal_layer::{AnchorPolicy, BackdropPolicy, CursorPreference, PortalLayer};
 use super::style::{Direction, FlexStyle, Size};
 use super::{PortalInfo, RenderEffects, TickResult, UpdateResult, Widget, WidgetRef};
 use crate::widget::event::{Event, EventContext};
@@ -60,8 +72,19 @@ pub struct PortalWidget {
     /// while `anchor` is `None`.
     pub anchor_policy: AnchorPolicy,
     /// Fixed `(x, y)` nudge applied before the policy. Inert
-    /// while `anchor` is `None`.
+    /// while neither anchor mode is set.
     pub anchor_offset: (f32, f32),
+    /// `anchor: "parent"`: seat the subtree against the laid-out
+    /// box of the nearest ancestor with a non-zero rect, resolved
+    /// in Pass A from the walk's own accumulated frame. Mutually
+    /// exclusive with a host anchor id.
+    pub anchor_parent: bool,
+    /// Per-entry press policy. `None` means the layer's default.
+    pub backdrop: Option<BackdropPolicy>,
+    /// `dismiss:` listeners — fired by the hit-test path when a
+    /// press lands outside this portal's content while its
+    /// effective policy is [`BackdropPolicy::Dismiss`].
+    pub dismiss_listeners: Vec<Box<dyn Fn(&Event)>>,
     /// Phase 2 lifecycle: the call-stack path captured at
     /// descriptor-build time. Children's hooks (state cells,
     /// effects, on_unmount) live under this path; flushing the
@@ -92,6 +115,9 @@ impl PortalWidget {
             anchor: None,
             anchor_policy: AnchorPolicy::default(),
             anchor_offset: (0.0, 0.0),
+            anchor_parent: false,
+            backdrop: None,
+            dismiss_listeners: Vec::new(),
             owned_path_prefix: String::new(),
         }
     }
@@ -100,6 +126,13 @@ impl PortalWidget {
     /// override if set, otherwise the layer's default.
     pub fn effective_cursor(&self) -> CursorPreference {
         self.cursor.unwrap_or_else(|| self.layer.default_cursor())
+    }
+
+    /// The press policy this entry is settled by: its own
+    /// `backdrop:` if declared, otherwise the layer's default.
+    pub fn effective_backdrop(&self) -> BackdropPolicy {
+        self.backdrop
+            .unwrap_or_else(|| self.layer.default_backdrop())
     }
 
     /// True if this portal is currently open and should defer
@@ -129,7 +162,25 @@ impl Widget for PortalWidget {
             anchor: self.anchor.clone(),
             anchor_policy: self.anchor_policy,
             anchor_offset: self.anchor_offset,
+            anchor_parent: self.anchor_parent,
+            backdrop: self.effective_backdrop(),
         })
+    }
+
+    fn fire_listeners(&self, event_name: &str, event: &Event) {
+        if event_name == "dismiss" {
+            for listener in &self.dismiss_listeners {
+                listener(event);
+            }
+        }
+    }
+
+    fn fire_event_listener(&self, event: &Event) -> bool {
+        if event.name == "dismiss" && !self.dismiss_listeners.is_empty() {
+            self.fire_listeners("dismiss", event);
+            return true;
+        }
+        false
     }
 
     fn owned_path_prefix(&self) -> &str {
@@ -154,7 +205,8 @@ impl Widget for PortalWidget {
         // way — so a change here is a repaint, never a relayout.
         let anchor_changed = self.anchor != new_portal.anchor
             || self.anchor_policy != new_portal.anchor_policy
-            || self.anchor_offset != new_portal.anchor_offset;
+            || self.anchor_offset != new_portal.anchor_offset
+            || self.anchor_parent != new_portal.anchor_parent;
         self.open = new_portal.open;
         self.focus_trap = new_portal.focus_trap;
         self.layer = new_portal.layer;
@@ -162,6 +214,14 @@ impl Widget for PortalWidget {
         self.anchor = new_portal.anchor.take();
         self.anchor_policy = new_portal.anchor_policy;
         self.anchor_offset = new_portal.anchor_offset;
+        self.anchor_parent = new_portal.anchor_parent;
+        self.backdrop = new_portal.backdrop;
+        // Closures can't be cloned; the freshly built portal carries the
+        // listeners this render produced, so swap them in.
+        std::mem::swap(
+            &mut self.dismiss_listeners,
+            &mut new_portal.dismiss_listeners,
+        );
         // owned_path_prefix is captured at descriptor-build time
         // and shouldn't change for the same path; copy anyway.
         self.owned_path_prefix = new_portal.owned_path_prefix.clone();
@@ -299,11 +359,17 @@ impl Widget for PortalWidget {
         self_ref: &WidgetRef,
     ) -> bool {
         // Click-routing is handled via the portal_layer hit-test
-        // path in `UI::call_event`; this handle_event covers
-        // non-click events delivered to focused widgets etc.
-        // We forward unconditionally — a closed portal whose
-        // children are still ghosting needs key events to flow
-        // (e.g. a focused text input mid-fade).
+        // path in `UI::call_event`, at the entry's *painted*
+        // position. A pointer event arriving here came down the
+        // base tree at the declaration site, which is where an
+        // anchored portal's content is not — forwarding it would
+        // make the content clickable where nothing draws.
+        if event.point.is_some() {
+            return false;
+        }
+        // Non-pointer events are forwarded unconditionally — a
+        // closed portal whose children are still ghosting needs
+        // key events to flow (e.g. a focused text input mid-fade).
         self.inner.handle_event(event, ctx, self_ref)
     }
 

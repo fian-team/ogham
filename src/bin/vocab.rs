@@ -44,7 +44,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         n => {
-            println!("\n{n} unrecognised key(s) and value(s) in {} file(s)", files.len());
+            println!(
+                "\n{n} unrecognised key(s) and value(s) in {} file(s)",
+                files.len()
+            );
             ExitCode::FAILURE
         }
     }

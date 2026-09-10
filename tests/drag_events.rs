@@ -122,7 +122,7 @@ fn dispatch_drag_start_fires_listener_on_origin() {
 
     let mut item_map = std::collections::HashMap::new();
     item_map.insert("kind".to_string(), Value::String("item".to_string()));
-    let payload = Value::Map(item_map);
+    let payload = Value::Map(item_map.into());
 
     let state = ui.dispatch_drag_start(origin.clone(), payload.clone(), Point::new(5.0, 5.0));
     assert!(

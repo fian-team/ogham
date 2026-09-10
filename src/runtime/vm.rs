@@ -653,7 +653,7 @@ impl VM {
                         arr.push(self.stack[i].clone());
                     }
                     self.stack.truncate(start);
-                    self.push(Value::Array(arr))?;
+                    self.push(Value::Array(arr.into()))?;
                 }
                 OpCode::Map(count) => {
                     let mut map = HashMap::new();
@@ -675,7 +675,7 @@ impl VM {
                         i += 2;
                     }
                     self.stack.truncate(start);
-                    self.push(Value::Map(map))?;
+                    self.push(Value::Map(map.into()))?;
                 }
                 OpCode::GetIndex => {
                     let index_val = self.pop()?;
@@ -807,7 +807,7 @@ impl VM {
                         }
                     };
                     let mut parts: Vec<String> = Vec::with_capacity(arr.len());
-                    for v in arr {
+                    for v in arr.iter().cloned() {
                         match v {
                             Value::String(s) => parts.push(s),
                             other => {
@@ -920,7 +920,7 @@ impl VM {
 
                 // -- For-loop expression helpers -----------------------------
                 OpCode::BeginForExpr => {
-                    self.push(Value::Array(Vec::new()))?;
+                    self.push(Value::Array(Vec::new().into()))?;
                 }
                 OpCode::AppendForExpr => {
                     let value = self.pop()?;
@@ -928,7 +928,9 @@ impl VM {
                     let mut found = false;
                     for i in (0..stack_top).rev() {
                         if let Value::Array(ref mut arr) = self.stack[i] {
-                            arr.push(value.clone());
+                            // The collector was pushed fresh by `BeginForExpr`
+                            // and nothing else holds it, so this never copies.
+                            Rc::make_mut(arr).push(value.clone());
                             found = true;
                             break;
                         }
@@ -947,10 +949,10 @@ impl VM {
                         if let Value::Array(ref mut arr) = self.stack[i] {
                             match value {
                                 Value::Array(ref spread_arr) => {
-                                    arr.extend(spread_arr.iter().cloned());
+                                    Rc::make_mut(arr).extend(spread_arr.iter().cloned());
                                 }
                                 _ => {
-                                    arr.push(value.clone());
+                                    Rc::make_mut(arr).push(value.clone());
                                 }
                             }
                             found = true;

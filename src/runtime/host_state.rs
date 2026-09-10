@@ -96,13 +96,13 @@ impl IntoHostValue for &String {
 
 impl IntoHostValue for Vec<Value> {
     fn into_host_value(self) -> Value {
-        Value::Array(self)
+        Value::Array(self.into())
     }
 }
 
 impl IntoHostValue for HashMap<String, Value> {
     fn into_host_value(self) -> Value {
-        Value::Map(self)
+        Value::Map(self.into())
     }
 }
 
@@ -114,7 +114,7 @@ impl IntoHostValue for &HashMap<String, String> {
             .iter()
             .map(|(k, v)| (k.clone(), Value::String(v.clone())))
             .collect();
-        Value::Map(map)
+        Value::Map(map.into())
     }
 }
 

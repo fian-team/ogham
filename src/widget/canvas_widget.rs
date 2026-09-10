@@ -236,7 +236,7 @@ impl CanvasWidget {
         Self {
             painter_name: painter_name.into(),
             painter: None,
-            props: Value::Map(HashMap::new()),
+            props: Value::Map(HashMap::new().into()),
             style: FlexStyle::default(),
             event_listeners: HashMap::new(),
             hovered: false,

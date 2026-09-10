@@ -125,8 +125,7 @@ host_state { title: string };
 let main = fn () { panel_titel(title) };
 main()
 "#;
-    let mut runtime =
-        Runtime::from_source(entry, Some(config)).expect("from_source parses");
+    let mut runtime = Runtime::from_source(entry, Some(config)).expect("from_source parses");
     let module = runtime.get_module().expect("entry module").clone();
     let err = runtime
         .execute_module(&module)

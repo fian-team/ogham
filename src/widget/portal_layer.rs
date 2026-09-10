@@ -35,7 +35,8 @@ pub enum PortalLayer {
     /// Default backdrop: [`BackdropPolicy::Block`].
     OverlayModal = 100,
     /// Dropdowns, context menus, sub-menus.
-    /// Default backdrop: [`BackdropPolicy::None`].
+    /// Default backdrop: [`BackdropPolicy::Dismiss`] — a press outside
+    /// the popover is swallowed and reported to it as `dismiss`.
     Popover = 200,
     /// Hover-spawned tooltips.
     /// Default backdrop: [`BackdropPolicy::None`].
@@ -82,14 +83,16 @@ impl PortalLayer {
         }
     }
 
-    /// Per-layer default backdrop policy. Per UL's
-    /// `UI_RUNTIME.md` §1: only `OverlayModal` defaults to
-    /// `Block`; everything else defaults to `None`. Userspace
-    /// can render its own backdrop into the layer for finer
-    /// control.
+    /// Per-layer default backdrop policy. `OverlayModal` defaults
+    /// to `Block`; `Popover` defaults to `Dismiss` (an outside
+    /// press closes it — the light-dismiss rule every dropdown
+    /// wants and used to compose by hand with a full-viewport
+    /// child); everything else defaults to `None`. A Portal
+    /// overrides its own with `backdrop:`.
     pub fn default_backdrop(self) -> BackdropPolicy {
         match self {
             Self::OverlayModal => BackdropPolicy::Block,
+            Self::Popover => BackdropPolicy::Dismiss,
             _ => BackdropPolicy::None,
         }
     }
@@ -254,6 +257,9 @@ impl AnchorPolicy {
 /// resolve against, and inventing one would park every anchored
 /// portal at the inset corner instead of leaving it where the
 /// host asked.
+///
+/// A point is a zero-height anchor: this is [`resolve_anchor_rect`]
+/// with `(point.x, point.y, 0, 0)`.
 pub fn resolve_anchor(
     point: (f32, f32),
     offset: (f32, f32),
@@ -261,7 +267,27 @@ pub fn resolve_anchor(
     size: (f32, f32),
     viewport: (f32, f32),
 ) -> (f32, f32) {
-    let (x, y) = (point.0 + offset.0, point.1 + offset.1);
+    resolve_anchor_rect((point.0, point.1, 0.0, 0.0), offset, policy, size, viewport)
+}
+
+/// Seat a box of `size` against an anchor *rect* `(x, y, w, h)` —
+/// the laid-out box of the widget a `Portal { anchor: "parent" }`
+/// was declared inside. Below the rect the box sits at the rect's
+/// bottom-left plus `offset`; flipped above it, its bottom edge
+/// clears the rect's *top* by `offset.y`. That is the one thing a
+/// point cannot say: a dropdown flipped above its face must not
+/// cover the face, and a face has a height.
+///
+/// The clamp rules are [`resolve_anchor`]'s exactly.
+pub fn resolve_anchor_rect(
+    anchor: (f32, f32, f32, f32),
+    offset: (f32, f32),
+    policy: AnchorPolicy,
+    size: (f32, f32),
+    viewport: (f32, f32),
+) -> (f32, f32) {
+    let (ax, ay, _aw, ah) = anchor;
+    let (x, y) = (ax + offset.0, ay + ah + offset.1);
     match policy {
         AnchorPolicy::Raw => (x, y),
         AnchorPolicy::Clamp => (
@@ -277,7 +303,7 @@ pub fn resolve_anchor(
             let overruns_bottom =
                 viewport.1 > 0.0 && y + size.1 > viewport.1 - ANCHOR_VIEWPORT_INSET;
             let seated_y = if overruns_bottom {
-                point.1 - offset.1 - size.1
+                ay - offset.1 - size.1
             } else {
                 y
             };
@@ -304,18 +330,66 @@ fn clamp_axis(v: f32, size: f32, viewport: f32) -> f32 {
         .max(ANCHOR_VIEWPORT_INSET)
 }
 
-/// Backdrop / pointer-event policy for a portal layer. Applied
-/// at layer boundaries during Pass B paint and hit-test.
+/// Backdrop / pointer-event policy for a portal entry. Each layer
+/// has a default ([`PortalLayer::default_backdrop`]) and a Portal
+/// may override its own with `backdrop:`. Applied at layer
+/// boundaries during Pass B paint and hit-test: a press no entry
+/// in a layer claims is settled by the strongest policy among that
+/// layer's entries, and only `None` lets it fall through to lower
+/// layers and the base tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackdropPolicy {
     /// No dimming, lower layers receive clicks normally.
     None,
+    /// An outside press is swallowed and reported to the entry as
+    /// a `dismiss` event. Nothing is painted. The light-dismiss
+    /// rule for popovers: the press closes the menu and does
+    /// nothing else — it never reaches the button under it.
+    Dismiss,
     /// Lower layers rendered, pointer events blocked from
     /// reaching them. The renderer paints a viewport-sized
     /// translucent backdrop before the first entry in a
     /// Block-policy layer; the hit-test gate suppresses
     /// fall-through to the base tree.
     Block,
+}
+
+impl BackdropPolicy {
+    /// All policies, in the order the diagnostic lists them.
+    pub const ALL: [BackdropPolicy; 3] = [Self::None, Self::Dismiss, Self::Block];
+
+    /// Parse a policy name as it appears in `.ogh` (`backdrop:`).
+    /// Returns `None` for unknown names — the builder surfaces the
+    /// diagnostic with the list of valid names, mirroring
+    /// [`PortalLayer::from_source_name`].
+    pub fn from_source_name(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::None),
+            "dismiss" => Some(Self::Dismiss),
+            "block" => Some(Self::Block),
+            _ => None,
+        }
+    }
+
+    /// String name as it appears in `.ogh` source.
+    pub fn source_name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Dismiss => "dismiss",
+            Self::Block => "block",
+        }
+    }
+
+    /// Comma-separated list of all policy names, for diagnostics.
+    pub fn all_names_for_diagnostic() -> &'static str {
+        "none, dismiss, block"
+    }
+
+    /// Whether a press this policy settles is consumed rather than
+    /// passed on to lower layers and the base tree.
+    pub fn consumes_outside_press(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 #[cfg(test)]
@@ -376,19 +450,72 @@ mod tests {
     }
 
     #[test]
-    fn only_overlay_modal_defaults_to_block() {
+    fn only_overlay_modal_defaults_to_block_and_only_popover_to_dismiss() {
         for layer in PortalLayer::ALL {
             let policy = layer.default_backdrop();
-            if layer == PortalLayer::OverlayModal {
-                assert_eq!(policy, BackdropPolicy::Block);
-            } else {
-                assert_eq!(
+            match layer {
+                PortalLayer::OverlayModal => assert_eq!(policy, BackdropPolicy::Block),
+                PortalLayer::Popover => assert_eq!(policy, BackdropPolicy::Dismiss),
+                _ => assert_eq!(
                     policy,
                     BackdropPolicy::None,
                     "{:?} should default to None",
                     layer
-                );
+                ),
             }
         }
+    }
+
+    #[test]
+    fn backdrop_policy_names_round_trip() {
+        for policy in BackdropPolicy::ALL {
+            let name = policy.source_name();
+            assert_eq!(BackdropPolicy::from_source_name(name), Some(policy));
+            assert!(BackdropPolicy::all_names_for_diagnostic().contains(name));
+        }
+        assert!(BackdropPolicy::from_source_name("Block").is_none());
+        assert!(BackdropPolicy::from_source_name("").is_none());
+    }
+
+    /// A rect anchor sits the box under the rect's bottom-left, and a
+    /// flip clears the rect's top — the height is what a point could
+    /// not carry.
+    #[test]
+    fn a_rect_anchor_seats_below_and_flips_above_the_whole_rect() {
+        let face = (100.0, 500.0, 80.0, 30.0);
+        let below = resolve_anchor_rect(
+            face,
+            (0.0, 4.0),
+            AnchorPolicy::Raw,
+            (200.0, 60.0),
+            (800.0, 600.0),
+        );
+        assert_eq!(below, (100.0, 534.0));
+        // 534 + 60 > 592: flip. The box's bottom clears the face's top by the offset.
+        let flipped = resolve_anchor_rect(
+            face,
+            (0.0, 4.0),
+            AnchorPolicy::Flip,
+            (200.0, 60.0),
+            (800.0, 600.0),
+        );
+        assert_eq!(flipped, (100.0, 500.0 - 4.0 - 60.0));
+        // A point is a zero-height rect.
+        assert_eq!(
+            resolve_anchor(
+                (100.0, 500.0),
+                (0.0, 4.0),
+                AnchorPolicy::Raw,
+                (200.0, 60.0),
+                (800.0, 600.0)
+            ),
+            resolve_anchor_rect(
+                (100.0, 500.0, 0.0, 0.0),
+                (0.0, 4.0),
+                AnchorPolicy::Raw,
+                (200.0, 60.0),
+                (800.0, 600.0)
+            )
+        );
     }
 }

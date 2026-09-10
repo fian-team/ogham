@@ -454,15 +454,15 @@ pub fn at_mount(field: &Field) -> Value {
                 fields
                     .iter()
                     .map(|f| (f.name.clone(), at_mount(f)))
-                    .collect(),
+                    .collect::<std::collections::HashMap<_, _>>().into(),
             ),
-            Kind::List(_) => Value::Array(Vec::new()),
-            Kind::Map(_) => Value::Map(std::collections::HashMap::new()),
+            Kind::List(_) => Value::Array(Vec::new().into()),
+            Kind::Map(_) => Value::Map(std::collections::HashMap::new().into()),
             Kind::Tuple(kinds) => Value::Array(
                 kinds
                     .iter()
                     .map(|kind| at_mount(&Field::new("", kind.clone())))
-                    .collect(),
+                    .collect::<Vec<_>>().into(),
             ),
             Kind::Union(_) | Kind::Cycle => Value::Void,
             _ => Value::Void,

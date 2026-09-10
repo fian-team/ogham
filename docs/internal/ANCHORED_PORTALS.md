@@ -1,7 +1,9 @@
 # Ogham — Anchored portal entries: chrome at host-computed coordinates
 
 > **Status: complete. M0–M5 shipped 2026-08-06; M6 (the regency tooltip
-> migration, §6) landed the same day in `regency` as `fb40a6a`.**
+> migration, §6) landed the same day in `regency` as `fb40a6a`. §7
+> (widget-anchored portals, `anchor: "parent"`) shipped 2026-09-07 and
+> withdraws §5's first bullet.**
 >
 > Two corrections §6 earned in the field: step 1 was wrong that a
 > `(String, String, String)` tuple rides the `editable`→`Value` visitor
@@ -438,3 +440,156 @@ Steps:
 **Expected deletion:** ~90 lines of Skia, one hand-rolled edge-clamp,
 one hand-rolled flip rule, and one more consumer of the second text
 stack.
+
+---
+
+## 7. Widget-anchored portals — `anchor: "parent"` (2026-09-07)
+
+§5 said "no anchoring to widgets: widget-relative anchoring needs a
+measured-position query and a second layout dependency, and no consumer
+has asked." A consumer asked — untold_lore's editing surface writes its
+mode and kind pickers inline and pushes its siblings down, because a
+popover could not be seated under its face without host coordinates —
+and the measured-position query turned out not to be needed.
+
+### 7.1 Contract
+
+```ogh
+Flex {                                  // the face
+  mouse_down: fn () { event("toggle"); },
+  children: [
+    Text { text: label },
+    Portal {
+      open: open,
+      layer: "popover",
+      anchor: "parent",                 // NEW: the face's laid-out box
+      anchor_policy: "flip",            // as before; default "clamp"
+      anchor_offset: { y: 4 },          // as before, applied first
+      children: [ Flex { /* the list */ } ],
+    },
+  ],
+}
+```
+
+- `anchor: "parent"` seats the entry against the **border box of the
+  nearest ancestor with a non-zero laid-out rect** — the widget the
+  Portal was declared inside, in every real composition. `"parent"` is
+  a reserved id: a host anchor cannot be called that.
+- Default placement is below the anchor's **bottom-left**, plus
+  `anchor_offset`. `clamp` and `raw` are unchanged. `flip` places the
+  box *above* the anchor when it would overrun the bottom inset, and
+  its bottom edge clears the anchor's **top** by `offset.y` — a point
+  anchor flipped around the point; a box anchor flips around the box.
+- The frame is margin-aware (`Widget::border_box`, which `FlexWidget`
+  overrides to subtract its margin), so a popover under a face with a
+  gutter sits under the face and not under the gutter.
+- `focus_trap` is **legal** with a parent anchor. The rejection for a
+  host anchor stands: its reason was a host that stops setting the
+  point and leaves a trap live over nothing, and a parent frame cannot
+  go missing.
+- No `anchor_edge`. The brief allowed one if necessary; offset + policy
+  covered the dropdown case and nothing asked for "to the right of".
+
+### 7.2 How it resolves
+
+No measured-position query, and no second layout dependency. The
+Pass-A walk (`SkiaEnv::draw_widget_recursive`) now carries one more
+value down the recursion beside `accumulated_translate`: the
+viewport-absolute box of the nearest ancestor with a size. Each widget
+computes its own box from its `border_box()` plus the accumulated
+translate and hands it to its children, or passes its parent's on when
+it has no size. When the walk reaches a `Portal { anchor: "parent" }`
+it is standing on exactly the frame the portal wants. Resolution is
+`portal_layer::resolve_anchor_rect(frame, offset, policy, size,
+viewport)`, of which the existing `resolve_anchor(point, …)` is now the
+zero-height special case — one function for both kinds, so the clamp
+arithmetic cannot drift between them.
+
+The size is the children's extent, as for a host anchor (§4.1 delta 1).
+The result lands in `PortalEntry::viewport_rect` as before, so
+hit-testing and occlusion follow — `tests/parent_anchored_portals.rs`
+runs the real walk and asserts the entry seats at the face's
+bottom-left, that a press inside the popover reaches its handler, and
+that the sibling it overlaps never sees that press.
+
+### 7.3 What the build corrected
+
+- **The layer hit-test passed the unshifted event to portal children.**
+  `UI::handle_click_event` computed the child-relative point for
+  `contains_point` and then called `handle_event` with the *viewport*
+  point, so a child anchored anywhere but the origin never matched its
+  own rect. The one existing press test through that path
+  (`an_anchored_card_consumes_a_press_at_its_drawn_position`) passed
+  because the root Flex under it consumed the press. The event is now
+  shifted by the entry's origin, as the drag and drop paths already did.
+- **Portal content was clickable at its declaration site.**
+  `PortalWidget::handle_event` forwarded pointer events into its inner
+  flex unconditionally, so the base-tree walk delivered presses to
+  portal children where they were *declared* — coincident with where
+  they paint for an unanchored root portal, and wrong for every
+  anchored one. Pointer events now stop at the Portal node in the base
+  tree; the layer walk is the only pointer path into portal content.
+  Keyboard forwarding is unchanged.
+- **Where the popover lays out.** A parent-anchored portal's children
+  lay out against the *face's* box, because the Portal's inner flex is
+  laid out where it is declared. A list with a fixed width is fine; a
+  `width: "grow"` list would be as wide as the face. Give the content
+  its own size, as the host-anchor rule already says.
+
+§5's first bullet is withdrawn. The other three stand.
+
+## 8. Press-anchored portals — `anchor: "press"` (2026-09-10)
+
+A context menu asked. untold_lore's editing surface moves an entry's
+Duplicate and Delete off the sidebar into a right-click menu on the
+row, and the menu has to open **where the right-click was** — not
+under the row's bottom-left (`"parent"`), and not at a point the host
+projects, because the host learns of the press through the same
+listener the document does, a frame late.
+
+### 8.1 Contract
+
+```ogh
+Flex {                                  // a row
+  contextmenu: fn () { event("row_menu", id); },
+  children: [ … ],
+}
+Portal {                                // declared once, anywhere
+  open: menu.open,                      // host state the listener flips
+  layer: "popover",
+  anchor: "press",                      // NEW: the last pointer press
+  anchor_policy: "flip",
+  dismiss: fn () { event("menu_close"); },
+  children: [ Flex { /* the items */ } ],
+}
+```
+
+- `"press"` is the second reserved word beside `"parent"`. The builder
+  maps it onto the runtime-owned anchor `PRESS_ANCHOR` (`"__press"`),
+  which `UI::call_event` sets from every `mouse_down` and
+  `contextmenu` that carries a point, and `UI::dispatch_contextmenu`
+  sets too, **before** any listener runs. So a portal opened by the
+  answer to a press — a host-state flip, a frame later — finds the
+  point waiting.
+- A *press*, never the pointer: a menu anchored to the live pointer
+  would follow the mouse. `mouse_move` does not touch it.
+- Absent until the first press, and then the portal is not painted
+  (§3.4's rule for a missing anchor). `focus_trap` is refused with it,
+  as with a host anchor: a context menu is a popover.
+- `clamp` and `flip` behave as for a host point (§7.1: a point anchor
+  flips around the point). A menu near the bottom edge flips above
+  the hand.
+
+### 8.2 The other half — dismissal
+
+A press-anchored popover on the `popover` layer dismisses on an
+outside press as before. What changed for it is the **right-click
+outside**: it dismisses and falls through (`LIFECYCLE_AND_PORTAL.md`,
+*The dismiss policy*), so a right-click on a second row while the
+first row's menu is up closes one and opens the other. Before this a
+`contextmenu` outside a dismissing entry was consumed silently — no
+`dismiss`, no re-target — which read as a menu that ignored every
+second right-click.
+
+`tests/press_anchored_portals.rs` covers both halves.
+

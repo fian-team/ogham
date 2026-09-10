@@ -98,6 +98,8 @@ Source (.ogh)
 | `src/widget/presence_widget.rs` | Lifecycle-sequencing container (waits for exits before mounting next generation); `stack: true` layers a generation's children instead of flowing them, which is how the outlet draws two visible views |
 | `src/widget/portal_widget.rs` | Portal — paints children into a per-frame layer with hit-test priority |
 | `src/widget/portal_layer.rs` | Named portal layers + per-layer backdrop / cursor policies |
+| `src/widget/slider_widget.rs` | Native horizontal `Slider` — a controlled value the pointer drags, on pointer capture (`docs/internal/SLIDER.md`) |
+| `src/widget/keys.rs` | Key chords: the names a `keydown:` map is keyed by, and the chord a host key event resolves to |
 | `src/widget/animation.rs` | Spring math + per-property animation state used by transitions |
 | `src/widget/event.rs` | Event types (`Event`, `EventContext`, `TickContext`, `DragState`) |
 | `src/skia.rs` | Skia rendering backend (implements `Surface`) |
@@ -211,7 +213,7 @@ let add = fn (a: int, b: int): int {
 
 ### Widgets
 
-Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`, `Portal`, `Canvas`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`, `Portal`) wrap or specialize it.
+Built-in widget types: `Flex`, `Text`, `TextInput`, `Svg`, `Image`, `Grid`, `Presence`, `Portal`, `Canvas`, `Slider`. `Flex` is the workhorse — it owns the layout/style/animation/lifecycle machinery; the other containers (`Grid`, `Presence`, `Portal`) wrap or specialize it.
 
 Sizing: `width`/`height` take `"grow"`, `"shrink"`, a number (fixed px), or a percent. One pinned interaction (`flex_widget.rs` tests): while a `shrink` parent measures itself along an axis, `grow` descendants on that axis contribute their *content* size — a shrink parent has no leftover space to grow into — and are stretched to the parent's resolved size during the real layout pass. So a full-height accent bar (`height: "grow"`, no children) inside a `height: "shrink"` row contributes nothing to the row's height and then spans it exactly.
 
@@ -257,6 +259,57 @@ deepest hit fires `mouse_enter` when first entered and `mouse_leave`
 when no longer hovered. `mouse_up` fires on the same hit-test path
 as `mouse_down`. `TextInput` exposes `mouse_down` and `mouse_up`;
 `Image` exposes `mouse_down`.
+
+#### Key chords
+
+`Flex` takes a `keydown:` map of chord → handler. Map keys are
+identifiers, so modifiers join with `_`: `ctrl_k`, `shift_f2`,
+`escape`, `arrowdown`, `digit1`. A chord with ctrl / alt / meta is
+offered to the listeners on the focus chain first (innermost wins);
+a bare key goes to the tree first and to the listeners only if the
+tree declined it and no focused field would type it. Both hosts take
+Escape (and untold_lore's library takes Ctrl+Z/Y/S) before any tree.
+Details and the key-name list: `docs/internal/EVENTS.md` → *Key
+chords*.
+
+```ogh
+Flex {
+  keydown: { ctrl_k: fn () { event("palette"); }, escape: fn () { event("close"); } },
+  children: [ … ],
+}
+```
+
+#### Pointer capture
+
+A widget that consumes `mouse_down` may call
+`ctx.request_capture(self_ref, point)` and then receives every
+pointer event until the release, wherever the cursor goes.
+`Slider` and `TextInput` (drag-select) use it; `UI::release_capture`
+is for a host whose window lost the pointer. `docs/internal/EVENTS.md`
+→ *Pointer capture*.
+
+#### `Slider`
+
+```ogh
+Slider {
+  value: volume, min: 0, max: 100, step: 5,           // value is controlled
+  on_change: fn (v: float) { event("set_volume", v); },
+  on_commit: fn (v: float) { event("save_volume", v); },
+  style: { width: "grow", height: 16 },
+  track_color: track, fill_color: accent, thumb_color: ink,
+}
+```
+
+Horizontal; the document supplies `value` every render and the widget
+reports what the pointer asked for. `docs/internal/SLIDER.md`.
+
+#### `TextInput` listeners
+
+`on_change(value)` per edit, `on_submit(value)` on Enter,
+`on_blur(value)` when focus leaves by any route (a press elsewhere,
+Tab, Escape, a focus trap's restoration). `placeholder: "…"` draws in
+the text style at half alpha while empty and unfocused; `align` in
+the style is honoured, caret included.
 
 #### Drag events (Phase 3)
 
@@ -570,7 +623,7 @@ Full grammar and rationale: `docs/internal/LANGUAGE.md`.
 
 ### Portal widget (Phase 2 + 2.5)
 
-`Portal { open, focus_trap, layer, cursor, anchor, children }` lifts its
+`Portal { open, focus_trap, layer, cursor, anchor, backdrop, dismiss, children }` lifts its
 children's paint and hit-test out of the parent's clip / order
 into a named per-frame **layer**. Layout-wise the Portal node
 contributes nothing to the parent's flow — children paint into
@@ -594,7 +647,7 @@ Portal {
 |---|---:|---|---|---|
 | `"main"` | 0 | None | Inherit | Reserved (base tree). |
 | `"overlay-modal"` | 100 | Block | Free | Modal dialogs, escape menu. |
-| `"popover"` | 200 | None | Free | Dropdown menus, comboboxes. |
+| `"popover"` | 200 | Dismiss | Free | Dropdown menus, comboboxes. |
 | `"tooltip"` | 300 | None | Inherit | Hover tooltips. |
 | `"toast"` | 400 | None | Inherit | Transient notifications. |
 | `"cursor-attached"` | 500 | None | Inherit | Drag previews; positioned at cursor. |
@@ -603,7 +656,20 @@ Portal {
 both paints a translucent runtime backdrop AND suppresses click
 fall-through to lower layers / the base tree. Authors can layer
 their own styled backdrop on top of (or replacing) the runtime
-backdrop.
+backdrop. A `Dismiss`-policy layer (the popover default) swallows a
+press outside its entries and fires each entry's `dismiss:` listener
+— light dismiss with no catch child. A Portal overrides its layer's
+default with `backdrop: "none" | "dismiss" | "block"`.
+
+```ogh
+Portal {
+  open: menu_open,
+  layer: "popover",
+  anchor: "parent",                            // under the widget it is declared in
+  dismiss: fn () { event("close_menu"); },     // a press outside it
+  children: [ menu_body() ],
+}
+```
 
 **Focus trap.** When `focus_trap: true`, focus moves outside
 the portal's subtree are rejected; `Ogham::has_input_blocking_portal()`
@@ -614,16 +680,20 @@ wants a visible system cursor; `cursor: "inherit"` lets the
 host decide. `Ogham::wants_cursor_free()` aggregates across
 open portals + the focused widget.
 
-**Composition.** Backdrop styling, dismiss-on-outside-click,
-and Escape-to-dismiss are *not* Portal properties — they're
-consumer composition with regular widgets. See
+**Composition.** Backdrop styling and Escape-to-dismiss are *not*
+Portal properties — they're consumer composition with regular
+widgets (Escape: a `keydown: { escape: … }` listener, reached only
+when the host declines the key). Dismiss-on-outside-click *was*
+composition and is now the `dismiss` policy above. See
 `examples/portals/components.ogh` for `Modal`, `Tooltip`, and
 `Dropdown` reference functions.
 
 ### Anchored portals
 
 A Portal that names an `anchor:` takes its viewport origin from a
-point **your host sets**, instead of from the slot it was declared
+point **your host sets** — or, with `anchor: "parent"`, from the
+laid-out box of the widget it is declared inside, with no host
+coordinates at all (below) — instead of from the slot it was declared
 in. It's the seam for chrome that has to follow something the host
 knows about and Ogham doesn't: the pointer, an entity's projected
 screen position, the field a popover belongs to.
@@ -688,7 +758,7 @@ id is distinguishable from a host with nothing to point at.
 | Unknown `anchor_policy` | `BridgeError::InvalidPropertyType` listing the three valid names — not a silent fall back to the default. |
 | Measured size | The **union of the portal's children's** laid-out rects — not the Portal's own rect, which is `grow`/`grow`. Give an anchored Portal *one* content child. A full-viewport backdrop sibling (the `Modal` composition pattern) makes the measured box the viewport, and `clamp` then pins it to the corner. |
 | Collision | Policies resolve against the *viewport* only. Two anchored tooltips overlapping is the host's problem. |
-| Anchoring to a widget | Not supported. `anchor` takes a host-supplied point, never "the widget with key `foo`". |
+| Anchoring to a widget | `anchor: "parent"` seats the entry against the border box of the nearest ancestor with a non-zero rect — the widget the Portal is declared inside. Below its bottom-left by default; `flip` puts it above the box's top. `focus_trap` is allowed with it. There is no "the widget with key `foo`". `docs/internal/ANCHORED_PORTALS.md` §7. |
 
 ### Host-painted `Canvas`
 

@@ -33,6 +33,12 @@ use ogham::Ogham;
 // ---------------------------------------------------------------------
 
 fn paths(source: &str) -> Vec<String> {
+    // A source that does not parse scans clean, so a fixture has to be
+    // shown to parse or a "nothing reported" assertion proves nothing.
+    let tokens = ogham::scanner::Scanner::new(source.to_string()).scan();
+    ogham::parser::Parser::new(tokens)
+        .parse()
+        .unwrap_or_else(|e| panic!("fixture does not parse: {e:?}"));
     scan_source("fixture.ogh", source)
         .into_iter()
         .map(|v| v.path)
@@ -153,8 +159,8 @@ fn the_whole_vocabulary_passes_clean() {
             },
             TextInput {
               value: "",
-              on_change: fn (t) { t },
-              on_submit: fn (t) { t },
+              on_change: fn (t: string) { t },
+              on_submit: fn (t: string) { t },
               style: { padding: 4, size: 12 },
               focus_style: { border: 2 },
             },
@@ -235,8 +241,8 @@ fn strictness_changes_nothing_about_the_tree() {
       };"#;
 
     let loose = Ogham::from_source(SRC, RuntimeConfig::new()).expect("loose");
-    let strict = Ogham::from_source(SRC, RuntimeConfig::new().with_strict_vocabulary())
-        .expect("strict");
+    let strict =
+        Ogham::from_source(SRC, RuntimeConfig::new().with_strict_vocabulary()).expect("strict");
 
     let describe = |o: &Ogham| {
         let root = o.get_ui().root.clone();

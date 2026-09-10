@@ -80,6 +80,10 @@ coordination with the UI root:
   with `width: Shrink` ingesting a character). Most handlers
   just fire host events; the resulting state flows back through
   reconcile, so a same-frame layout pass is unnecessary.
+- `captured_widget: Option<WidgetRef>` / `request_capture(widget,
+  local_point)` / `release_capture()` (2026-09-07) — pointer
+  capture, below. `is_captured(self_ref)` is how a widget learns
+  the point it was handed may lie outside its rect.
 
 ### `TickContext` (per-frame, not per-event)
 
@@ -149,6 +153,33 @@ events:
    the event name. If it fires, set `ctx.listener_fired = true`.
 6. Return `self.block_interactions || child_consumed || my_fired`.
 
+#### Pointer capture (2026-09-07)
+
+A widget that consumes `mouse_down` may ask to own the pointer until
+the release: `ctx.request_capture(self_ref, point)`, where `point` is
+the event point *as the widget received it* (its parent-relative
+space). `UI` stores the widget and `viewport − local`, and from then
+until `mouse_up` every `mouse_down` / `mouse_move` / `mouse_up` goes
+straight to that widget — shifted by the stored offset, with
+`ctx.captured_widget` set — and nowhere else: no hover walk, no
+hit-test, no focus clearing. The release is delivered and then ends
+the capture; a widget may end it early with `ctx.release_capture()`;
+a host whose window lost the pointer calls `UI::release_capture()`.
+`call_event` reports every captured event consumed, because the
+gesture is the chrome's. A captured widget that reconciles out of
+the tree drops the capture.
+
+The offset is taken once, at the press, rather than re-derived by
+walking ancestors each move. That is exact for as long as nothing
+between the widget and the viewport scrolls or re-lays out, which is
+the length of a drag; it is also why capture needed no
+measured-position query. `Slider` and `TextInput` (drag-select) are
+the two takers. Requests on any event but `mouse_down` are dropped.
+
+Capture is the UI's; the host's drag state machine
+(`dispatch_drag_*`) is separate and unchanged — a slider carries no
+`drag_payload`, so the host never starts a drag over one.
+
 #### Non-pointer events (no point)
 
 `UI::call_event` for these uses `EventContext::with_focused(...)`
@@ -162,16 +193,120 @@ so widgets can self-check focus, and dispatches to the root.
 - If no child handled, fires the widget's own listener if one
   exists.
 
+#### Key chords — `keydown:` on `Flex` (2026-09-07)
+
+```ogh
+Flex {
+  keydown: {
+    ctrl_k:     fn () { event("open_palette"); },
+    escape:     fn () { event("close"); },
+    arrowdown:  fn () { event("next"); },
+    shift_f2:   fn () { event("rename"); },
+  },
+  children: [ … ],
+}
+```
+
+A map of chord → handler. Map keys are identifiers, so the joiner is
+`_`; `+` is accepted where a string can be written. Modifiers are
+`ctrl`, `alt`, `shift`, `meta` (aliases `control`, `cmd`, `super`)
+in any order; the key is one of `escape`, `tab`, `enter`, `space`,
+`backspace`, `delete`, `home`, `end`, `arrowup` / `arrowdown` /
+`arrowleft` / `arrowright`, `a`–`z`, `digit0`–`digit9` (a bare digit
+where a string can be written), `f1`–`f12`, with the aliases `esc`,
+`return`, `del`, `up` / `down` / `left` / `right`. Chords are
+normalised (`widget::keys::normalize`) so `shift_ctrl_K` and
+`ctrl+shift+k` are one listener; a spelling that names no key is a
+`BridgeError` at build time, not a listener that never fires.
+
+**Dispatch, in `UI::call_event`, for a `keydown`:**
+
+1. The host's intercepts have already run (below).
+2. While a widget is focused, Tab moves focus and Escape blurs, at
+   the UI level; neither reaches a listener.
+3. A chord with `ctrl` / `alt` / `meta` is a **command**: the
+   listeners are asked first, walking the **focus chain** — the
+   focused widget and each ancestor up to the root, innermost
+   first — and the first match consumes the key. With nothing
+   focused the chain is the root alone. Only if no listener matches
+   does the tree see it (so Ctrl+A still reaches a field's
+   select-all).
+4. Everything else goes to the **tree first**. What the tree declines
+   is then offered to the listeners on the same chain — except a key
+   a focused field would *type* (a bare letter, digit or space while
+   `consumes_character_key()`), which is the field's whether or not
+   it reported the `keydown` handled: the character arrives on the
+   `keypress` that follows.
+
+A key code no name covers (a modifier alone, an unmapped named key a
+host sends as `0`) resolves to no chord and the listeners are never
+consulted. The hosts map Backspace, Tab, Enter, Escape, Space, End,
+Home, the arrows, Delete and characters (`lorekeeper/app/src/lib.rs`);
+`f1`–`f12` are named here for the JS codes 112–123 but neither host
+sends them yet.
+
+**Ordering against the hosts.** Both hosts take some keys before any
+tree is asked, and a listener for those never fires while the host
+claims them:
+
+- `lorekeeper/driver/src/binding.rs` `intercept_event` offers
+  **Escape** to the route path first and only lets it through when
+  the path leaves it unclaimed.
+- untold_lore's `ul-editor/src/client.rs` `library_undo_shortcut`
+  takes **Escape, Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Ctrl+S** on the
+  library screen, ahead of `call_event` — deliberately, so a focused
+  field cannot swallow undo.
+
+Neither host was changed. A document listener for one of those
+chords is reached only when the host declines the key.
+
 #### Hover propagation
 
-`update_hover_recursive` walks the tree once per `mouse_move`,
-setting `hovered = true` on every widget on the path from root
-to the deepest hit, and `hovered = false` on every other widget.
-Fires `mouse_enter` / `mouse_leave` listeners for transitions.
-The point is shifted into child coordinate space using the same
+`UI::update_hover` runs once per `mouse_move`, setting
+`hovered = true` on every widget on the path from a root to the
+deepest hit, and `hovered = false` on every other widget. Fires
+`mouse_enter` / `mouse_leave` listeners for transitions. The
+point is shifted into child coordinate space using the same
 origin-and-scroll rule as click dispatch. An exiting subtree is
 hover-suppressed as a unit (the walk still recurses so cleared
 descendants get their `mouse_leave`).
+
+**Hover resolves through the portal layers the way a press does**
+(2026-09-07; before this the walk covered the base tree only, so
+hover slipped through a dropdown's dismiss backdrop and a modal's
+block backdrop to the widgets under them, and anchored popover
+content hovered at its declaration site instead of where it
+paints). The rule, mirroring `UI::handle_click_event`:
+
+1. Portal layers are walked high→low, within a layer in reverse
+   mount order. An entry *claims* the point when a direct child of
+   its content contains it (the point shifted by the entry's
+   `viewport_rect`; ghosts invisible). The first claimant's content
+   is hovered and **everything else** — later entries, lower layers,
+   the base tree — is cleared, with `mouse_leave` where needed.
+2. A layer nothing claims is settled by its **open** entries'
+   effective backdrop policies: `block` or `dismiss` stops hover
+   there, so every lower layer and the base tree reads as
+   un-hovered; `none` falls through. (A closing portal's ghost entry
+   neither claims nor obstructs.)
+3. The base tree is walked last. It **stops at a Portal node that
+   has a layer entry this frame** — that content was resolved in
+   step 1 at its painted position — and clears the content of a
+   Portal node without one (closed, or an anchored portal with no
+   anchor).
+4. The `cursor-attached` layer never claims: its content is pinned
+   under the pointer and would hover itself on every move.
+5. **Pointer capture skips the walk entirely.** The hover chain stays
+   where the press left it until the release: the captured widget
+   keeps its hover, nothing else lights up, and no `mouse_leave`
+   fires mid-gesture.
+
+`UI::hovered_blocks` answers `true` while step 2 stopped the walk,
+and `UI::blocks_point` obstructs on the same gate (an open `block`
+or `dismiss` entry), so a host gating world hover on either sees
+the same thing a press would. `UI::hovered_cursor` reads the entry
+contents ahead of the base tree. `tests/portal_hover.rs` pins all
+of it.
 
 ### Tenets
 
@@ -320,7 +455,12 @@ descendants get their `mouse_leave`).
 | `keydown`      | Key pressed (focused widget)                 | `keyboard_data`               |
 | `keypress`     | Character typed (focused widget)             | `keyboard_data`               |
 | `keyup`        | Key released (focused widget)                | `keyboard_data`               |
-| `on_change`    | TextInput value changed                      | `value`                       |
+| `on_change`    | TextInput value changed; Slider value changed while held (`payload`) | `value` / `payload` |
+| `on_submit`    | TextInput: Enter                             | `value`                       |
+| `on_blur`      | TextInput lost focus, by any route           | `value`                       |
+| `on_commit`    | Slider: the release, or a key step           | `payload` (`Value::Float`)    |
+| `dismiss`      | Portal: a press outside it under the `dismiss` policy | `point`              |
+| `keydown` (chord map on Flex) | A key the focus chain's listeners match, see *Key chords* | `keyboard_data` |
 | `drag_start`   | Cursor crossed dead-zone past `mouse_down` on a widget with `drag_payload:` | `point`, `payload` |
 | `drag_move`    | `mouse_move` while a drag is in flight (deepest widget at cursor) | `point`, `payload` |
 | `drag_end`     | `mouse_up` while a drag is in flight (resolves to the deepest accepting drop target, or originator) | `point`, `payload` |
@@ -381,6 +521,25 @@ behaviour).
 at the cursor and stops there — *no automatic bubble*. Wrap if
 ancestor handling is needed. Use this instead of overloading
 `mouse_down` so left-click and right-click route independently.
+
+A host that hands the same `contextmenu`-named event to
+`UI::call_event` instead (lorekeeper's `app` does) gets the
+ordinary click walk: portal layers first, then the base tree
+child-to-parent, the deepest widget with a `contextmenu:` listener
+taking it. Two things are true of a right-click on either path
+(2026-09-10, for the context menu):
+
+- **The press is recorded** under `PRESS_ANCHOR` before anything
+  answers it — every `mouse_down` too — so a `Portal { anchor:
+  "press" }` the answer opens seats itself where the hand was
+  (`ANCHORED_PORTALS.md` §8).
+- **Outside a dismissing popover it dismisses and falls through.**
+  A left press outside is swallowed and reported; a right-click
+  outside is reported and then reaches what is under it, so a
+  right-click on another row while a menu is up closes the menu
+  and opens the row's in one gesture. The document sees `dismiss`
+  then `contextmenu`, in that order (`LIFECYCLE_AND_PORTAL.md`,
+  *The dismiss policy*).
 
 ### Tenets — names
 
@@ -573,12 +732,11 @@ the call site decides whether to track the result.
   of `transform` (paint-only). Authors who animate scale or
   rotation should be aware. The fix involves walking the
   effects stack at hit-test time.
-- **There's no "captured" phase.** Pointer events go straight
-  from `UI` to root; ancestors run their handlers *after*
-  descendants. There's no way to intercept a click before it
-  reaches a descendant (though `block_interactions` returns
-  `true` after children, which is "if no descendant caught it,
-  I caught it").
+- **There's no "captured" phase** in the DOM sense. Pointer
+  events go straight from `UI` to root; ancestors run their
+  handlers *after* descendants. (Pointer *capture* — a widget
+  owning the pointer until release — exists since 2026-09-07 and
+  is a different thing; see above.)
 - **Custom events are name-keyed strings.** No type checking on
   the args. `mouse_down` and `key_down` and `please_save_now`
   go through the same dispatch; a typo is silently a no-op.

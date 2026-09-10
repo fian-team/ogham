@@ -244,8 +244,8 @@ fn empty_value_of(ty: &schema::TypeRef, schema: &schema::ModuleSchema, depth: u3
         TypeRef::Primitive(PrimType::Float) => Value::Float(0.0),
         TypeRef::Primitive(PrimType::Bool) => Value::Boolean(false),
         TypeRef::Primitive(PrimType::String) => Value::String(String::new()),
-        TypeRef::Array(_) => Value::Array(Vec::new()),
-        TypeRef::Map(_, _) => Value::Map(HashMap::new()),
+        TypeRef::Array(_) => Value::Array(Vec::new().into()),
+        TypeRef::Map(_, _) => Value::Map(HashMap::new().into()),
         TypeRef::Record(name) => match schema.lookup_record(name) {
             Some(record) => Value::Map(
                 record
@@ -258,7 +258,8 @@ fn empty_value_of(ty: &schema::TypeRef, schema: &schema::ModuleSchema, depth: u3
                         };
                         (field.clone(), value)
                     })
-                    .collect(),
+                    .collect::<std::collections::HashMap<_, _>>()
+                    .into(),
             ),
             None => Value::Void,
         },
@@ -416,10 +417,7 @@ impl Runtime {
     /// values, and neither screen's view can name the other. Diffs and
     /// rerender-on-change work exactly as for root-scope state.
     pub fn set_screen_state(&mut self, screen: &str, name: &str, value: impl IntoHostValue) {
-        self.set_host_state_value(
-            &compiler::scoped_key(screen, name),
-            value.into_host_value(),
-        );
+        self.set_host_state_value(&compiler::scoped_key(screen, name), value.into_host_value());
     }
 
     /// Set the active route path: screen ids, outermost first.
@@ -435,7 +433,8 @@ impl Runtime {
         let value = Value::Array(
             path.iter()
                 .map(|s| Value::String(s.as_ref().to_string()))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
         );
         self.set_host_state_value(compiler::ROUTE_PATH_KEY, value);
         // The same information as one string, because `Presence`
@@ -579,7 +578,7 @@ impl Runtime {
         // and an absent path is an empty path, not a failure.
         self.host_state
             .entry(compiler::ROUTE_PATH_KEY.to_string())
-            .or_insert_with(|| Value::Array(Vec::new()));
+            .or_insert_with(|| Value::Array(Vec::new().into()));
         self.host_state
             .entry(compiler::ROUTE_KEY.to_string())
             .or_insert_with(|| Value::String(String::new()));

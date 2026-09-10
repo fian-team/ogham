@@ -21,6 +21,11 @@ use crate::widget::{LayoutContext, UpdateResult, WidgetRef};
 pub struct FlexWidget {
     pub children: Vec<WidgetRef>,
     pub event_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
+    /// `keydown:` listeners keyed by normalised chord (`ctrl+k`,
+    /// `escape` — see [`super::keys`]). Offered by `UI` along the focus
+    /// chain, innermost first; not part of `event_listeners` because a
+    /// chord is a filter on a `keydown`, not an event name of its own.
+    pub key_listeners: HashMap<String, Vec<Box<dyn Fn(&Event)>>>,
     pub style: FlexStyle,
     /// Author-declared base style. Animations treat this as their target
     /// when the widget is not hovered. Distinct from `style`, which may
@@ -132,6 +137,7 @@ impl FlexWidget {
         Self {
             children: Vec::new(),
             event_listeners: HashMap::new(),
+            key_listeners: HashMap::new(),
             style: FlexStyle::default(),
             declared_style: FlexStyle::default(),
             hover_style: None,
@@ -163,6 +169,7 @@ impl FlexWidget {
         Self {
             children: Vec::new(),
             event_listeners: HashMap::new(),
+            key_listeners: HashMap::new(),
             style: style.clone(),
             declared_style: style,
             hover_style: None,
@@ -625,6 +632,32 @@ impl Widget for FlexWidget {
         }
     }
 
+    fn fire_key_chord(&self, chord: &str, event: &Event) -> bool {
+        match self.key_listeners.get(chord) {
+            Some(listeners) if !listeners.is_empty() => {
+                for listener in listeners {
+                    listener(event);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn border_box(&self) -> Option<Rect> {
+        // Less the margin, so a popover anchored to a face with
+        // `margin` sits under the face and not under its gutter — the
+        // same box `contains_point` answers to.
+        let layout = self.layout.as_ref()?;
+        let m = &self.style.margin;
+        Some(Rect::new(
+            layout.x + m.get_left(),
+            layout.y + m.get_top(),
+            layout.width - m.get_left() - m.get_right(),
+            layout.height - m.get_top() - m.get_bottom(),
+        ))
+    }
+
     fn drag_preview(&self) -> Option<WidgetRef> {
         self.drag_preview.clone()
     }
@@ -680,6 +713,7 @@ impl Widget for FlexWidget {
                 &mut self.event_listeners,
                 &mut new_flex_widget.event_listeners,
             );
+            std::mem::swap(&mut self.key_listeners, &mut new_flex_widget.key_listeners);
             // Phase 3 M1: drag fields. drag_payload + dead_zone
             // are plain Values; the predicate is a Box<dyn Fn>
             // that we swap rather than clone.

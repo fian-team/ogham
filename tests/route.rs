@@ -410,7 +410,11 @@ fn an_ordinary_child_hides_its_parents_view_but_not_its_draw() {
         ..Cx::default()
     };
     r.resolve(&mut cx);
-    assert_eq!(r.drawing(), ["world", "journal"], "the 3D world keeps drawing");
+    assert_eq!(
+        r.drawing(),
+        ["world", "journal"],
+        "the 3D world keeps drawing"
+    );
     assert_eq!(r.visible_views(), ["journal"], "the HUD does not");
 }
 
@@ -469,7 +473,10 @@ fn input_goes_to_the_deepest_route_that_claims_it() {
     let _ = drained(&log);
 
     let mut out = Outbox::new();
-    assert_eq!(r.event(&cx, &mut out, &RouteEvent::Input(&ev("mouse_down"))), Handled::Yes);
+    assert_eq!(
+        r.event(&cx, &mut out, &RouteEvent::Input(&ev("mouse_down"))),
+        Handled::Yes
+    );
     assert_eq!(
         drained(&log),
         ["event:world"],
@@ -490,7 +497,10 @@ fn an_unclaimed_event_falls_all_the_way_through() {
     let _ = drained(&log);
 
     let mut out = Outbox::new();
-    assert_eq!(r.event(&cx, &mut out, &RouteEvent::Input(&ev("mouse_down"))), Handled::No);
+    assert_eq!(
+        r.event(&cx, &mut out, &RouteEvent::Input(&ev("mouse_down"))),
+        Handled::No
+    );
     assert_eq!(
         drained(&log),
         ["event:journal", "event:world"],
@@ -552,9 +562,7 @@ fn a_route_with_unsaved_work_prompts_instead_of_popping() {
     table.at_root("map-edit");
     let routes: Vec<(RouteId, Box<dyn Route<Cx, Act>>)> = vec![(
         "map-edit",
-        Fake::new("map-edit", &log)
-            .escaping(Escape::Prompt)
-            .boxed(),
+        Fake::new("map-edit", &log).escaping(Escape::Prompt).boxed(),
     )];
     let mut r = Router::new(table, routes, |_: &Cx| "map-edit").expect("well formed");
     let mut cx = Cx::default();
@@ -614,7 +622,13 @@ fn a_registered_id_with_no_handler_fails_at_startup() {
         .err()
         .expect("a route with no handler must not build");
     assert!(
-        matches!(err, TableError::UnknownParent { child: "settings", .. }),
+        matches!(
+            err,
+            TableError::UnknownParent {
+                child: "settings",
+                ..
+            }
+        ),
         "unexpected error: {err}"
     );
 }
@@ -691,7 +705,10 @@ impl Route<Cx, Act> for Claimer {
 
 fn claiming_game(log: &Log, tidy: bool) -> Router<Cx, Act> {
     let mut table = RouteTable::new();
-    table.at_root("title").at_root("world").under("pause", "world");
+    table
+        .at_root("title")
+        .at_root("world")
+        .under("pause", "world");
     let routes: Vec<(RouteId, Box<dyn Route<Cx, Act>>)> = vec![
         ("title", Fake::new("title", log).boxed()),
         ("world", Box::new(Claimer { claim: None, tidy })),
@@ -794,7 +811,9 @@ fn a_screen_and_a_route_id_that_disagree_are_named() {
            let main = fn () { outlet() };"#,
         &[],
     );
-    let report = c.validate(&["title", "settings"]).expect("the drift is reported");
+    let report = c
+        .validate(&["title", "settings"])
+        .expect("the drift is reported");
     assert!(report.contains("credits"), "{report}");
     assert!(report.contains("settings"), "{report}");
 }
