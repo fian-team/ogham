@@ -817,6 +817,22 @@ impl RenderContext for SkiaEnv {
             self.build_corners_path(sx, sy, sw, sh, corners)
         };
 
+        // The clip is the border box; the stroke is the same silhouette
+        // shifted. With no shift they are the same path and the glow is an
+        // even ring, which is what every caller before offsets existed got.
+        // Shifted, the far side of the ring leaves the clip and what is left
+        // is a rim on the side the light comes from.
+        let stroked = match (glow.offset_x, glow.offset_y) {
+            (0.0, 0.0) => path.clone(),
+            (ox, oy) => path.with_offset((self.scale_dim(ox), self.scale_dim(oy))),
+        };
+        // A rim with no blur and no spread still wants a hairline, or an
+        // offset alone would draw a zero-width stroke and nothing at all.
+        let stroke_width = match (s_blur + s_spread) * 2.0 {
+            w if w > 0.0 => w,
+            _ => self.scale_dim(1.0),
+        };
+
         let canvas = self.surface.canvas();
         canvas.save();
         canvas.clip_path(&path, skia_safe::ClipOp::Intersect, true);
@@ -824,7 +840,7 @@ impl RenderContext for SkiaEnv {
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
         paint.set_style(PaintStyle::Stroke);
-        paint.set_stroke_width((s_blur + s_spread) * 2.0);
+        paint.set_stroke_width(stroke_width);
         paint.set_color(Color::from_argb(
             glow.color.a,
             glow.color.r,
@@ -840,7 +856,7 @@ impl RenderContext for SkiaEnv {
                 paint.set_mask_filter(mf);
             }
         }
-        canvas.draw_path(&path, &paint);
+        canvas.draw_path(&stroked, &paint);
         canvas.restore();
     }
 

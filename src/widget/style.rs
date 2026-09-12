@@ -1139,11 +1139,30 @@ pub struct InnerGlow {
     pub color: Color,
     pub blur: f32,
     pub spread: f32,
+    /// How far the glow's silhouette is shifted before it is clipped to the
+    /// border box — CSS `box-shadow: inset <x> <y> …`. Zero is a ring, even
+    /// all the way round; a positive `offset_y` pushes the ring down so only
+    /// its top arc stays inside, which is the **rim** a top-lit surface
+    /// catches on its upper edge and nowhere else.
+    ///
+    /// It exists because a ring cannot say where the light is. A panel lit
+    /// from one direction has a bright top and a shaded bottom, and with no
+    /// offset the only way to draw that was a child widget standing in for
+    /// the edge — which does not follow a corner radius.
+    pub offset_x: f32,
+    pub offset_y: f32,
 }
 
 impl InnerGlow {
+    /// Whether this glow draws anything. A shifted glow with no blur still
+    /// draws — the spread alone gives it a width — so an offset counts as
+    /// geometry the same way blur does.
     pub fn is_active(&self) -> bool {
-        self.blur > 0.0 && self.color.a > 0
+        self.color.a > 0
+            && (self.blur > 0.0
+                || self.spread > 0.0
+                || self.offset_x != 0.0
+                || self.offset_y != 0.0)
     }
 }
 

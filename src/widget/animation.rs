@@ -406,11 +406,18 @@ impl CornersSprings {
 /// four color channels, the blur sigma, and the spread. Width-style
 /// (`Option<InnerGlow>`) appearance/disappearance is handled at the
 /// reconcile site — these springs only interpolate Some→Some changes.
+///
+/// The offsets are carried and **not** sprung. An offset says which side of
+/// the box the light is on, and light does not travel across a surface while
+/// a fill changes colour; a sprung offset would slide a rim around the edge
+/// on every hover.
 #[derive(Debug, Clone)]
 pub struct InnerGlowSprings {
     pub color: ColorSprings,
     pub blur: Spring,
     pub spread: Spring,
+    pub offset_x: f32,
+    pub offset_y: f32,
 }
 
 impl InnerGlowSprings {
@@ -419,6 +426,8 @@ impl InnerGlowSprings {
             color: ColorSprings::new(g.color, cfg),
             blur: Spring::new(g.blur, cfg),
             spread: Spring::new(g.spread, cfg),
+            offset_x: g.offset_x,
+            offset_y: g.offset_y,
         }
     }
 
@@ -426,6 +435,8 @@ impl InnerGlowSprings {
         self.color.set_target(g.color);
         self.blur.set_target(g.blur);
         self.spread.set_target(g.spread);
+        self.offset_x = g.offset_x;
+        self.offset_y = g.offset_y;
     }
 
     pub fn tick(&mut self, dt: f32) -> bool {
@@ -440,6 +451,8 @@ impl InnerGlowSprings {
             color: self.color.current(),
             blur: self.blur.current.max(0.0),
             spread: self.spread.current.max(0.0),
+            offset_x: self.offset_x,
+            offset_y: self.offset_y,
         }
     }
 
@@ -1048,6 +1061,10 @@ fn inner_glow_matches(a: &InnerGlow, b: &InnerGlow) -> bool {
     color_matches(a.color, b.color)
         && (a.blur - b.blur).abs() < f32::EPSILON
         && (a.spread - b.spread).abs() < f32::EPSILON
+        // The offsets are carried rather than sprung, so a change in one is
+        // a change in the glow and never something to interpolate toward.
+        && (a.offset_x - b.offset_x).abs() < f32::EPSILON
+        && (a.offset_y - b.offset_y).abs() < f32::EPSILON
 }
 
 fn border_matches(a: &Border, b: &Border) -> bool {

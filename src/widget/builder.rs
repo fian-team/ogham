@@ -2230,10 +2230,14 @@ pub(crate) fn parse_inner_glow_value(value: &Value) -> Option<InnerGlow> {
         let color = map.get("color").and_then(parse_color_value)?;
         let blur = map.get("blur").and_then(value_to_f32).unwrap_or(0.0);
         let spread = map.get("spread").and_then(value_to_f32).unwrap_or(0.0);
+        let offset_x = map.get("offset_x").and_then(value_to_f32).unwrap_or(0.0);
+        let offset_y = map.get("offset_y").and_then(value_to_f32).unwrap_or(0.0);
         Some(InnerGlow {
             color,
             blur,
             spread,
+            offset_x,
+            offset_y,
         })
     } else {
         None

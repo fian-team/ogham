@@ -235,7 +235,7 @@ pub const TRANSFORM_KEYS: &[&str] = &[
     "translate_y",
 ];
 pub const SHADOW_KEYS: &[&str] = &["blur", "color", "offset_x", "offset_y"];
-pub const INNER_GLOW_KEYS: &[&str] = &["blur", "color", "spread"];
+pub const INNER_GLOW_KEYS: &[&str] = &["blur", "color", "offset_x", "offset_y", "spread"];
 pub const BACKDROP_FILTER_KEYS: &[&str] = &["blur"];
 pub const STAGGER_KEYS: &[&str] = &["exit_order", "exit_step", "step"];
 pub const TRANSITION_KEYS: &[&str] = &[

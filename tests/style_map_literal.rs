@@ -327,6 +327,52 @@ fn inner_glow_parses_color_blur_and_spread() {
     assert!(glow.is_active());
 }
 
+/// An inner glow can say which side of the box the light is on, so a panel
+/// can carry a **rim** — a hairline on its top edge alone — rather than a
+/// ring that is even all the way round and therefore says nothing about
+/// where the light came from. A rim is `offset_y` with no blur and no
+/// spread, and it has to count as geometry or `is_active` would refuse to
+/// draw it.
+#[test]
+fn an_inner_glow_offset_makes_a_rim_rather_than_a_ring() {
+    let style = build_flex_style(
+        r#"let main = fn () {
+              Flex { style: {
+                inner_glow: {
+                  color: { r: 255, g: 255, b: 255, a: 230 },
+                  offset_y: 1
+                }
+              } }
+           };"#,
+    );
+    let glow = style.inner_glow.expect("inner_glow should be Some");
+    assert_eq!(glow.offset_y, 1.0);
+    assert_eq!(glow.offset_x, 0.0);
+    assert_eq!(glow.blur, 0.0);
+    assert_eq!(glow.spread, 0.0);
+    assert!(
+        glow.is_active(),
+        "an offset alone is geometry: a rim draws with no blur and no spread"
+    );
+}
+
+/// And with no offset it is the even ring every caller before offsets
+/// existed asked for — which means an omitted offset cannot change a glow
+/// that is already shipped.
+#[test]
+fn an_inner_glow_with_no_offset_is_still_a_ring() {
+    let style = build_flex_style(
+        r#"let main = fn () {
+              Flex { style: {
+                inner_glow: { color: { r: 0, g: 0, b: 0, a: 255 }, blur: 4 }
+              } }
+           };"#,
+    );
+    let glow = style.inner_glow.unwrap();
+    assert_eq!((glow.offset_x, glow.offset_y), (0.0, 0.0));
+    assert!(glow.is_active());
+}
+
 #[test]
 fn inner_glow_spread_defaults_to_zero_when_omitted() {
     let style = build_flex_style(
