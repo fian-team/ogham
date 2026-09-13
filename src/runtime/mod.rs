@@ -169,6 +169,16 @@ pub(crate) struct ImportResolver {
     /// consulted before the filesystem so an embedded UI library needs no files.
     pub(crate) embedded: HashMap<PathBuf, String>,
     loading_stack: Vec<PathBuf>,
+    /// The file behind each module on `loading_stack`, in lockstep with it
+    /// — `None` where that module is embedded and has none. This is what a
+    /// relative import written inside that module resolves against, and it
+    /// is a second stack rather than a field on the first because the first
+    /// is compared by value for cycle detection.
+    file_stack: Vec<Option<PathBuf>>,
+    /// The document the runtime was mounted from, if it was a file: the
+    /// bottom of `file_stack`, and what the ROOT document's own relative
+    /// imports resolve against before any import is in flight.
+    root_file: Option<PathBuf>,
     loaded: HashSet<PathBuf>,
     cache: HashMap<PathBuf, Environment>,
 }
@@ -180,9 +190,34 @@ impl ImportResolver {
             import_paths: HashMap::new(),
             embedded: HashMap::new(),
             loading_stack: Vec::new(),
+            file_stack: Vec::new(),
+            root_file: None,
             loaded: HashSet::new(),
             cache: HashMap::new(),
         }
+    }
+
+    /// The document whose import statement is being executed — the one a
+    /// relative path written in it means "beside". The module in flight if
+    /// there is one, else the root document.
+    pub(crate) fn importing_from(&self) -> Option<PathBuf> {
+        match self.file_stack.last() {
+            Some(file) => file.clone(),
+            None => self.root_file.clone(),
+        }
+    }
+
+    /// Enter a module. `file` is what it was read from, `None` if embedded.
+    fn push_frame(&mut self, key: PathBuf, file: Option<PathBuf>) {
+        self.loading_stack.push(key);
+        self.file_stack.push(file);
+    }
+
+    /// Leave it. Both stacks or neither: a pop that took only one would
+    /// leave a module's siblings resolving against its parent's directory.
+    fn pop_frame(&mut self) {
+        self.loading_stack.pop();
+        self.file_stack.pop();
     }
 
     /// Where an import path resolves from, for the readers that walk the
@@ -649,7 +684,11 @@ impl Runtime {
     /// execution is: [`imports::walk`](crate::runtime::imports::walk) says
     /// why the two have to agree.
     pub(crate) fn crossing(&self, module: &Function) -> crate::runtime::imports::Crossing {
-        crate::runtime::imports::walk(module, &self.imports.space())
+        crate::runtime::imports::walk(
+            module,
+            &self.imports.space(),
+            self.imports.importing_from().as_deref(),
+        )
     }
 
     pub fn execute_module(&mut self, module: &Function) -> Result<Value, VMError> {
@@ -657,6 +696,7 @@ impl Runtime {
         self.state.call_stack.clear();
         self.state.call_counters.clear();
         self.imports.loading_stack.clear();
+        self.imports.file_stack.clear();
         self.imports.loaded.clear();
         self.imports.cache.clear();
 
@@ -687,6 +727,7 @@ impl Runtime {
         self.state.call_stack.clear();
         self.state.call_counters.clear();
         self.imports.loading_stack.clear();
+        self.imports.file_stack.clear();
         // Context is transient per render; compiler-emitted Push/Pop pairs
         // balance out, but clear anyway to recover from any imbalance.
         self.context_stack.clear();
@@ -711,39 +752,38 @@ impl Runtime {
     ) -> Result<Value, VMError> {
         let path_str = import_stmt.get_path();
 
-        // Embedded (in-memory) sources resolve first — no project_root, no
-        // filesystem. Keyed by the import path string exactly as written, so a
-        // binary can carry its `.ogh` library via `include_str!`.
-        let embedded_src = self
+        // One rule, stated in `imports::ImportSpace::locate` and called by
+        // both readers of it. This used to be a second hand-written copy —
+        // the same three lookups in the same order — and a pre-scan that
+        // resolves a name differently from the run that uses it is a
+        // helper which compiles and is not there, or is there and is
+        // somebody else's.
+        //
+        // `importing_from` is the document whose statement this is, which
+        // is what a relative path in it means "beside".
+        let from = self.imports.importing_from();
+        let located = self
             .imports
-            .embedded
-            .get(std::path::Path::new(path_str))
-            .cloned();
-
-        let (resolved, key) = if embedded_src.is_some() {
-            let k = PathBuf::from(path_str);
-            (k.clone(), k)
-        } else {
-            let project_root = self.imports.project_root.as_ref().ok_or_else(|| {
-                VMError::ImportError("project root not set; cannot resolve import path".to_string())
+            .space()
+            .locate(path_str, from.as_deref())
+            .ok_or_else(|| {
+                VMError::ImportError(
+                    "project root not set; cannot resolve import path".to_string(),
+                )
             })?;
 
-            let mut resolved = None;
-            for (prefix, base) in &self.imports.import_paths {
-                if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
-                    let rest = rest.strip_prefix('/').unwrap_or(rest);
-                    resolved = Some(base.join(rest));
-                    break;
-                }
+        let (embedded_src, resolved, key, resolved_file) = match located {
+            crate::runtime::imports::Located::Embedded(src) => {
+                let k = PathBuf::from(path_str);
+                (Some(src), k.clone(), k, None)
             }
-            let mut resolved = resolved.unwrap_or_else(|| project_root.join(path_str));
-
-            if resolved.extension().is_none() {
-                resolved.set_extension("ogh");
+            crate::runtime::imports::Located::File(path) => {
+                let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+                // The canonical path, not the joined one: it is what the
+                // module's own relative imports will be measured from, and
+                // a `..` left in it would compound one level per hop.
+                (None, path, key.clone(), Some(key))
             }
-
-            let key = resolved.canonicalize().unwrap_or(resolved.clone());
-            (resolved, key)
         };
 
         if self.imports.loading_stack.contains(&key) {
@@ -782,7 +822,7 @@ impl Runtime {
             })?,
         };
 
-        self.imports.loading_stack.push(key.clone());
+        self.imports.push_frame(key.clone(), resolved_file.clone());
 
         let mut scanner = Scanner::new(source);
         let tokens = scanner.scan();
@@ -802,12 +842,12 @@ impl Runtime {
         let crossing = self.crossing(&imported_module);
         let (proto, local_names) =
             Compiler::compile_import(&imported_module, &crossing).map_err(|e| {
-                self.imports.loading_stack.pop();
+                self.imports.pop_frame();
                 e
             })?;
         let mut vm = VM::new();
         let _result = vm.run(&proto, self).map_err(|e| {
-            self.imports.loading_stack.pop();
+            self.imports.pop_frame();
             e
         })?;
         let exports_map = vm.read_stack_locals(&local_names);
@@ -821,7 +861,7 @@ impl Runtime {
         if let Some(ref names) = names_to_copy {
             for name in names {
                 if temp_env.get(name).is_none() {
-                    self.imports.loading_stack.pop();
+                    self.imports.pop_frame();
                     return Err(VMError::ImportError(format!(
                         "export '{}' not found in {}",
                         name,
@@ -837,11 +877,11 @@ impl Runtime {
             self.environment
                 .copy_from(&temp_env, names_to_copy.as_deref(), false)
         {
-            self.imports.loading_stack.pop();
+            self.imports.pop_frame();
             return Err(VMError::ImportConflict(conflict_name));
         }
 
-        self.imports.loading_stack.pop();
+        self.imports.pop_frame();
         self.imports.loaded.insert(key);
 
         Ok(Value::Void)
@@ -885,6 +925,16 @@ impl Runtime {
         let path_buf = path.as_ref().to_path_buf();
         let source = fs::read_to_string(&path_buf)?;
         let mut runtime = Self::from_source(&source, config)?;
+        // What the ROOT document's own relative imports resolve against.
+        // Without this a mounted file's `./sibling.ogh` would fall back to
+        // the flat lookup and could be answered by an embedded source of
+        // the same spelling — which is the whole defect, at the one place
+        // it is most likely to bite.
+        runtime.imports.root_file = Some(
+            path_buf
+                .canonicalize()
+                .unwrap_or_else(|_| path_buf.clone()),
+        );
         if runtime.project_root().is_none() {
             runtime.set_project_root(
                 path_buf

@@ -44,12 +44,50 @@ use crate::scanner::Scanner;
 
 /// Where an import path resolves from.
 ///
-/// The three lookups `Runtime::execute_import` performs, in its order:
-/// an embedded source keyed by the path exactly as written, then a prefix
-/// mapping, then the project root. A missing `.ogh` extension is added.
+/// Two kinds of import path, and they are answered differently:
+///
+/// - A **named** path — `"@lib/widgets.ogh"`, `"widgets.ogh"` — names a
+///   library or a document at the project root. Three lookups in this
+///   order: an embedded source keyed by the path exactly as written, then
+///   a prefix mapping, then the project root.
+/// - A **relative** path — `"./widgets.ogh"`, `"../kit/widgets.ogh"` —
+///   names a file *next to the document that wrote it*, and resolves
+///   against that document's own directory. Nothing else is consulted.
+///
+/// # Why relative is not just another name
+///
+/// The embedded map is one flat namespace with no notion of where the
+/// importing document lives, and it used to be consulted first for every
+/// path, relative ones included. So a host that carried an in-memory
+/// library under a key like `"./widgets.ogh"` captured **every** document's
+/// `import "./widgets.ogh"`, whatever directory that document was in and
+/// whatever sat next to it on disk. The import said "the file beside me"
+/// and meant "whatever the host happened to register under that spelling".
+/// Nothing reported it: the wrong file parses, binds its names, and draws.
+///
+/// That was live in this workspace. A game mounted an editor's `.ogh`
+/// library as embedded sources keyed `"./widgets.ogh"`, `"./theme.ogh"`
+/// and five more; the game's own documents sat in a different crate's
+/// directory. The day either side grew a file of a name the other had
+/// registered, every relative import of it would have silently crossed the
+/// crate boundary. A named prefix per library is the tidy way to write
+/// this and remains the advice — but the advice was load-bearing, which is
+/// what made it a defect rather than a style.
+///
+/// A missing `.ogh` extension is added.
+///
+/// Relative resolution needs the importing document, which every caller
+/// knows: [`walk_into`] carries the parent it descended from, and
+/// `Runtime::execute_import` carries the document whose statement it is
+/// running. `None` means the importer has no file behind it — an embedded
+/// module, or a root built by `Runtime::from_source` — and for those a
+/// relative path falls back to the flat lookup, because "beside me" cannot
+/// mean anything else when there is no directory to be beside. That is
+/// what keeps a host with no filesystem at all working.
 #[derive(Clone, Debug, Default)]
 pub struct ImportSpace {
-    /// The directory a bare relative import resolves against.
+    /// The directory a **named** import resolves against, after the
+    /// embedded map and the prefixes have both declined it.
     pub project_root: Option<PathBuf>,
     /// Prefix → base directory, for imports written against a named
     /// library rather than against the project root.
@@ -80,43 +118,92 @@ impl ImportSpace {
         }
     }
 
-    /// Where `path_str` points, and what is written there.
+    /// Where `path_str`, written in the document at `from`, points — and
+    /// what is written there.
+    ///
+    /// `from` is the importing document's own file, or `None` where it has
+    /// none (an embedded module, or a root built from source). See the
+    /// type's own documentation for what that changes.
     ///
     /// `None` when the path does not resolve or cannot be read. Every
     /// caller here is best-effort by design: the real import reports the
     /// real error at execution time, with its own diagnostics, and a
     /// second complaint from a pre-scan would bury it.
-    pub fn resolve(&self, path_str: &str) -> Option<Resolved> {
-        if let Some(source) = self.embedded.get(Path::new(path_str)) {
-            return Some(Resolved {
+    pub fn resolve(&self, path_str: &str, from: Option<&Path>) -> Option<Resolved> {
+        match self.locate(path_str, from)? {
+            Located::Embedded(source) => Some(Resolved {
                 key: PathBuf::from(path_str),
                 file: None,
-                source: source.clone(),
-            });
+                source,
+            }),
+            Located::File(path) => {
+                let source = std::fs::read_to_string(&path).ok()?;
+                let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+                Some(Resolved {
+                    key,
+                    file: Some(path),
+                    source,
+                })
+            }
         }
-        let mut resolved = None;
+    }
+
+    /// The resolution rule itself, without reading anything.
+    ///
+    /// **This is the one answer.** It was written twice — once here for the
+    /// walkers that read the import graph without running it, once inside
+    /// `Runtime::execute_import` for the run itself — and two answers to
+    /// one question is how a pre-scan comes to disagree with execution
+    /// about which file a name came from. Both call this now.
+    pub(crate) fn locate(&self, path_str: &str, from: Option<&Path>) -> Option<Located> {
+        // A relative path written in a document that has a file means the
+        // directory that document is in, and nothing else. No embedded
+        // lookup, no prefix, no project root: "beside me" has exactly one
+        // answer, and consulting a flat map for it is what let one crate's
+        // library capture another crate's siblings.
+        if is_relative(path_str) {
+            if let Some(dir) = from.and_then(Path::parent) {
+                return Some(Located::File(with_ogh(dir.join(path_str))));
+            }
+        }
+
+        if let Some(source) = self.embedded.get(Path::new(path_str)) {
+            return Some(Located::Embedded(source.clone()));
+        }
+
         for (prefix, base) in &self.import_paths {
             if let Some(rest) = path_str.strip_prefix(prefix.as_str()) {
                 let rest = rest.strip_prefix('/').unwrap_or(rest);
-                resolved = Some(base.join(rest));
-                break;
+                return Some(Located::File(with_ogh(base.join(rest))));
             }
         }
-        let mut resolved = match resolved {
-            Some(path) => path,
-            None => self.project_root.as_ref()?.join(path_str),
-        };
-        if resolved.extension().is_none() {
-            resolved.set_extension("ogh");
-        }
-        let source = std::fs::read_to_string(&resolved).ok()?;
-        let key = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
-        Some(Resolved {
-            key,
-            file: Some(resolved),
-            source,
-        })
+
+        Some(Located::File(with_ogh(
+            self.project_root.as_ref()?.join(path_str),
+        )))
     }
+}
+
+/// Where a path landed, before anything has been read.
+pub(crate) enum Located {
+    Embedded(String),
+    File(PathBuf),
+}
+
+/// A path that names a file beside the document that wrote it.
+///
+/// Only `./` and `../` — a bare `"widgets.ogh"` is a **named** import and
+/// goes to the library and the project root, which is what it has always
+/// meant here and what `examples/import/importer.ogh` relies on.
+fn is_relative(path_str: &str) -> bool {
+    path_str.starts_with("./") || path_str.starts_with("../")
+}
+
+fn with_ogh(mut path: PathBuf) -> PathBuf {
+    if path.extension().is_none() {
+        path.set_extension("ogh");
+    }
+    path
 }
 
 /// What a walk of one module's import graph found.
@@ -159,16 +246,21 @@ pub struct Crossing {
 }
 
 /// Walk `module`'s imports, transitively, and collect what crosses.
-pub fn walk(module: &Function, space: &ImportSpace) -> Crossing {
+///
+/// `at` is the file `module` was read from, or `None` for one with none.
+/// It is what a relative import in `module` resolves against — see
+/// [`ImportSpace`].
+pub fn walk(module: &Function, space: &ImportSpace, at: Option<&Path>) -> Crossing {
     let mut found = Crossing::default();
     let mut seen = HashSet::new();
-    walk_into(module, space, &mut seen, &mut found);
+    walk_into(module, space, at, &mut seen, &mut found);
     found
 }
 
 fn walk_into(
     module: &Function,
     space: &ImportSpace,
+    at: Option<&Path>,
     seen: &mut HashSet<PathBuf>,
     found: &mut Crossing,
 ) {
@@ -176,12 +268,16 @@ fn walk_into(
         let Statement::Import(import) = statement else {
             continue;
         };
-        let Some(resolved) = space.resolve(import.get_path()) else {
+        let Some(resolved) = space.resolve(import.get_path(), at) else {
             continue;
         };
         if !seen.insert(resolved.key.clone()) {
             continue;
         }
+        // Kept before the move into `found.files`: it is what the
+        // imported module's OWN relative imports resolve against, one
+        // level down.
+        let imported_at = resolved.file.clone();
         if let Some(file) = resolved.file {
             found.files.push(file);
         }
@@ -192,7 +288,7 @@ fn walk_into(
         // Depth first, so a name the imported module re-exports by
         // importing it is already in `found` when the narrowing below
         // runs — and unnarrowed, which is what execution does.
-        walk_into(&imported, space, seen, found);
+        walk_into(&imported, space, imported_at.as_deref(), seen, found);
         // Unnarrowed, like the selections: a narrowed import still
         // *executes* the whole file, so every read in it is a read the
         // mounted document makes.
@@ -260,7 +356,7 @@ mod tests {
         .expect("write");
         let module = parse("import \"./stationery.ogh\";\nlet main = fn () { rule() };\n");
 
-        let found = walk(&module, &ImportSpace::rooted_at(&dir));
+        let found = walk(&module, &ImportSpace::rooted_at(&dir), None);
 
         assert!(found.values.contains("rule"), "{:?}", found.values);
         assert!(
@@ -284,7 +380,7 @@ mod tests {
         let module =
             parse("import { rule } from \"./stationery.ogh\";\nlet main = fn () { rule() };");
 
-        let found = walk(&module, &ImportSpace::rooted_at(&dir));
+        let found = walk(&module, &ImportSpace::rooted_at(&dir), None);
 
         assert!(found.values.contains("rule"));
         assert!(!found.values.contains("seal"), "the import named one");
@@ -303,7 +399,7 @@ mod tests {
         std::fs::write(dir.join("b.ogh"), "import \"./a.ogh\";\nlet b = 2;\n").expect("write");
         let module = parse("import \"./a.ogh\";\nlet main = fn () { a };");
 
-        let found = walk(&module, &ImportSpace::rooted_at(&dir));
+        let found = walk(&module, &ImportSpace::rooted_at(&dir), None);
 
         assert_eq!(found.files.len(), 2, "{:?}", found.files);
         assert!(found.values.contains("a") && found.values.contains("b"));
@@ -313,7 +409,7 @@ mod tests {
     fn an_import_that_does_not_resolve_contributes_nothing() {
         let dir = scratch("missing");
         let module = parse("import \"./nowhere.ogh\";\nlet main = fn () { 1 };");
-        let found = walk(&module, &ImportSpace::rooted_at(&dir));
+        let found = walk(&module, &ImportSpace::rooted_at(&dir), None);
         assert!(found.values.is_empty());
         assert!(found.files.is_empty());
     }

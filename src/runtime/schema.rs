@@ -1119,7 +1119,7 @@ pub fn load_schema_in(path: &Path, space: &ImportSpace) -> Result<ModuleSchema, 
     let source = fs::read_to_string(path)?;
     let tokens = scan(&source)?;
     let module = Parser::new(tokens).parse()?;
-    let crossing = crate::runtime::imports::walk(&module, space);
+    let crossing = crate::runtime::imports::walk(&module, space, Some(path));
     let schema = ModuleSchema::from_module_within(&module, &crossing)?;
     Ok(schema)
 }
@@ -1139,12 +1139,12 @@ pub fn load_schema_at(
     document: &str,
     space: &ImportSpace,
 ) -> Result<ModuleSchema, SchemaLoadError> {
-    let Some(resolved) = space.resolve(document) else {
+    let Some(resolved) = space.resolve(document, None) else {
         return load_schema_in(Path::new(document), space);
     };
     let tokens = scan(&resolved.source)?;
     let module = Parser::new(tokens).parse()?;
-    let crossing = crate::runtime::imports::walk(&module, space);
+    let crossing = crate::runtime::imports::walk(&module, space, resolved.file.as_deref());
     Ok(ModuleSchema::from_module_within(&module, &crossing)?)
 }
 
