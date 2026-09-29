@@ -168,6 +168,7 @@ pub const FLEX_STYLE_KEYS: &[&str] = &[
     "inner_glow",
     "main_alignment",
     "margin",
+    "max_height",
     "opacity",
     "overflow",
     "padding",
@@ -189,6 +190,7 @@ pub const TEXT_STYLE_KEYS: &[&str] = &[
     "height",
     "letter_spacing",
     "outline",
+    "shadow",
     "size",
     "weight",
     "width",
@@ -740,6 +742,10 @@ impl<'a> Check<'a> {
             "width" | "height" => self.size(span, path, value),
             "outline" => {
                 self.map_keys(path, value, OUTLINE_KEYS);
+                self.descend_color(path, value);
+            }
+            "shadow" => {
+                self.map_keys(path, value, SHADOW_KEYS);
                 self.descend_color(path, value);
             }
             _ => {}

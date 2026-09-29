@@ -367,6 +367,19 @@ intended.
   rewritten as a `ReturnStatement`. This is invisible to the
   expression grammar.
 
+  **A loop's body and a block's last `for` are the two places
+  the rule is shaped** (2026-09-28). A `for` statement's body
+  runs each statement for its effect and drops the *implicit*
+  return on its trailing expression (`ReturnStatement::implicit`),
+  so that expression is the iteration's value and never a return
+  out of the enclosing function — which it was, so the loop ran
+  once. A `return` somebody wrote still leaves the function. And a `for`
+  that is the last thing before its block's `}` is the block's
+  value in the collecting form, the way any other trailing
+  expression is (`Parser::parse_for_loop_statement_in_block`).
+  `if` blocks keep the plain rule: a trailing expression there
+  returns from the function. `tests/tail_for.rs` is the guard.
+
   *Why:* keeping the rule out of the grammar means the
   recursive-descent precedence ladder doesn't have to reason
   about end-of-block. The compiler also benefits — see

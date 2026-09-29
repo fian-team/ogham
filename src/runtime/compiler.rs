@@ -1079,7 +1079,7 @@ impl Compiler {
                         // `Void; Return` and would otherwise bury it. This
                         // is what the parser does for every hand-written
                         // `fn` whose last expression has no semicolon.
-                        statement_list: vec![Statement::new_return(
+                        statement_list: vec![Statement::new_implicit_return(
                             Some(decl.view.clone()),
                             decl.span,
                         )],
@@ -1231,12 +1231,46 @@ impl Compiler {
         let range_end = for_loop.get_range_end();
         let body = for_loop.get_body();
 
+        // **The body is an expression block whose value each iteration
+        // discards** — never a plain block. The parser makes a trailing
+        // expression without `;` an implicit `Return`, and a plain block
+        // compiles that as a real `Return`: out of the *enclosing function*,
+        // on the first iteration. So `for (i in 0..5) { Flex {} }` ran once,
+        // and a handler's `for (…) { event(…) }` raised one event of n. A
+        // loop's body is not where its function ends; the collecting form
+        // (`compile_for_loop_expression`) already strips the return, and
+        // this is that with the value dropped instead of appended.
         self.compile_for_loop_core(&var_name, &range_start, &range_end, |compiler, _| {
             compiler.begin_scope();
-            compiler.compile_block(&body)?;
+            compiler.compile_loop_body(&body)?;
             compiler.end_scope();
             Ok(())
         })
+    }
+
+    /// A loop statement's body: every statement for its effect, leaving
+    /// nothing on the stack. The implicit return the parser puts on a
+    /// trailing expression is evaluated and dropped rather than executed —
+    /// a return from inside a loop body would leave the enclosing function
+    /// on the first iteration. Not `compile_expression_block`, which leaves
+    /// one value only when the last statement produces one: an assignment
+    /// ending the body produces none, and dropping a value that was never
+    /// pushed takes the loop's own counter off the stack.
+    fn compile_loop_body(&mut self, body: &Block) -> Result<(), VMError> {
+        let stmts = &body.statement_list;
+        let last = stmts.len().saturating_sub(1);
+        for (i, stmt) in stmts.iter().enumerate() {
+            match stmt {
+                Statement::Return(ret) if i == last && ret.implicit => {
+                    if let Some(expr) = ret.get_value() {
+                        self.compile_expression(&expr)?;
+                        self.emit(OpCode::Pop);
+                    }
+                }
+                _ => self.compile_statement(stmt, false)?,
+            }
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------

@@ -54,6 +54,11 @@ pub struct FlexStyle {
     pub position: Position,
     pub width: Size,
     pub height: Size,
+    /// A ceiling on the height the rules above resolve, in logical pixels
+    /// (CSS `max-height`). `None` is no ceiling. A `height: "shrink"` box
+    /// with a ceiling grows with its content until it reaches it; with
+    /// `overflow: "scroll"` it then scrolls what no longer fits.
+    pub max_height: Option<f32>,
     pub direction: Direction,
     pub main_alignment: Alignment,
     pub cross_alignment: Alignment,
@@ -230,6 +235,7 @@ impl Default for FlexStyle {
             position: Position::Static,
             width: Size::Shrink,
             height: Size::Shrink,
+            max_height: None,
             direction: Direction::Row,
             main_alignment: Alignment::Start,
             cross_alignment: Alignment::Start,
@@ -306,6 +312,7 @@ impl FlexStyle {
         self.position == other.position
             && self.width == other.width
             && self.height == other.height
+            && self.max_height == other.max_height
             && self.direction == other.direction
             && self.main_alignment == other.main_alignment
             && self.cross_alignment == other.cross_alignment
@@ -369,6 +376,11 @@ impl FlexStyleBuilder {
 
     pub fn width(mut self, width: Size) -> Self {
         self.style.width = width;
+        self
+    }
+
+    pub fn max_height(mut self, max_height: f32) -> Self {
+        self.style.max_height = Some(max_height);
         self
     }
 
@@ -545,6 +557,13 @@ pub struct TextStyle {
     pub font: Option<String>,
     /// Optional outline stroked around glyphs. `None` draws no outline.
     pub outline: Option<TextOutline>,
+    /// Drop shadows cast by the glyphs, painted under the outline and the
+    /// fill in list order (CSS `text-shadow`). Empty draws none. The same
+    /// [`Shadow`] a panel casts, and the same units: offsets in logical
+    /// pixels, `blur` a Gaussian sigma in logical pixels, both DPI-scaled at
+    /// paint time. Paint-only — a shadow never changes what the text
+    /// measures.
+    pub shadows: Vec<Shadow>,
     /// Extra tracking between glyphs, logical px (CSS `letter-spacing`).
     /// 0 = the font's natural fit. Scales with DPI alongside the font size.
     pub letter_spacing: f32,
@@ -577,6 +596,10 @@ impl TextStyle {
 
     pub fn get_outline(&self) -> Option<TextOutline> {
         self.outline
+    }
+
+    pub fn get_shadows(&self) -> &[Shadow] {
+        &self.shadows
     }
 
     pub fn get_letter_spacing(&self) -> f32 {
@@ -631,6 +654,11 @@ impl TextStyleBuilder {
         self
     }
 
+    pub fn shadow(mut self, shadow: Shadow) -> Self {
+        self.style.shadows.push(shadow);
+        self
+    }
+
     pub fn outline(mut self, outline: TextOutline) -> Self {
         self.style.outline = Some(outline);
         self
@@ -671,6 +699,7 @@ impl Default for TextStyle {
             height: Size::Shrink,
             font: None,
             outline: None,
+            shadows: Vec::new(),
             letter_spacing: 0.0,
         }
     }

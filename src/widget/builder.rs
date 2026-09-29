@@ -403,6 +403,9 @@ fn apply_flex_style_from_map(style: &mut FlexStyle, map: &HashMap<String, Value>
                     style.height = sz;
                 }
             }
+            "max_height" => {
+                style.max_height = value_to_f32(value);
+            }
             "gap" => {
                 if let Some(g) = value_to_f32(value) {
                     style.gap = g;
@@ -749,6 +752,17 @@ fn apply_text_style_from_map(style: &mut TextStyle, map: &HashMap<String, Value>
             }
             "outline" => {
                 style.outline = parse_text_outline_value(value);
+            }
+            // One shadow map, or a list of them painted in order — the
+            // pair CSS writes as a tight dark edge under a wide soft halo
+            // is the case a single shadow cannot state.
+            "shadow" => {
+                style.shadows = match value {
+                    Value::Array(items) => {
+                        items.iter().filter_map(parse_shadow_value).collect()
+                    }
+                    _ => parse_shadow_value(value).into_iter().collect(),
+                };
             }
             "letter_spacing" => {
                 if let Some(ls) = value_to_f32(value) {

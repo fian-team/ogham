@@ -54,8 +54,15 @@ impl Statement {
         })
     }
 
+    /// A `return` somebody wrote.
     pub fn new_return(value: Option<Expression>, span: Span) -> Statement {
-        Statement::Return(ReturnStatement { value, span })
+        Statement::Return(ReturnStatement { value, span, implicit: false })
+    }
+
+    /// The return the parser puts on a block's trailing expression — the
+    /// block's value, which nobody wrote as a return.
+    pub fn new_implicit_return(value: Option<Expression>, span: Span) -> Statement {
+        Statement::Return(ReturnStatement { value, span, implicit: true })
     }
 
     pub fn new_conditional(
@@ -130,6 +137,11 @@ impl ExpressionStatement {
 pub struct ReturnStatement {
     pub value: Option<Expression>,
     pub span: Span,
+    /// Whether the parser supplied it for a trailing expression rather than
+    /// the author writing `return`. A loop body drops an implicit one — it
+    /// is the iteration's value — and keeps a written one, which leaves the
+    /// function as written.
+    pub implicit: bool,
 }
 
 impl ReturnStatement {

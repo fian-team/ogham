@@ -301,7 +301,7 @@ impl Parser {
             }
             scanner::TokenType::Identifier(_) => self.parse_identifier_statement(),
             scanner::TokenType::Log => self.parse_log(),
-            scanner::TokenType::For => self.parse_for_loop_statement(),
+            scanner::TokenType::For => self.parse_for_loop_statement_in_block(),
             _ => self.parse_expression_statement(),
         }
     }
@@ -430,7 +430,7 @@ impl Parser {
             Ok(Statement::new_expression(expression, span))
         } else if self.is_at_block_end() {
             let span = self.span_from(stmt_start);
-            Ok(Statement::new_return(Some(expression), span))
+            Ok(Statement::new_implicit_return(Some(expression), span))
         } else {
             let span = self.span_from(stmt_start);
             Ok(Statement::new_expression(expression, span))
@@ -1080,6 +1080,38 @@ impl Parser {
         Ok(Statement::new_log(expression, span))
     }
 
+    /// A `for` at the start of a statement — **and, when it is the last
+    /// thing before its block's `}`, the block's value**: the collecting
+    /// form, under the implicit return every other trailing expression
+    /// gets ([`Self::expression_to_statement`]).
+    ///
+    /// Without this a function whose body ended in a bare `for` returned
+    /// whatever the loop left behind — one element, not the array — while
+    /// the very same loop bound to a `let` and returned, or written inline
+    /// as `children: for …`, gave all of them; nothing said so, and the
+    /// widget drew one row of five. Only a closing `}` counts: a loop with
+    /// anything after it in its block is a loop, and a module's last
+    /// top-level loop stays a statement.
+    fn parse_for_loop_statement_in_block(&mut self) -> Result<Statement, SyntaxError> {
+        let statement = self.parse_for_loop_statement()?;
+        let closes_block = self.current < self.input.len()
+            && matches!(self.input[self.current].token_type, scanner::TokenType::RightBracket);
+        match statement {
+            Statement::ForLoop(for_loop) if closes_block => {
+                let span = for_loop.span;
+                let expression = Expression::new_for_loop(
+                    for_loop.variable,
+                    for_loop.range_start,
+                    for_loop.range_end,
+                    for_loop.body,
+                    span,
+                );
+                Ok(Statement::new_implicit_return(Some(expression), span))
+            }
+            other => Ok(other),
+        }
+    }
+
     pub fn parse_for_loop_statement(&mut self) -> Result<Statement, SyntaxError> {
         let start = self.span_start();
         self.consume_if(scanner::TokenType::For)?;
@@ -1220,7 +1252,7 @@ impl Parser {
                 block.span = expr_span;
                 block
                     .statement_list
-                    .push(Statement::new_return(Some(expr), expr_span));
+                    .push(Statement::new_implicit_return(Some(expr), expr_span));
                 block
             };
 

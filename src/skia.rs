@@ -11,7 +11,7 @@ use crate::widget::{
     canvas_widget::Painter,
     flex_widget::FlexWidget,
     image::ImageCache,
-    style::{Border, BorderSide, CornerShape, Corners, InnerGlow, Shadow},
+    style::{Border, BorderSide, BorderStyle, CornerShape, Corners, InnerGlow, Shadow},
     RenderContext, Surface, WidgetRef, UI,
 };
 
@@ -332,17 +332,48 @@ impl SkiaEnv {
     fn draw_border_line(&mut self, side: &BorderSide, x1: f32, y1: f32, x2: f32, y2: f32) {
         if side.width > 0.0 {
             self.paint.set_style(PaintStyle::Stroke);
-            self.paint.set_stroke_width(self.scale_stroke(side.width));
+            let stroke = self.scale_stroke(side.width);
+            self.paint.set_stroke_width(stroke);
             self.paint.set_color(Color::from_argb(
                 side.color.a,
                 side.color.r,
                 side.color.g,
                 side.color.b,
             ));
+            self.set_border_dash(&side.style, stroke);
             self.move_to(x1, y1);
             self.line_to(x2, y2);
             self.stroke();
+            self.clear_border_dash();
         }
+    }
+
+    /// **A border's `style`, on the shared paint.** `dashed` and `dotted`
+    /// were parsed and then drawn solid for as long as the key existed —
+    /// nothing downstream of the builder read `BorderSide::style` — which
+    /// is the silent-drop shape the vocabulary check exists to stop, one
+    /// layer past where it can look.
+    ///
+    /// Intervals are in device pixels, scaled from the stroke so a heavier
+    /// border has longer dashes. A dot is a zero-length dash with a round
+    /// cap. Always paired with [`Self::clear_border_dash`]: the paint is
+    /// shared by every later draw.
+    fn set_border_dash(&mut self, style: &BorderStyle, stroke: f32) {
+        let (intervals, cap) = match style {
+            BorderStyle::Solid => return,
+            BorderStyle::Dashed => {
+                let on = (stroke * 3.0).max(3.0);
+                ([on, (stroke * 2.0).max(2.0)], skia_safe::paint::Cap::Butt)
+            }
+            BorderStyle::Dotted => ([0.0, (stroke * 2.0).max(2.0)], skia_safe::paint::Cap::Round),
+        };
+        self.paint.set_path_effect(skia_safe::PathEffect::dash(&intervals, 0.0));
+        self.paint.set_stroke_cap(cap);
+    }
+
+    fn clear_border_dash(&mut self) {
+        self.paint.set_path_effect(None);
+        self.paint.set_stroke_cap(skia_safe::paint::Cap::Butt);
     }
 
     /// Draws rectangular borders (top, right, bottom, left) inset by half their stroke widths.
@@ -461,6 +492,8 @@ impl RenderContext for SkiaEnv {
             border_color.b,
         ));
         let half = self.scale_stroke(border_width) / 2.0;
+        let style = border.top.style.clone();
+        self.set_border_dash(&style, half * 2.0);
 
         if corners.is_pure_round() {
             let rect = Rect::new(sx + half, sy + half, sx + sw - half, sy + sh - half);
@@ -481,6 +514,7 @@ impl RenderContext for SkiaEnv {
             );
             self.surface.canvas().draw_path(&path, &self.paint);
         }
+        self.clear_border_dash();
     }
 
     fn draw_image(
@@ -553,6 +587,46 @@ impl RenderContext for SkiaEnv {
             self.text_style.set_foreground_paint(&self.paint);
             paragraph
         });
+        // Shadow passes, under the outline: one paragraph per active
+        // shadow, its glyphs filled in the shadow's colour and blurred by a
+        // mask filter, painted at the shadow's offset. The sigma is scaled
+        // to device pixels here and the filter told to ignore the canvas
+        // matrix — the convention `draw_shadow` keeps for a panel — so a
+        // `blur: 6` reads the same on a text and on the box beside it.
+        //
+        // Not skia's own `TextShadow`: its paragraph paints the blur with
+        // the matrix ignored and the sigma unscaled, so under the DPI
+        // transform below a shadow would be half as soft at dpi 2.
+        let dpi = self.dpi_scale;
+        let shadow_paragraphs: Vec<_> = style
+            .get_shadows()
+            .iter()
+            .filter(|s| s.is_active())
+            .map(|shadow| {
+                let mut shadow_paint = Paint::default();
+                shadow_paint.set_anti_alias(true);
+                shadow_paint.set_style(PaintStyle::Fill);
+                shadow_paint.set_color(Color::from_argb(
+                    shadow.color.a,
+                    shadow.color.r,
+                    shadow.color.g,
+                    shadow.color.b,
+                ));
+                if shadow.blur > 0.0 {
+                    if let Some(mf) = skia_safe::MaskFilter::blur(
+                        skia_safe::BlurStyle::Normal,
+                        shadow.blur * dpi,
+                        false,
+                    ) {
+                        shadow_paint.set_mask_filter(mf);
+                    }
+                }
+                self.text_style.set_foreground_paint(&shadow_paint);
+                let paragraph = self.build_laid_out_paragraph(text, width);
+                (paragraph, shadow.offset_x, shadow.offset_y)
+            })
+            .collect();
+        self.text_style.set_foreground_paint(&self.paint);
         let paragraph = self.build_laid_out_paragraph(text, width);
         if std::env::var_os("OGHAM_TEXT_DEBUG").is_some() && paragraph.line_number() > 1 {
             eprintln!(
@@ -566,10 +640,12 @@ impl RenderContext for SkiaEnv {
             );
         }
 
-        let dpi = self.dpi_scale;
         let canvas = self.surface.canvas();
         canvas.save();
         canvas.scale((dpi, dpi));
+        for (shadow_paragraph, dx, dy) in &shadow_paragraphs {
+            shadow_paragraph.paint(canvas, Point::new(x + dx, y + dy));
+        }
         if let Some(outline_paragraph) = outline_paragraph {
             outline_paragraph.paint(canvas, Point::new(x, y));
         }

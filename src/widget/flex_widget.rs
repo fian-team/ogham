@@ -133,6 +133,372 @@ pub struct FlexWidget {
 }
 
 impl FlexWidget {
+    /// The size this node would take with no `max_height` — every sizing
+    /// rule, unclamped. [`Widget::get_dimensions`] clamps it.
+    fn natural_dimensions(
+        &self,
+        ctx: &LayoutContext,
+        parent_direction: &Direction,
+        parent_width: f32,
+        parent_available_width: f32,
+        parent_height: f32,
+        parent_available_height: f32,
+        sibling_basis: f32,
+    ) -> (f32, f32) {
+        // Under a measuring shrink ancestor, grow on the measured axis
+        // resolves as shrink — a shrink parent has no leftover space to
+        // grow into, so the child's content is its honest contribution
+        // (the ancestor's real `layout` pass stretches it afterwards).
+        let width = match ctx.effective_width(self.style.width) {
+            Size::Fixed(w) => w,
+            Size::Shrink => {
+                let _occupied_width: f32 = self.get_children_fixed_width();
+                let occupied_height = self.get_children_fixed_height();
+                let children_basis = self.get_children_basis();
+
+                // Symmetric to the shrink-height path below: a column's WIDTH
+                // (cross axis) can depend on a child's HEIGHT (main axis).
+                // Resolve each child's real main-axis height budget (fixed +
+                // shrink pre-pass + grow pool) so a `height: grow` child isn't
+                // measured at ~1px height during width resolution.
+                let (col_avail_h, col_avail_h_for_grow) = if !self.style.direction.is_row() {
+                    let non_absolute_count = self
+                        .children
+                        .iter()
+                        .filter(|c| {
+                            !c.lock()
+                                .expect("widget lock poisoned")
+                                .is_absolute_positioned()
+                        })
+                        .count();
+                    let gap_space = if non_absolute_count > 1 {
+                        self.style.gap * (non_absolute_count - 1) as f32
+                    } else {
+                        0.0
+                    };
+                    // Same unbounded-main-axis rule as `layout`: a scroll
+                    // column measures its children at natural height.
+                    let avail_h = if self.style.overflow == Overflow::Scroll {
+                        f32::INFINITY
+                    } else {
+                        (parent_available_height - occupied_height - gap_space).max(0.0)
+                    };
+                    let mut shrink_main_total = 0.0;
+                    for child_ref in self.children.iter() {
+                        let child = child_ref.lock().expect("widget lock poisoned");
+                        if child.is_absolute_positioned()
+                            || child.get_basis(&self.style.direction) > 0.0
+                            || child.get_fixed_height().is_some()
+                        {
+                            continue;
+                        }
+                        let (_, ch) = child.get_dimensions(
+                            ctx,
+                            &self.style.direction,
+                            parent_width,
+                            parent_available_width,
+                            parent_height,
+                            avail_h,
+                            children_basis,
+                        );
+                        shrink_main_total += ch;
+                    }
+                    (avail_h, (avail_h - shrink_main_total).max(0.0))
+                } else {
+                    (0.0, 0.0)
+                };
+
+                // Measuring our own width: grow widths below resolve as
+                // content (see `LayoutContext::measuring_width`).
+                let measure_ctx = ctx.measuring_width();
+                let get_dimensions = |child: &WidgetRef| {
+                    let child = child.lock().expect("widget lock poisoned");
+                    if child.is_absolute_positioned() {
+                        return (0.0, 0.0);
+                    }
+                    let child_available_width = if self.style.direction.is_row() {
+                        0.0
+                    } else {
+                        parent_available_width
+                    };
+                    let child_available_height = if !self.style.direction.is_row() {
+                        if child.get_basis(&self.style.direction) > 0.0 {
+                            col_avail_h_for_grow
+                        } else {
+                            col_avail_h
+                        }
+                    } else {
+                        parent_available_height - occupied_height
+                    };
+                    child.get_dimensions(
+                        &measure_ctx,
+                        &self.style.direction,
+                        parent_width,
+                        child_available_width,
+                        parent_height,
+                        child_available_height,
+                        children_basis,
+                    )
+                };
+                let child_size = if self.style.direction.is_row() {
+                    self.style
+                        .direction
+                        .get_shrink_size(&self.children, get_dimensions)
+                } else {
+                    self.style
+                        .direction
+                        .get_shrink_max_size(&self.children, get_dimensions)
+                };
+
+                let non_absolute_count = self
+                    .children
+                    .iter()
+                    .filter(|child| {
+                        let child = child.lock().expect("widget lock poisoned");
+                        !child.is_absolute_positioned()
+                    })
+                    .count();
+                let gap_size = if non_absolute_count > 1 && self.style.direction.is_row() {
+                    self.style.gap * (non_absolute_count - 1) as f32
+                } else {
+                    0.0
+                };
+
+                let unclamped = child_size + self.style.horizontal_inset() + gap_size;
+
+                // Clamp shrink width to parent constraints so it can't exceed
+                // the space the parent offers.
+                let max_width = if parent_direction.is_row() {
+                    parent_available_width // main axis — share of available
+                } else {
+                    parent_width // cross axis — full parent width
+                };
+                if max_width > 0.0 {
+                    unclamped.min(max_width)
+                } else {
+                    unclamped
+                }
+            }
+            Size::Grow(basis) => {
+                // A child's own `direction` should not affect how its size is allocated by its parent.
+                // Width grows along the parent's main axis only when the parent is a row.
+                if parent_direction.is_row() {
+                    parent_direction.get_grow_size(basis, sibling_basis, parent_available_width)
+                } else {
+                    parent_width
+                }
+            }
+            Size::Percent(_) => 0.0, // Will be calculated during layout based on parent
+        };
+
+        let height = match ctx.effective_height(self.style.height) {
+            Size::Fixed(h) => h,
+            Size::Shrink => {
+                let children_basis = self.get_children_basis();
+                // `width` is already resolved by this point — pass it
+                // (and self's own content width) down so children see the
+                // same width budget they will see during `layout`. Using
+                // the outer `parent_width` here was confusing wrap-aware
+                // height measurement: a 280-wide sidebar would hand its
+                // children the full window width and they would all
+                // measure as fitting on one line.
+                let self_content_width = (width - self.style.horizontal_inset()).max(0.0);
+
+                // A row's HEIGHT (cross axis) depends on each child's WIDTH
+                // (main axis). Measuring children at width 0 — the old behavior
+                // — made a `width: grow` child resolve to ~1px (Grow returns its
+                // basis when available <= 0), so a `height: shrink` Text laid its
+                // paragraph out at ~1px and wrapped one glyph per line, ballooning
+                // the row's shrink height. Resolve each child's real main-axis
+                // width budget the SAME way `layout()` does (fixed + shrink
+                // pre-pass + grow pool) so heights are measured at render width.
+                let (row_avail_w, row_avail_w_for_grow) = if self.style.direction.is_row() {
+                    let non_absolute_count = self
+                        .children
+                        .iter()
+                        .filter(|c| {
+                            !c.lock()
+                                .expect("widget lock poisoned")
+                                .is_absolute_positioned()
+                        })
+                        .count();
+                    let gap_space = if non_absolute_count > 1 {
+                        self.style.gap * (non_absolute_count - 1) as f32
+                    } else {
+                        0.0
+                    };
+                    let avail_w =
+                        (self_content_width - self.get_children_fixed_width() - gap_space).max(0.0);
+                    // Pre-pass: subtract Shrink-on-main siblings from the grow
+                    // pool so a grow child isn't measured wider than it renders.
+                    let mut shrink_main_total = 0.0;
+                    for child_ref in self.children.iter() {
+                        let child = child_ref.lock().expect("widget lock poisoned");
+                        if child.is_absolute_positioned()
+                            || child.get_basis(&self.style.direction) > 0.0
+                            || child.get_fixed_width().is_some()
+                        {
+                            continue;
+                        }
+                        let (cw, _) = child.get_dimensions(
+                            ctx,
+                            &self.style.direction,
+                            width,
+                            avail_w,
+                            parent_height,
+                            parent_available_height,
+                            children_basis,
+                        );
+                        shrink_main_total += cw;
+                    }
+                    (avail_w, (avail_w - shrink_main_total).max(0.0))
+                } else {
+                    (0.0, 0.0)
+                };
+
+                // Measuring our own height: grow heights below resolve as
+                // content (see `LayoutContext::measuring_height`).
+                let measure_ctx = ctx.measuring_height();
+                let get_dimensions = |child: &WidgetRef| {
+                    let child = child.lock().expect("widget lock poisoned");
+                    if child.is_absolute_positioned() {
+                        return (0.0, 0.0);
+                    }
+                    let child_available_width = if self.style.direction.is_row() {
+                        if child.get_basis(&self.style.direction) > 0.0 {
+                            row_avail_w_for_grow
+                        } else {
+                            row_avail_w
+                        }
+                    } else {
+                        self_content_width
+                    };
+                    let child_available_height = if !self.style.direction.is_row() {
+                        0.0
+                    } else {
+                        parent_available_height
+                    };
+                    child.get_dimensions(
+                        &measure_ctx,
+                        &self.style.direction,
+                        width,
+                        child_available_width,
+                        parent_height,
+                        child_available_height,
+                        children_basis,
+                    )
+                };
+
+                // For wrap-row containers the shrink height is the sum of
+                // each line's tallest child plus the gap between lines.
+                // We re-run the same wrap walk used by `layout` so the
+                // measurement matches. `width` is already resolved here so
+                // we can compute the line budget directly.
+                if self.style.flex_wrap && self.style.direction.is_row() {
+                    let line_main_max = (width - self.style.horizontal_inset()).max(0.0);
+                    let mut total: f32 = 0.0;
+                    let mut line_max_h: f32 = 0.0;
+                    let mut cursor: f32 = 0.0;
+                    let mut is_first = true;
+                    for child_ref in self.children.iter() {
+                        let is_absolute = {
+                            let child = child_ref.lock().expect("widget lock poisoned");
+                            child.is_absolute_positioned()
+                        };
+                        if is_absolute {
+                            continue;
+                        }
+                        let (cw, ch) = get_dimensions(child_ref);
+                        let projected = if is_first {
+                            cursor + cw
+                        } else {
+                            cursor + self.style.gap + cw
+                        };
+                        if !is_first && projected > line_main_max {
+                            total += line_max_h + self.style.gap;
+                            line_max_h = 0.0;
+                            cursor = 0.0;
+                            is_first = true;
+                        }
+                        if !is_first {
+                            cursor += self.style.gap;
+                        }
+                        cursor += cw;
+                        line_max_h = line_max_h.max(ch);
+                        is_first = false;
+                    }
+                    total += line_max_h;
+                    let unclamped = total + self.style.vertical_inset();
+                    let max_height = if parent_direction.is_row() {
+                        parent_height
+                    } else {
+                        parent_available_height
+                    };
+                    return (
+                        width,
+                        if max_height > 0.0 {
+                            unclamped.min(max_height)
+                        } else {
+                            unclamped
+                        },
+                    );
+                }
+
+                let child_size = if self.style.direction.is_row() {
+                    self.style
+                        .direction
+                        .get_shrink_max_size(&self.children, get_dimensions)
+                } else {
+                    self.style
+                        .direction
+                        .get_shrink_size(&self.children, get_dimensions)
+                };
+
+                let non_absolute_count = self
+                    .children
+                    .iter()
+                    .filter(|child| {
+                        let child = child.lock().expect("widget lock poisoned");
+                        !child.is_absolute_positioned()
+                    })
+                    .count();
+                let gap_size = if non_absolute_count > 1 && !self.style.direction.is_row() {
+                    self.style.gap * (non_absolute_count - 1) as f32
+                } else {
+                    0.0
+                };
+
+                let unclamped = child_size + self.style.vertical_inset() + gap_size;
+
+                // Clamp shrink height to parent constraints so it can't exceed
+                // the space the parent offers.
+                let max_height = if parent_direction.is_row() {
+                    parent_height // cross axis — full parent height
+                } else {
+                    parent_available_height // main axis — share of available
+                };
+                if max_height > 0.0 {
+                    unclamped.min(max_height)
+                } else {
+                    unclamped
+                }
+            }
+            Size::Grow(basis) => {
+                if parent_direction.is_row() {
+                    parent_height
+                } else {
+                    self.style.direction.get_grow_size(
+                        basis,
+                        sibling_basis,
+                        parent_available_height,
+                    )
+                }
+            }
+            Size::Percent(_) => 0.0, // Will be calculated during layout based on parent
+        };
+        (width, height)
+    }
+
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
@@ -802,358 +1168,25 @@ impl Widget for FlexWidget {
         parent_available_height: f32,
         sibling_basis: f32,
     ) -> (f32, f32) {
-        // Under a measuring shrink ancestor, grow on the measured axis
-        // resolves as shrink — a shrink parent has no leftover space to
-        // grow into, so the child's content is its honest contribution
-        // (the ancestor's real `layout` pass stretches it afterwards).
-        let width = match ctx.effective_width(self.style.width) {
-            Size::Fixed(w) => w,
-            Size::Shrink => {
-                let _occupied_width: f32 = self.get_children_fixed_width();
-                let occupied_height = self.get_children_fixed_height();
-                let children_basis = self.get_children_basis();
-
-                // Symmetric to the shrink-height path below: a column's WIDTH
-                // (cross axis) can depend on a child's HEIGHT (main axis).
-                // Resolve each child's real main-axis height budget (fixed +
-                // shrink pre-pass + grow pool) so a `height: grow` child isn't
-                // measured at ~1px height during width resolution.
-                let (col_avail_h, col_avail_h_for_grow) = if !self.style.direction.is_row() {
-                    let non_absolute_count = self
-                        .children
-                        .iter()
-                        .filter(|c| {
-                            !c.lock()
-                                .expect("widget lock poisoned")
-                                .is_absolute_positioned()
-                        })
-                        .count();
-                    let gap_space = if non_absolute_count > 1 {
-                        self.style.gap * (non_absolute_count - 1) as f32
-                    } else {
-                        0.0
-                    };
-                    // Same unbounded-main-axis rule as `layout`: a scroll
-                    // column measures its children at natural height.
-                    let avail_h = if self.style.overflow == Overflow::Scroll {
-                        f32::INFINITY
-                    } else {
-                        (parent_available_height - occupied_height - gap_space).max(0.0)
-                    };
-                    let mut shrink_main_total = 0.0;
-                    for child_ref in self.children.iter() {
-                        let child = child_ref.lock().expect("widget lock poisoned");
-                        if child.is_absolute_positioned()
-                            || child.get_basis(&self.style.direction) > 0.0
-                            || child.get_fixed_height().is_some()
-                        {
-                            continue;
-                        }
-                        let (_, ch) = child.get_dimensions(
-                            ctx,
-                            &self.style.direction,
-                            parent_width,
-                            parent_available_width,
-                            parent_height,
-                            avail_h,
-                            children_basis,
-                        );
-                        shrink_main_total += ch;
-                    }
-                    (avail_h, (avail_h - shrink_main_total).max(0.0))
-                } else {
-                    (0.0, 0.0)
-                };
-
-                // Measuring our own width: grow widths below resolve as
-                // content (see `LayoutContext::measuring_width`).
-                let measure_ctx = ctx.measuring_width();
-                let get_dimensions = |child: &WidgetRef| {
-                    let child = child.lock().expect("widget lock poisoned");
-                    if child.is_absolute_positioned() {
-                        return (0.0, 0.0);
-                    }
-                    let child_available_width = if self.style.direction.is_row() {
-                        0.0
-                    } else {
-                        parent_available_width
-                    };
-                    let child_available_height = if !self.style.direction.is_row() {
-                        if child.get_basis(&self.style.direction) > 0.0 {
-                            col_avail_h_for_grow
-                        } else {
-                            col_avail_h
-                        }
-                    } else {
-                        parent_available_height - occupied_height
-                    };
-                    child.get_dimensions(
-                        &measure_ctx,
-                        &self.style.direction,
-                        parent_width,
-                        child_available_width,
-                        parent_height,
-                        child_available_height,
-                        children_basis,
-                    )
-                };
-                let child_size = if self.style.direction.is_row() {
-                    self.style
-                        .direction
-                        .get_shrink_size(&self.children, get_dimensions)
-                } else {
-                    self.style
-                        .direction
-                        .get_shrink_max_size(&self.children, get_dimensions)
-                };
-
-                let non_absolute_count = self
-                    .children
-                    .iter()
-                    .filter(|child| {
-                        let child = child.lock().expect("widget lock poisoned");
-                        !child.is_absolute_positioned()
-                    })
-                    .count();
-                let gap_size = if non_absolute_count > 1 && self.style.direction.is_row() {
-                    self.style.gap * (non_absolute_count - 1) as f32
-                } else {
-                    0.0
-                };
-
-                let unclamped = child_size + self.style.horizontal_inset() + gap_size;
-
-                // Clamp shrink width to parent constraints so it can't exceed
-                // the space the parent offers.
-                let max_width = if parent_direction.is_row() {
-                    parent_available_width // main axis — share of available
-                } else {
-                    parent_width // cross axis — full parent width
-                };
-                if max_width > 0.0 {
-                    unclamped.min(max_width)
-                } else {
-                    unclamped
-                }
-            }
-            Size::Grow(basis) => {
-                // A child's own `direction` should not affect how its size is allocated by its parent.
-                // Width grows along the parent's main axis only when the parent is a row.
-                if parent_direction.is_row() {
-                    parent_direction.get_grow_size(basis, sibling_basis, parent_available_width)
-                } else {
-                    parent_width
-                }
-            }
-            Size::Percent(_) => 0.0, // Will be calculated during layout based on parent
-        };
-
-        let height = match ctx.effective_height(self.style.height) {
-            Size::Fixed(h) => h,
-            Size::Shrink => {
-                let children_basis = self.get_children_basis();
-                // `width` is already resolved by this point — pass it
-                // (and self's own content width) down so children see the
-                // same width budget they will see during `layout`. Using
-                // the outer `parent_width` here was confusing wrap-aware
-                // height measurement: a 280-wide sidebar would hand its
-                // children the full window width and they would all
-                // measure as fitting on one line.
-                let self_content_width = (width - self.style.horizontal_inset()).max(0.0);
-
-                // A row's HEIGHT (cross axis) depends on each child's WIDTH
-                // (main axis). Measuring children at width 0 — the old behavior
-                // — made a `width: grow` child resolve to ~1px (Grow returns its
-                // basis when available <= 0), so a `height: shrink` Text laid its
-                // paragraph out at ~1px and wrapped one glyph per line, ballooning
-                // the row's shrink height. Resolve each child's real main-axis
-                // width budget the SAME way `layout()` does (fixed + shrink
-                // pre-pass + grow pool) so heights are measured at render width.
-                let (row_avail_w, row_avail_w_for_grow) = if self.style.direction.is_row() {
-                    let non_absolute_count = self
-                        .children
-                        .iter()
-                        .filter(|c| {
-                            !c.lock()
-                                .expect("widget lock poisoned")
-                                .is_absolute_positioned()
-                        })
-                        .count();
-                    let gap_space = if non_absolute_count > 1 {
-                        self.style.gap * (non_absolute_count - 1) as f32
-                    } else {
-                        0.0
-                    };
-                    let avail_w =
-                        (self_content_width - self.get_children_fixed_width() - gap_space).max(0.0);
-                    // Pre-pass: subtract Shrink-on-main siblings from the grow
-                    // pool so a grow child isn't measured wider than it renders.
-                    let mut shrink_main_total = 0.0;
-                    for child_ref in self.children.iter() {
-                        let child = child_ref.lock().expect("widget lock poisoned");
-                        if child.is_absolute_positioned()
-                            || child.get_basis(&self.style.direction) > 0.0
-                            || child.get_fixed_width().is_some()
-                        {
-                            continue;
-                        }
-                        let (cw, _) = child.get_dimensions(
-                            ctx,
-                            &self.style.direction,
-                            width,
-                            avail_w,
-                            parent_height,
-                            parent_available_height,
-                            children_basis,
-                        );
-                        shrink_main_total += cw;
-                    }
-                    (avail_w, (avail_w - shrink_main_total).max(0.0))
-                } else {
-                    (0.0, 0.0)
-                };
-
-                // Measuring our own height: grow heights below resolve as
-                // content (see `LayoutContext::measuring_height`).
-                let measure_ctx = ctx.measuring_height();
-                let get_dimensions = |child: &WidgetRef| {
-                    let child = child.lock().expect("widget lock poisoned");
-                    if child.is_absolute_positioned() {
-                        return (0.0, 0.0);
-                    }
-                    let child_available_width = if self.style.direction.is_row() {
-                        if child.get_basis(&self.style.direction) > 0.0 {
-                            row_avail_w_for_grow
-                        } else {
-                            row_avail_w
-                        }
-                    } else {
-                        self_content_width
-                    };
-                    let child_available_height = if !self.style.direction.is_row() {
-                        0.0
-                    } else {
-                        parent_available_height
-                    };
-                    child.get_dimensions(
-                        &measure_ctx,
-                        &self.style.direction,
-                        width,
-                        child_available_width,
-                        parent_height,
-                        child_available_height,
-                        children_basis,
-                    )
-                };
-
-                // For wrap-row containers the shrink height is the sum of
-                // each line's tallest child plus the gap between lines.
-                // We re-run the same wrap walk used by `layout` so the
-                // measurement matches. `width` is already resolved here so
-                // we can compute the line budget directly.
-                if self.style.flex_wrap && self.style.direction.is_row() {
-                    let line_main_max = (width - self.style.horizontal_inset()).max(0.0);
-                    let mut total: f32 = 0.0;
-                    let mut line_max_h: f32 = 0.0;
-                    let mut cursor: f32 = 0.0;
-                    let mut is_first = true;
-                    for child_ref in self.children.iter() {
-                        let is_absolute = {
-                            let child = child_ref.lock().expect("widget lock poisoned");
-                            child.is_absolute_positioned()
-                        };
-                        if is_absolute {
-                            continue;
-                        }
-                        let (cw, ch) = get_dimensions(child_ref);
-                        let projected = if is_first {
-                            cursor + cw
-                        } else {
-                            cursor + self.style.gap + cw
-                        };
-                        if !is_first && projected > line_main_max {
-                            total += line_max_h + self.style.gap;
-                            line_max_h = 0.0;
-                            cursor = 0.0;
-                            is_first = true;
-                        }
-                        if !is_first {
-                            cursor += self.style.gap;
-                        }
-                        cursor += cw;
-                        line_max_h = line_max_h.max(ch);
-                        is_first = false;
-                    }
-                    total += line_max_h;
-                    let unclamped = total + self.style.vertical_inset();
-                    let max_height = if parent_direction.is_row() {
-                        parent_height
-                    } else {
-                        parent_available_height
-                    };
-                    return (
-                        width,
-                        if max_height > 0.0 {
-                            unclamped.min(max_height)
-                        } else {
-                            unclamped
-                        },
-                    );
-                }
-
-                let child_size = if self.style.direction.is_row() {
-                    self.style
-                        .direction
-                        .get_shrink_max_size(&self.children, get_dimensions)
-                } else {
-                    self.style
-                        .direction
-                        .get_shrink_size(&self.children, get_dimensions)
-                };
-
-                let non_absolute_count = self
-                    .children
-                    .iter()
-                    .filter(|child| {
-                        let child = child.lock().expect("widget lock poisoned");
-                        !child.is_absolute_positioned()
-                    })
-                    .count();
-                let gap_size = if non_absolute_count > 1 && !self.style.direction.is_row() {
-                    self.style.gap * (non_absolute_count - 1) as f32
-                } else {
-                    0.0
-                };
-
-                let unclamped = child_size + self.style.vertical_inset() + gap_size;
-
-                // Clamp shrink height to parent constraints so it can't exceed
-                // the space the parent offers.
-                let max_height = if parent_direction.is_row() {
-                    parent_height // cross axis — full parent height
-                } else {
-                    parent_available_height // main axis — share of available
-                };
-                if max_height > 0.0 {
-                    unclamped.min(max_height)
-                } else {
-                    unclamped
-                }
-            }
-            Size::Grow(basis) => {
-                if parent_direction.is_row() {
-                    parent_height
-                } else {
-                    self.style.direction.get_grow_size(
-                        basis,
-                        sibling_basis,
-                        parent_available_height,
-                    )
-                }
-            }
-            Size::Percent(_) => 0.0, // Will be calculated during layout based on parent
-        };
-        (width, height)
+        let (width, height) = self.natural_dimensions(
+            ctx,
+            parent_direction,
+            parent_width,
+            parent_available_width,
+            parent_height,
+            parent_available_height,
+            sibling_basis,
+        );
+        // **`max_height` is a ceiling on whatever the rules above chose** —
+        // a shrink, a grow's share, a fixed height alike (CSS's order: the
+        // max wins over the height). Clamped here, at the one door every
+        // parent and this node's own `layout` ask, so no sizing path can
+        // step round it. A `scroll` column clamped this way scrolls what
+        // no longer fits, which is what the key is for.
+        match self.style.max_height {
+            Some(max) => (width, height.min(max)),
+            None => (width, height),
+        }
     }
 
     fn get_children(&self) -> Vec<WidgetRef> {
