@@ -1,4 +1,4 @@
-use crate::widget::animation::TransitionSet;
+use crate::widget::animation::{TransitionConfig, TransitionSet};
 use crate::widget::WidgetRef;
 
 /// Represents either the horizontal or vertical axis, used to unify
@@ -195,10 +195,22 @@ impl Opacity {
 /// components. Composed at paint time as
 /// `translate(center) * rotate * scale * translate(-center) * translate(tx, ty)`
 /// so scale and rotation pivot around the widget's center.
+///
+/// A translation has two parts that add: a length in logical pixels, and
+/// a percentage of the widget's own laid-out size (`translate_x: "-100%"`,
+/// as CSS writes it). The percentage is what lets a panel of any width
+/// slide exactly its own width off an edge without the document knowing
+/// how wide it is; it is resolved against the layout rect at paint time
+/// ([`Transform::resolved`]), and in percent rather than as a fraction so
+/// the springs' settle threshold stays well under a pixel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Transform {
     pub translate_x: f32,
     pub translate_y: f32,
+    /// Percent of the widget's own width, added to `translate_x`.
+    pub translate_x_percent: f32,
+    /// Percent of the widget's own height, added to `translate_y`.
+    pub translate_y_percent: f32,
     pub scale_x: f32,
     pub scale_y: f32,
     /// Rotation in degrees. Positive rotates clockwise (Skia convention).
@@ -215,6 +227,8 @@ impl Transform {
     pub const IDENTITY: Self = Self {
         translate_x: 0.0,
         translate_y: 0.0,
+        translate_x_percent: 0.0,
+        translate_y_percent: 0.0,
         scale_x: 1.0,
         scale_y: 1.0,
         rotate: 0.0,
@@ -223,9 +237,23 @@ impl Transform {
     pub fn is_identity(&self) -> bool {
         self.translate_x == 0.0
             && self.translate_y == 0.0
+            && self.translate_x_percent == 0.0
+            && self.translate_y_percent == 0.0
             && self.scale_x == 1.0
             && self.scale_y == 1.0
             && self.rotate == 0.0
+    }
+
+    /// The same transform with its percentages folded into the pixel
+    /// translation, against a box `width` × `height`. What paint reads.
+    pub fn resolved(&self, width: f32, height: f32) -> Self {
+        Self {
+            translate_x: self.translate_x + self.translate_x_percent / 100.0 * width,
+            translate_y: self.translate_y + self.translate_y_percent / 100.0 * height,
+            translate_x_percent: 0.0,
+            translate_y_percent: 0.0,
+            ..*self
+        }
     }
 }
 
@@ -567,6 +595,11 @@ pub struct TextStyle {
     /// Extra tracking between glyphs, logical px (CSS `letter-spacing`).
     /// 0 = the font's natural fit. Scales with DPI alongside the font size.
     pub letter_spacing: f32,
+    /// The spring `color` travels on when it changes — a new value from
+    /// the document, or the widget entering or leaving its `hover_style`.
+    /// `None` snaps. Colour is the one text property that animates: it
+    /// is paint-only, so a spring on it never re-measures anything.
+    pub color_transition: Option<TransitionConfig>,
 }
 
 impl TextStyle {
@@ -701,6 +734,7 @@ impl Default for TextStyle {
             outline: None,
             shadows: Vec::new(),
             letter_spacing: 0.0,
+            color_transition: None,
         }
     }
 }

@@ -68,12 +68,25 @@ The exhaustive list:
 | `gap`               | `f32`           | `Spring`          | yes |
 | `text_size`         | `Option<f32>`   | `Spring`          | yes |
 | `opacity`           | `Opacity` (f32) | `Spring`          | no (paint-only) |
-| `transform`         | 5 scalars       | `TransformSprings` | no (paint-only) |
+| `transform`         | 7 scalars (the two translations each in pixels and in percent of the widget's own size) | `TransformSprings` | no (paint-only) |
 
 Anything else snaps. The `transitions` field on `FlexStyle` is a
 `TransitionSet` with one `Option<TransitionConfig>` per
 animatable property; `None` means snap, `Some(cfg)` means use the
 configured spring.
+
+A `background_color` unset at one end of a change is read as the
+other end's colour at zero alpha, so a fill appearing or going away
+fades rather than snapping. When a fade to nothing settles, the spring
+is dropped and the target's `None` shows through.
+
+**`Text` is outside the table and has one animatable property of its
+own**: `TextStyle::color_transition`, written `transition: { color }`
+on a Text's style. `TextWidget` holds a `ColorSprings` while its shown
+colour differs from its effective style's, retargets it on `update`
+and on `set_hovered`, and ticks it in `tick_animations`. Colour is the
+whole list, because it is the only thing a Text draws that cannot
+change what it measures.
 
 ### Tenets — the property set is closed
 

@@ -41,6 +41,9 @@ pub struct FlexWidget {
     /// exit animation).
     pub exit_style: Option<FlexStyle>,
     pub hovered: bool,
+    /// Take hover from the parent rather than the pointer
+    /// ([`Widget::hovers_with_parent`]).
+    pub hover_with_parent: bool,
     pub block_interactions: bool,
     /// Lay the children out **on top of one another** rather than in a
     /// flow: every child takes the whole content box, and the last one
@@ -510,6 +513,7 @@ impl FlexWidget {
             initial_style: None,
             exit_style: None,
             hovered: false,
+            hover_with_parent: false,
             block_interactions: true,
             stack: false,
             layout: None,
@@ -542,6 +546,7 @@ impl FlexWidget {
             initial_style: None,
             exit_style: None,
             hovered: false,
+            hover_with_parent: false,
             block_interactions: true,
             stack: false,
             layout: None,
@@ -1074,6 +1079,7 @@ impl Widget for FlexWidget {
             self.initial_style = new_flex_widget.initial_style.clone();
             self.exit_style = new_flex_widget.exit_style.clone();
             self.block_interactions = new_flex_widget.block_interactions;
+            self.hover_with_parent = new_flex_widget.hover_with_parent;
             self.key = new_flex_widget.key.clone();
             std::mem::swap(
                 &mut self.event_listeners,
@@ -1909,6 +1915,10 @@ impl Widget for FlexWidget {
         "box"
     }
 
+    fn hovers_with_parent(&self) -> bool {
+        self.hover_with_parent
+    }
+
     fn set_hovered(&mut self, hovered: bool) {
         if self.hovered == hovered {
             return;
@@ -1951,9 +1961,14 @@ impl Widget for FlexWidget {
             .as_ref()
             .map(|r| (r.x + r.width / 2.0, r.y + r.height / 2.0))
             .unwrap_or((0.0, 0.0));
+        let (width, height) = self
+            .layout
+            .as_ref()
+            .map(|r| (r.width, r.height))
+            .unwrap_or((0.0, 0.0));
         Some(crate::widget::RenderEffects {
             opacity: style.opacity.value(),
-            transform: style.transform,
+            transform: style.transform.resolved(width, height),
             pivot_x,
             pivot_y,
         })

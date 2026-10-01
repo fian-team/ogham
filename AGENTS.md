@@ -403,7 +403,11 @@ Flex {
 }
 ```
 
-**`transition`** — declares which style properties spring-animate when their target value changes (hover/unhover, state-driven style updates). `"spring"` uses defaults; `{ stiffness: 200, damping: 28 }` tunes per property. Animatable properties: `background_color`, `text_color`, `border`, `corner_radius`, `padding`, `margin`, `gap`, `text_size`, `opacity`, `transform`. Non-animated properties snap immediately.
+**`transition`** — declares which style properties spring-animate when their target value changes (hover/unhover, state-driven style updates). `"spring"` uses defaults; `{ stiffness: 200, damping: 28 }` tunes per property. Animatable properties: `background_color`, `text_color`, `border`, `corner_radius`, `padding`, `margin`, `gap`, `text_size`, `opacity`, `transform`. Non-animated properties snap immediately. A `background_color` that is unset at one end fades from or to the other end's colour at zero alpha, so a hover wash over a box with no resting fill fades in and out rather than snapping.
+
+**A `Text`'s colour animates too**: `Text { style: { color: …, transition: { color: { stiffness: 250, damping: 30 } } } }` (or `transition: "spring"`) springs the ink on a new value from the document and on entering or leaving its `hover_style`. Colour is the only text property that animates — it is paint-only, so it never re-measures anything.
+
+**`hover_with_parent: true`** (on `Flex` and `Text`) — the widget is hovered exactly while its parent is, wherever in the parent the pointer is, rather than only while the pointer is over the widget itself. It is how an icon inks in when its whole row is hovered (CSS's `.row:hover .icon`). It chains: set it on the icon *and* the box around it to reach the row.
 
 **`initial`** — style snapshot the widget is born at. The widget's first frame renders at `initial`; subsequent ticks spring toward the declared `style` (target). Without `initial`, the widget mounts at its declared style with no entry animation.
 
@@ -433,6 +437,8 @@ Use `Presence` for route boundaries; nest one per "slot" that should transition 
 #### Opacity and transform style properties
 
 `opacity` (number 0..1, default 1) and `transform` (`{ translate_x, translate_y, scale, scale_x, scale_y, rotate }`, default identity) are paint-only — they don't affect layout or hit-testing. `transform` pivots around the widget's center. Both are spring-animatable when listed in `transition:`.
+
+A translation is logical pixels, or a **percentage of the widget's own laid-out size** written as a string: `translate_x: "-100%"` slides a panel exactly its own width, whatever that width turns out to be. The percentage resolves against the layout rect at paint time, so it works in `initial:` and `exit:` — a page that enters from `translate_x: "-100%"` comes in from one page-width to the left.
 
 #### `backdrop_filter` — frosted glass over what's behind a panel
 
@@ -759,6 +765,7 @@ id is distinguishable from a host with nothing to point at.
 | Measured size | The **union of the portal's children's** laid-out rects — not the Portal's own rect, which is `grow`/`grow`. Give an anchored Portal *one* content child. A full-viewport backdrop sibling (the `Modal` composition pattern) makes the measured box the viewport, and `clamp` then pins it to the corner. |
 | Collision | Policies resolve against the *viewport* only. Two anchored tooltips overlapping is the host's problem. |
 | Anchoring to a widget | `anchor: "parent"` seats the entry against the border box of the nearest ancestor with a non-zero rect — the widget the Portal is declared inside. Below its bottom-left by default; `flip` puts it above the box's top. `focus_trap` is allowed with it. There is no "the widget with key `foo`". `docs/internal/ANCHORED_PORTALS.md` §7. |
+| Opening on hover | `open: "hover"` opens the portal exactly while the widget it is declared inside is hovered — the tooltip, with no state in the document. The content mounts on the first frame of the hover and replays its `initial:` each time, so a `delay` on its entry spring is the show delay; it is taken down at once when the hover ends. Pair it with `layer: "tooltip"`, whose backdrop lets hover through. |
 
 ### Host-painted `Canvas`
 

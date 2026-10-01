@@ -571,15 +571,21 @@ fn parse_stagger_value(value: &Value) -> Option<StaggerConfig> {
 ///   number as meaningless for transforms and ignore it.
 /// - `{ translate_x, translate_y, scale, scale_x, scale_y, rotate }` —
 ///   missing fields default to identity values. `scale` sets both axes.
+///   A translation is a number of logical pixels, or a string
+///   percentage of the widget's own size on that axis (`"-100%"`).
 fn parse_transform_value(value: &Value) -> Option<Transform> {
     match value {
         Value::Map(map) => {
             let mut t = Transform::IDENTITY;
-            if let Some(v) = map.get("translate_x").and_then(value_to_f32) {
-                t.translate_x = v;
+            match map.get("translate_x").map(parse_translation) {
+                Some(Some(Translation::Pixels(v))) => t.translate_x = v,
+                Some(Some(Translation::Percent(v))) => t.translate_x_percent = v,
+                _ => {}
             }
-            if let Some(v) = map.get("translate_y").and_then(value_to_f32) {
-                t.translate_y = v;
+            match map.get("translate_y").map(parse_translation) {
+                Some(Some(Translation::Pixels(v))) => t.translate_y = v,
+                Some(Some(Translation::Percent(v))) => t.translate_y_percent = v,
+                _ => {}
             }
             if let Some(v) = map.get("scale").and_then(value_to_f32) {
                 t.scale_x = v;
@@ -597,6 +603,25 @@ fn parse_transform_value(value: &Value) -> Option<Transform> {
             Some(t)
         }
         _ => None,
+    }
+}
+
+/// One axis of a `transform:` translation, as written.
+enum Translation {
+    Pixels(f32),
+    Percent(f32),
+}
+
+/// A number is pixels; a string ending in `%` is a percentage of the
+/// widget's own size. Anything else is not a translation.
+fn parse_translation(value: &Value) -> Option<Translation> {
+    match value {
+        Value::String(s) => s
+            .trim()
+            .strip_suffix('%')
+            .and_then(|n| n.trim().parse::<f32>().ok())
+            .map(Translation::Percent),
+        other => value_to_f32(other).map(Translation::Pixels),
     }
 }
 
@@ -769,6 +794,15 @@ fn apply_text_style_from_map(style: &mut TextStyle, map: &HashMap<String, Value>
                     style.letter_spacing = ls;
                 }
             }
+            // `transition: { color: <spring> }`, or `"spring"` for the
+            // default. Colour is the only key: nothing else a Text draws
+            // animates.
+            "transition" => {
+                style.color_transition = match value {
+                    Value::Map(map) => map.get("color").and_then(parse_transition_entry),
+                    other => parse_transition_entry(other),
+                };
+            }
             _ => {}
         }
     }
@@ -845,6 +879,9 @@ fn create_flex_widget(
     // block_interactions: when false, clicks are only "handled" if a child or listener handled them
     if let Some(Value::Boolean(b)) = descriptor.properties.get("block_interactions") {
         flex_widget.block_interactions = *b;
+    }
+    if let Some(Value::Boolean(b)) = descriptor.properties.get("hover_with_parent") {
+        flex_widget.hover_with_parent = *b;
     }
 
     let mut style = FlexStyle::default();
@@ -1231,10 +1268,14 @@ fn create_portal_widget(
     if let Some(value) = descriptor.properties.get("open") {
         match value {
             Value::Boolean(b) => portal.open = *b,
+            Value::String(s) if s == "hover" => portal.open_on_hover = true,
             other => {
                 return Err(BridgeError::InvalidPropertyType(
                     "open".to_string(),
-                    format!("Portal expects 'open' as a boolean; got {:?}", other),
+                    format!(
+                        "Portal expects 'open' as a boolean or \"hover\"; got {:?}",
+                        other
+                    ),
                 ));
             }
         }
@@ -1499,7 +1540,13 @@ fn create_portal_widget(
             }
         }
     }
-    portal.inner.children = children;
+    // A hover-opened portal holds its content out of the tree until the
+    // first hover mounts it.
+    if portal.open_on_hover {
+        portal.set_resting(children);
+    } else {
+        portal.inner.children = children;
+    }
 
     Ok(Arc::new(Mutex::new(portal)))
 }
@@ -1543,6 +1590,9 @@ fn create_text_widget(
         let mut hover_style = text_widget.style.clone();
         apply_text_style_from_map(&mut hover_style, hover_map);
         text_widget.hover_style = Some(hover_style);
+    }
+    if let Some(Value::Boolean(b)) = descriptor.properties.get("hover_with_parent") {
+        text_widget.hover_with_parent = *b;
     }
 
     Ok(Arc::new(Mutex::new(text_widget)))

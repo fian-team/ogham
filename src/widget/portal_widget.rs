@@ -7,6 +7,14 @@
 //! - `open: bool` — when true, children are mounted into the
 //!   portal layer; when false, children are reconciled out (entry
 //!   /exit animations apply normally).
+//! - `open: "hover"` — open exactly while the widget the Portal is
+//!   declared inside is hovered, with no state in the document: the
+//!   tooltip's opener. The portal follows its parent's hover
+//!   ([`Widget::hovers_with_parent`]); on the first frame of a hover
+//!   it mounts the content it was last given and replays its entry
+//!   (so a delayed `initial` fade is the tooltip's show delay), and on
+//!   the first frame after it takes the content back at once — a
+//!   tooltip does not linger while the pointer moves on.
 //! - `focus_trap: bool` — parsed in M3, wired in M4. Marks the
 //!   portal as input-blocking; `Runtime::has_input_blocking_portal`
 //!   returns true while any open portal has it set.
@@ -51,6 +59,17 @@ pub struct PortalWidget {
     /// with the viewport bounds).
     pub inner: FlexWidget,
     pub open: bool,
+    /// `open: "hover"`: open while the parent is hovered.
+    pub open_on_hover: bool,
+    /// The parent's hover, adopted by the hover walk.
+    hovered: bool,
+    /// Whether the hover-opened content is mounted right now. Moves one
+    /// tick behind `hovered`, because mounting needs a layout pass and
+    /// a hover change only asks for a repaint.
+    hover_open: bool,
+    /// The content a hover-opened portal holds while it is not showing:
+    /// the last children the document gave it, out of the tree.
+    resting: Vec<WidgetRef>,
     pub focus_trap: bool,
     /// Phase 2.5 M0: which named layer this portal renders
     /// into. Determines paint priority and backdrop policy.
@@ -109,6 +128,10 @@ impl PortalWidget {
         Self {
             inner,
             open: false,
+            open_on_hover: false,
+            hovered: false,
+            hover_open: false,
+            resting: Vec::new(),
             focus_trap: false,
             layer: PortalLayer::OverlayModal,
             cursor: None,
@@ -135,10 +158,15 @@ impl PortalWidget {
             .unwrap_or_else(|| self.layer.default_backdrop())
     }
 
+    /// Seat the content a hover-opened portal shows on its next hover.
+    pub fn set_resting(&mut self, children: Vec<WidgetRef>) {
+        self.resting = children;
+    }
+
     /// True if this portal is currently open and should defer
     /// to the per-frame portal_layer for paint + hit-test.
     pub fn is_open(&self) -> bool {
-        self.open
+        self.open || self.hover_open
     }
 }
 
@@ -155,7 +183,7 @@ impl Widget for PortalWidget {
 
     fn as_portal(&self) -> Option<PortalInfo> {
         Some(PortalInfo {
-            open: self.open,
+            open: self.is_open(),
             focus_trap: self.focus_trap,
             layer: self.layer,
             cursor: self.effective_cursor(),
@@ -193,6 +221,42 @@ impl Widget for PortalWidget {
             Some(p) => p,
             None => return UpdateResult::replace(),
         };
+        // A hover-opened portal takes the document's children into the
+        // tree only while it is showing; otherwise they rest until the
+        // next hover.
+        if new_portal.open_on_hover {
+            self.open_on_hover = true;
+            self.open = false;
+            self.layer = new_portal.layer;
+            self.cursor = new_portal.cursor;
+            self.anchor = new_portal.anchor.take();
+            self.anchor_policy = new_portal.anchor_policy;
+            self.anchor_offset = new_portal.anchor_offset;
+            self.anchor_parent = new_portal.anchor_parent;
+            self.backdrop = new_portal.backdrop;
+            self.owned_path_prefix = new_portal.owned_path_prefix.clone();
+            let incoming = if new_portal.resting.is_empty() {
+                std::mem::take(&mut new_portal.inner.children)
+            } else {
+                std::mem::take(&mut new_portal.resting)
+            };
+            if self.hover_open {
+                let mut incoming = incoming;
+                return self.inner.reconcile_children(&mut incoming);
+            }
+            self.resting = incoming;
+            return UpdateResult {
+                absorbed: true,
+                needs_layout: false,
+                needs_repaint: false,
+                cancelled_unmount_prefixes: Vec::new(),
+                drained_path_prefixes: Vec::new(),
+            };
+        }
+        self.open_on_hover = false;
+        self.hover_open = false;
+        self.resting.clear();
+
         let was_open = self.open;
         let open_changed = self.open != new_portal.open;
         let trap_changed = self.focus_trap != new_portal.focus_trap;
@@ -394,7 +458,40 @@ impl Widget for PortalWidget {
         None
     }
 
+    fn hovers_with_parent(&self) -> bool {
+        self.open_on_hover
+    }
+
+    fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+
+    fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
     fn tick_animations(&mut self, ctx: &mut crate::widget::event::TickContext) -> TickResult {
+        if self.open_on_hover && self.hovered != self.hover_open {
+            if self.hovered {
+                let content = std::mem::take(&mut self.resting);
+                for child in &content {
+                    child
+                        .lock()
+                        .expect("widget lock poisoned")
+                        .restart_entry_animation();
+                }
+                self.inner.children = content;
+            } else {
+                self.resting = std::mem::take(&mut self.inner.children);
+            }
+            self.hover_open = self.hovered;
+            let inner = self.inner.tick_animations(ctx);
+            return TickResult {
+                needs_repaint: true,
+                needs_layout: true,
+                still_animating: inner.still_animating,
+            };
+        }
         if !self.open {
             // Even when closed, we still tick exit-animation
             // springs on children that began exiting in the

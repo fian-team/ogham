@@ -1426,8 +1426,15 @@ impl UI {
                         !g.is_exiting() && g.contains_point(&child_point)
                     });
                 for child in &children {
-                    changed |=
-                        Self::update_hover_recursive(child, &child_point, !claims, &entry_widgets);
+                    // A portal's content has no parent in the tree it is
+                    // hovered in, so nothing in it can follow one.
+                    changed |= Self::update_hover_recursive(
+                        child,
+                        &child_point,
+                        !claims,
+                        false,
+                        &entry_widgets,
+                    );
                 }
                 settled |= claims;
             }
@@ -1437,7 +1444,7 @@ impl UI {
             }
         }
         let root = self.root.clone();
-        changed |= Self::update_hover_recursive(&root, point, settled, &entry_widgets);
+        changed |= Self::update_hover_recursive(&root, point, settled, false, &entry_widgets);
         self.hover_obstructed = obstructed;
         changed
     }
@@ -1463,15 +1470,23 @@ impl UI {
     /// Portal nodes with a layer entry this frame: the walk stops at one
     /// of those, because its content is hovered by the layer pass at its
     /// painted position, and clears the content of any other Portal node.
+    /// `parent_hit` is the parent's own result, which a widget that
+    /// [`Widget::hovers_with_parent`] adopts in place of a hit test.
     fn update_hover_recursive(
         widget_ref: &WidgetRef,
         point: &Point,
         suppressed: bool,
+        parent_hit: bool,
         entry_widgets: &[WidgetRef],
     ) -> bool {
         let mut widget = widget_ref.lock().expect("widget lock poisoned");
         let suppressed = suppressed || widget.is_exiting();
-        let hit = !suppressed && widget.contains_point(point);
+        let hit = !suppressed
+            && if widget.hovers_with_parent() {
+                parent_hit
+            } else {
+                widget.contains_point(point)
+            };
 
         let was_hovered = widget.is_hovered();
         widget.set_hovered(hit);
@@ -1511,7 +1526,8 @@ impl UI {
         drop(widget);
 
         for child in &children {
-            changed |= Self::update_hover_recursive(child, &child_point, suppressed, entry_widgets);
+            changed |=
+                Self::update_hover_recursive(child, &child_point, suppressed, hit, entry_widgets);
         }
 
         changed
@@ -2373,6 +2389,17 @@ pub trait Widget: Downcast {
     /// use this flag to decide whether to merge the override into their
     /// effective style.
     fn set_hovered(&mut self, _hovered: bool) {}
+
+    /// Whether this widget takes its hover from its parent rather than
+    /// from the pointer: hovered exactly while the parent is, wherever
+    /// inside the parent the pointer is (`hover_with_parent: true`). It is
+    /// how an icon brightens when its whole row is under the pointer and
+    /// not only its own glyph — CSS writes it `.row:hover .icon`. Chains:
+    /// a following child of a following child tracks the nearest
+    /// ancestor that hit-tests for itself.
+    fn hovers_with_parent(&self) -> bool {
+        false
+    }
 
     /// Returns whether this widget is currently hovered.
     fn is_hovered(&self) -> bool {

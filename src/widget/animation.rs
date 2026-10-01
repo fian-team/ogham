@@ -567,11 +567,13 @@ impl BorderSprings {
     }
 }
 
-/// Springs for the five scalar components of an affine transform.
+/// Springs for the scalar components of an affine transform.
 #[derive(Debug, Clone)]
 pub struct TransformSprings {
     pub translate_x: Spring,
     pub translate_y: Spring,
+    pub translate_x_percent: Spring,
+    pub translate_y_percent: Spring,
     pub scale_x: Spring,
     pub scale_y: Spring,
     pub rotate: Spring,
@@ -582,6 +584,8 @@ impl TransformSprings {
         Self {
             translate_x: Spring::new(t.translate_x, cfg),
             translate_y: Spring::new(t.translate_y, cfg),
+            translate_x_percent: Spring::new(t.translate_x_percent, cfg),
+            translate_y_percent: Spring::new(t.translate_y_percent, cfg),
             scale_x: Spring::new(t.scale_x, cfg),
             scale_y: Spring::new(t.scale_y, cfg),
             rotate: Spring::new(t.rotate, cfg),
@@ -591,6 +595,8 @@ impl TransformSprings {
     pub fn set_target(&mut self, t: &Transform) {
         self.translate_x.set_target(t.translate_x);
         self.translate_y.set_target(t.translate_y);
+        self.translate_x_percent.set_target(t.translate_x_percent);
+        self.translate_y_percent.set_target(t.translate_y_percent);
         self.scale_x.set_target(t.scale_x);
         self.scale_y.set_target(t.scale_y);
         self.rotate.set_target(t.rotate);
@@ -602,13 +608,17 @@ impl TransformSprings {
         let c = self.scale_x.tick(dt);
         let d = self.scale_y.tick(dt);
         let e = self.rotate.tick(dt);
-        a || b || c || d || e
+        let f = self.translate_x_percent.tick(dt);
+        let g = self.translate_y_percent.tick(dt);
+        a || b || c || d || e || f || g
     }
 
     pub fn current(&self) -> Transform {
         Transform {
             translate_x: self.translate_x.current,
             translate_y: self.translate_y.current,
+            translate_x_percent: self.translate_x_percent.current,
+            translate_y_percent: self.translate_y_percent.current,
             scale_x: self.scale_x.current,
             scale_y: self.scale_y.current,
             rotate: self.rotate.current,
@@ -618,6 +628,8 @@ impl TransformSprings {
     pub fn is_settled(&self) -> bool {
         self.translate_x.is_settled()
             && self.translate_y.is_settled()
+            && self.translate_x_percent.is_settled()
+            && self.translate_y_percent.is_settled()
             && self.scale_x.is_settled()
             && self.scale_y.is_settled()
             && self.rotate.is_settled()
@@ -626,6 +638,8 @@ impl TransformSprings {
     pub fn add_delay(&mut self, secs: f32) {
         self.translate_x.add_delay(secs);
         self.translate_y.add_delay(secs);
+        self.translate_x_percent.add_delay(secs);
+        self.translate_y_percent.add_delay(secs);
         self.scale_x.add_delay(secs);
         self.scale_y.add_delay(secs);
         self.rotate.add_delay(secs);
@@ -679,21 +693,32 @@ impl AnimationState {
         // targeting the wrong value because `old` is read from the
         // un-ticked `self.style`.
 
-        // background_color
+        // background_color. An unset fill is the other end's colour at
+        // zero alpha, so a hover wash over a box with no resting fill
+        // fades in and out rather than snapping: the transition the
+        // author declared is honoured whichever end is missing. Once a
+        // fade to nothing settles, `tick` drops the spring and the target's
+        // `None` shows through.
         match target.transitions.background_color {
-            Some(cfg) => {
-                if let Some(new_c) = target.background_color {
-                    if let Some(springs) = self.background_color.as_mut() {
+            Some(cfg) => match (target.background_color, self.background_color.as_mut()) {
+                (Some(new_c), Some(springs)) => springs.set_target(new_c),
+                (None, Some(springs)) => springs.set_target(transparent(springs.current())),
+                (Some(new_c), None) => {
+                    let from = old.background_color.unwrap_or(transparent(new_c));
+                    if !color_matches(new_c, from) {
+                        let mut springs = ColorSprings::new(from, cfg);
                         springs.set_target(new_c);
-                    } else if let Some(old_c) = old.background_color {
-                        if !color_matches(new_c, old_c) {
-                            let mut springs = ColorSprings::new(old_c, cfg);
-                            springs.set_target(new_c);
-                            self.background_color = Some(springs);
-                        }
+                        self.background_color = Some(springs);
                     }
                 }
-            }
+                (None, None) => {
+                    if let Some(old_c) = old.background_color.filter(|c| c.a > 0) {
+                        let mut springs = ColorSprings::new(old_c, cfg);
+                        springs.set_target(transparent(old_c));
+                        self.background_color = Some(springs);
+                    }
+                }
+            },
             None => {
                 self.background_color = None;
             }
@@ -1078,6 +1103,11 @@ fn border_matches(a: &Border, b: &Border) -> bool {
         && color_matches(a.left.color, b.left.color)
 }
 
+/// `c` with nothing of it showing: what an unset fill fades from and to.
+fn transparent(c: Color) -> Color {
+    Color { a: 0, ..c }
+}
+
 fn color_matches(a: Color, b: Color) -> bool {
     a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a
 }
@@ -1085,6 +1115,8 @@ fn color_matches(a: Color, b: Color) -> bool {
 fn transform_matches(a: &Transform, b: &Transform) -> bool {
     (a.translate_x - b.translate_x).abs() < f32::EPSILON
         && (a.translate_y - b.translate_y).abs() < f32::EPSILON
+        && (a.translate_x_percent - b.translate_x_percent).abs() < f32::EPSILON
+        && (a.translate_y_percent - b.translate_y_percent).abs() < f32::EPSILON
         && (a.scale_x - b.scale_x).abs() < f32::EPSILON
         && (a.scale_y - b.scale_y).abs() < f32::EPSILON
         && (a.rotate - b.rotate).abs() < f32::EPSILON

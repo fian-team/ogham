@@ -64,6 +64,7 @@ pub const FLEX_PROPERTIES: &[&str] = &[
     "drag_start",
     "exit",
     "hover_style",
+    "hover_with_parent",
     "initial",
     "key",
     "keydown",
@@ -75,7 +76,7 @@ pub const FLEX_PROPERTIES: &[&str] = &[
 ];
 
 /// `Text`.
-pub const TEXT_PROPERTIES: &[&str] = &["hover_style", "style", "text"];
+pub const TEXT_PROPERTIES: &[&str] = &["hover_style", "hover_with_parent", "style", "text"];
 
 /// `TextInput`.
 pub const TEXT_INPUT_PROPERTIES: &[&str] = &[
@@ -192,6 +193,7 @@ pub const TEXT_STYLE_KEYS: &[&str] = &[
     "outline",
     "shadow",
     "size",
+    "transition",
     "weight",
     "width",
 ];
@@ -255,6 +257,9 @@ pub const TRANSITION_KEYS: &[&str] = &[
     "text_size",
     "transform",
 ];
+/// What a Text's `transition:` map may name: colour is the one text
+/// property that animates.
+pub const TEXT_TRANSITION_KEYS: &[&str] = &["color"];
 pub const SPRING_KEYS: &[&str] = &["damping", "delay", "stiffness"];
 pub const BORDER_KEYS: &[&str] = &["bottom", "color", "left", "right", "style", "top", "width"];
 pub const BORDER_SIDE_KEYS: &[&str] = &["color", "style", "width"];
@@ -748,7 +753,29 @@ impl<'a> Check<'a> {
                 self.map_keys(path, value, SHADOW_KEYS);
                 self.descend_color(path, value);
             }
+            "transition" => self.text_transition(span, path, value),
             _ => {}
+        }
+    }
+
+    fn text_transition(&mut self, span: Span, path: &str, node: &Node) {
+        match node {
+            Node::Str(_) => self.enum_value(span, path, node, SPRINGS, false),
+            Node::Map(entries) => {
+                for (key, span, value) in entries {
+                    let child = format!("{path}.{key}");
+                    if !TEXT_TRANSITION_KEYS.contains(key) {
+                        self.key(*span, child, key, TEXT_TRANSITION_KEYS);
+                        continue;
+                    }
+                    match value {
+                        Node::Str(_) => self.enum_value(*span, &child, value, SPRINGS, false),
+                        Node::Map(_) => self.map_keys(&child, value, SPRING_KEYS),
+                        Node::Opaque => {}
+                    }
+                }
+            }
+            Node::Opaque => {}
         }
     }
 

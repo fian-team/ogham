@@ -13,11 +13,12 @@ use skia_safe::{
     FontMgr, FontStyle, Paint,
 };
 
+use super::animation::ColorSprings;
 use super::event::*;
 use super::point::*;
 use super::rect::*;
 use super::style::*;
-use super::{UpdateResult, Widget};
+use super::{TickResult, UpdateResult, Widget};
 
 struct TextLayoutCache {
     font_collection: FontCollection,
@@ -43,6 +44,13 @@ pub struct TextWidget {
     pub style: TextStyle,
     pub hover_style: Option<TextStyle>,
     pub hovered: bool,
+    /// Take hover from the parent rather than the pointer
+    /// ([`Widget::hovers_with_parent`]).
+    pub hover_with_parent: bool,
+    /// The colour in flight toward the effective style's, while
+    /// `color_transition` is set and the two differ. `None` draws the
+    /// effective style as it stands.
+    color_springs: Option<ColorSprings>,
     pub layout: Option<Rect>,
 }
 
@@ -54,6 +62,8 @@ impl TextWidget {
             style: TextStyle::default(),
             hover_style: None,
             hovered: false,
+            hover_with_parent: false,
+            color_springs: None,
             layout: None,
         }
     }
@@ -65,6 +75,8 @@ impl TextWidget {
             style: TextStyle::default().with_color(color),
             hover_style: None,
             hovered: false,
+            hover_with_parent: false,
+            color_springs: None,
             layout: None,
         }
     }
@@ -79,6 +91,37 @@ impl TextWidget {
             }
         }
         &self.style
+    }
+
+    /// The colour on screen this frame: the spring's while one is in
+    /// flight, the effective style's otherwise.
+    pub fn shown_color(&self) -> Color {
+        match &self.color_springs {
+            Some(springs) => springs.current(),
+            None => self.effective_style().color,
+        }
+    }
+
+    /// Aim the colour at the effective style's, travelling from `from`
+    /// — what was on screen before the change — on the style's
+    /// `color_transition`. A live spring is retargeted rather than
+    /// restarted, so a hover that ends mid-fade turns back from where it
+    /// is.
+    fn retarget_color(&mut self, from: Color) {
+        let target = self.effective_style().color;
+        let Some(cfg) = self.effective_style().color_transition else {
+            self.color_springs = None;
+            return;
+        };
+        match &mut self.color_springs {
+            Some(springs) => springs.set_target(target),
+            None if from != target => {
+                let mut springs = ColorSprings::new(from, cfg);
+                springs.set_target(target);
+                self.color_springs = Some(springs);
+            }
+            None => {}
+        }
     }
 
     fn build_paragraph(&self, ctx: &LayoutContext) -> skia_safe::textlayout::Paragraph {
@@ -145,10 +188,13 @@ impl Widget for TextWidget {
             // changed — same outcome in the common HUD case (text update
             // with stable style).
             let text_changed = self.text != new_text_widget.text;
+            let shown = self.shown_color();
 
             self.text = new_text_widget.text.clone();
             self.style = new_text_widget.style.clone();
             self.hover_style = new_text_widget.hover_style.clone();
+            self.hover_with_parent = new_text_widget.hover_with_parent;
+            self.retarget_color(shown);
             // Swap event listeners - we can't clone closures, so we swap them
             std::mem::swap(
                 &mut self.event_listeners,
@@ -339,8 +385,32 @@ impl Widget for TextWidget {
         self.layout.as_ref().is_some_and(|r| r.contains(point))
     }
 
+    fn hovers_with_parent(&self) -> bool {
+        self.hover_with_parent
+    }
+
     fn set_hovered(&mut self, hovered: bool) {
+        if self.hovered == hovered {
+            return;
+        }
+        let shown = self.shown_color();
         self.hovered = hovered;
+        self.retarget_color(shown);
+    }
+
+    fn tick_animations(&mut self, ctx: &mut TickContext) -> TickResult {
+        let Some(springs) = self.color_springs.as_mut() else {
+            return TickResult::NONE;
+        };
+        let moving = springs.tick(ctx.dt);
+        if !moving {
+            self.color_springs = None;
+        }
+        TickResult {
+            needs_repaint: true,
+            needs_layout: false,
+            still_animating: moving,
+        }
     }
 
     fn is_hovered(&self) -> bool {
@@ -354,8 +424,16 @@ impl Widget for TextWidget {
         _image_cache: &mut crate::widget::image::ImageCache,
     ) {
         if let Some(layout) = &self.layout {
-            let style = self.effective_style();
-            ctx.draw_text(&self.text, style, layout.x, layout.y, layout.width);
+            match &self.color_springs {
+                Some(springs) => {
+                    let style = self.effective_style().clone().with_color(springs.current());
+                    ctx.draw_text(&self.text, &style, layout.x, layout.y, layout.width);
+                }
+                None => {
+                    let style = self.effective_style();
+                    ctx.draw_text(&self.text, style, layout.x, layout.y, layout.width);
+                }
+            }
         }
     }
 }
